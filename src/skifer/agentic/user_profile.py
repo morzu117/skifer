@@ -83,8 +83,14 @@ class UserProfile:
     # Persistence
     # ------------------------------------------------------------------
 
-    def save(self, path: pathlib.Path = _PROFILE_PATH) -> None:
-        """Sauvegarde le profil en YAML."""
+    def save(self, path: pathlib.Path | None = None) -> None:
+        """Sauvegarde le profil en YAML.
+
+        ``path`` est résolu à l'appel, pas à la définition : un défaut lié au chargement du module
+        rendrait ``_PROFILE_PATH`` impossible à substituer, et la sauvegarde implicite de
+        ``add_alias`` écrirait dans le vrai ``$HOME`` même sous test.
+        """
+        path = _PROFILE_PATH if path is None else path
         data = {
             "version": 1,
             "aliases": self.aliases,
@@ -97,11 +103,12 @@ class UserProfile:
             yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
 
     @classmethod
-    def load(cls, path: pathlib.Path = _PROFILE_PATH) -> "UserProfile":
+    def load(cls, path: pathlib.Path | None = None) -> "UserProfile":
         """
         Charge le profil depuis YAML.
         Retourne un profil vide si le fichier n'existe pas.
         """
+        path = _PROFILE_PATH if path is None else path
         if not path.exists():
             return cls()
         try:

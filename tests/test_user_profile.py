@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from skifer.agentic import user_profile
 from skifer.agentic.user_profile import UserProfile, _normalize
 from skifer.agentic.hub import AgenticHub
 from skifer.agentic.models import AgentResponse, LineageResponse
@@ -48,14 +49,32 @@ def test_resolve_unknown_returns_none():
 # add_alias / reject_suggestion
 # ---------------------------------------------------------------------------
 
-def test_add_alias_persists(tmp_path):
+def test_add_alias_persists(tmp_path, monkeypatch):
+    """``add_alias`` sauvegarde de lui-même, sans ``save()`` explicite.
+
+    Le chemin par défaut est redirigé : sans cela le test écrit dans le vrai ``$HOME`` de qui lance
+    la suite, et ne vérifie que le ``save()`` explicite qui suivait — jamais la sauvegarde implicite
+    qu'il prétend couvrir.
+    """
     profile_path = tmp_path / "profile.yaml"
+    monkeypatch.setattr(user_profile, "_PROFILE_PATH", profile_path)
+
     profile = UserProfile()
     profile.add_alias("ventes", "catalog.silver.orders")
-    profile.save(profile_path)
 
+    assert profile_path.exists()
     loaded = UserProfile.load(profile_path)
     assert loaded.resolve_alias("ventes") == "catalog.silver.orders"
+
+
+def test_add_alias_never_touches_the_real_home(tmp_path, monkeypatch):
+    """Garde-fou : la sauvegarde implicite ne doit jamais viser le dossier personnel."""
+    monkeypatch.setattr(user_profile, "_PROFILE_PATH", tmp_path / "profile.yaml")
+    monkeypatch.setattr(
+        pathlib.Path, "home", lambda: pytest.fail("le profil a resolu $HOME pendant un test")
+    )
+
+    UserProfile().add_alias("ventes", "catalog.silver.orders")
 
 
 def test_add_alias_normalizes_key():

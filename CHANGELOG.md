@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raising, which keeps `PYTHONPATH=src` imports working.
 
 ### Fixed
+- `UserProfile.save()` and `.load()` resolve the default profile path **at call time**
+  instead of binding it at import. Bound at import, `_PROFILE_PATH` could not be
+  substituted, so `add_alias()` — which saves on its own — wrote to the real
+  `~/.skifer_profile.yaml` of whoever ran the suite. `test_add_alias_persists` took a
+  `tmp_path` and looked isolated, but only its explicit `save()` used it; the implicit one
+  it claims to cover was never actually asserted. The test now redirects the default path,
+  asserts the implicit save, and a companion test fails outright if `Path.home()` is
+  resolved during a test.
 - `jsonschema` is now declared in the `dev` extra. It was used only by
   `tests/test_json_schema.py` and declared nowhere, so in a fresh environment its 15 tests
   skipped silently — the only tests that validate the published
