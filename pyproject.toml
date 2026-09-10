@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skifer"
-version = "2.0.0"
+version = "2.1.0"
 description = "Declarative data engineering framework for Spark and Databricks Lakehouse."
 readme = "README.md"
 license = "MIT"

@@ -5,15 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+
+## [2.1.0] - 2026-09-10
 
 ### Added
+
 - `skifer.__version__`, read back from the installed distribution metadata rather than
   restated in the source. `pyproject.toml` stays the single source of truth, so the two
   can never drift. A source checkout that is not installed reports `"unknown"` instead of
   raising, which keeps `PYTHONPATH=src` imports working.
+- A `Tests` workflow running the suite on every push and pull request, across Python 3.10
+  to 3.13, with a JVM installed so the Spark-backed tests actually run rather than error
+  out. Until now the only workflows published; nothing verified anything.
+
+### Changed
+
+- Both publishing workflows now authenticate to PyPI and TestPyPI through **trusted
+  publishing** (OIDC): `id-token: write` at the job level, no API token secret. The
+  token-based configuration failed on its first run, because the action falls back to
+  OIDC when no password is supplied and then lacks the permission to mint an identity.
 
 ### Fixed
+
 - **The read-only MCP server rejected every resource URI on Python 3.10 and below.**
   `_parse_uri` called `parse_qs(..., strict_parsing=True)` unconditionally, and before
   Python 3.11 that raises on the empty string. A URI carrying no parameters — nearly all of
@@ -47,254 +60,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped silently — the only tests that validate the published
   `schemas/skifer-pipeline.schema.json`. A skipped test reads like a passing suite.
 
-### Added
-- A `Tests` workflow running the suite on every push and pull request, across Python 3.10
-  to 3.13, with a JVM installed so the Spark-backed tests actually run rather than error
-  out. Until now the only workflows published; nothing verified anything.
-
-### Changed
-- Both publishing workflows now authenticate to PyPI and TestPyPI through **trusted
-  publishing** (OIDC): `id-token: write` at the job level, no API token secret. The
-  token-based configuration failed on its first run, because the action falls back to
-  OIDC when no password is supplied and then lacks the permission to mint an identity.
-
 ### Documentation
+
 - Rewrote the installation instructions, which still described a private repository and a
   hand-built wheel. Skifer is on PyPI: `pip install skifer`. `docs/install_databricks.md`
   now covers cluster and notebook installs, extras, TestPyPI pre-releases, and says why
   `skifer[spark]` is the wrong extra on a Databricks Runtime, whose own PySpark and Delta
   it would override.
-- Added runnable examples 21–22 for Spark-free `AgenticHub` routing through the
-  dictionary and lineage agents, plus live `QualityAgent` checks that distinguish
-  failures from execution errors and persist two runs in disposable local history.
-- **Removed `example/`, the Jupyter notebook directory that nothing executed.** It held
-  the pre-Plan-33 version of the same idea as `examples/`, and having both invited the
-  question of which one to trust. Two of its seven notebooks imported
-  `skifer.backends.spark`, deleted by Plan 26, so they had stopped working
-  without anything noticing; the rest had not been run in months. Two published
-  documentation pages still sent readers to it, alongside the tested examples they had
-  just gained. Everything it demonstrated that no example covered is now covered.
-- Added runnable examples 19–20 so that removal loses nothing: static rule redundancy
-  analysis through both `RuleAnalyzer` and `engine.explain_rules()`, and offline
-  `BuilderAgent` drafting with its validation refusal and orchestration export. Example 20
-  prints the generated Airflow task body, which is a TODO scaffold — a DAG copied without
-  reading it schedules nothing and reports success.
-- (Plan 34, phase 6) Wired all eighteen runnable examples into their relevant feature
-  documentation and routed the getting-started next steps through the demonstrated output.
-- (Plan 34, phase 5) Added dependency-free runnable examples 16–18 for the scoped
-  read-only MCP boundary, explainable adaptive Gold proposals and review exit codes,
-  and exact approvals with idempotent capability execution and audited compensation.
-- (Plan 34, phase 4) Added Spark-free runnable examples 13–15 for deterministic
-  semantic projection and sync exit codes, domain-graph join planning with fanout and
-  calendar guardrails, and names-only GenBI interpretation through an offline stub provider.
-- (Plan 34, phase 3) Added locally runnable examples 10–12 for failed certified
-  publication with row-tagged quarantine, static lineage and data-dictionary output,
-  and dependency-free runtime tracing with redaction and exporter-failure isolation.
-- (Plan 34, phase 2) Added locally runnable examples 08–09 for materialized-view SQL
-  compilation and definition hashing without Spark, plus finite streaming-table runs that
-  reuse an automatic checkpoint and apply CDC type 1 upserts; both print real guardrail refusals.
-- (Plan 34, phase 1) Added locally runnable examples 05–07 for Python business rules,
-  joins and declarative aggregates, nested partials and their debug materialization modes,
-  and JSON sources shaped through grouped filters, a registered loader, development limits,
-  and pre-aggregation columns; each example also prints a real framework refusal.
-- (Plan 34, phase 0) The example suite now checks that each example still prints what its
-  README promises, not merely that it exits zero. An example that keeps running while
-  printing something else drifts without failing anything, which is the failure mode
-  documentation examples actually have. Every example gained a uniform
-  `What you should see` section, and each is still run in its own subprocess: a shared
-  process would let one pass because a previous one had started Spark or registered a
-  rule for it.
-- (Plan 33) Brought `CLAUDE.md` and `AGENTS.md` back in step with the code, as the release
-  checklist requires: the `docs` extra and the strict site build are listed among the
-  commands, Plan 29 is recorded as fully merged and Plan 33 added, and both files stated
-  that "all tests mock Spark" — which is false for 182 of them, and is precisely the
-  belief that let five defects ship on the documented local path.
-- (Plan 33) Added a `docs` optional dependency group. The repository has shipped an
-  MkDocs configuration and a release checklist requiring the site to be up to date,
-  while declaring neither MkDocs nor its theme anywhere — so nobody could build or
-  preview the documentation without guessing the toolchain. `pip install -e ".[docs]"`
-  now makes `mkdocs build --strict` runnable.
-- (Plan 33, phases C–D) Split MCP, supervised adaptive Gold, and governed
-  capabilities out of the conversational agentic guide; added an end-to-end
-  governance narrative; made every reader-facing documentation page reachable
-  through grouped MkDocs navigation; added a regression test for orphan pages;
-  and moved root-level workflow notes into `docs/contributing/`.
 
-### Fixed
-- **`<rule>` leaked into the data dictionary as if it were a table.** Attributing a
-  rule-made column to `<rule>` fixed a lineage edge that named a source column no table
-  contains, but the dictionary indexed that marker like any other source: it listed a
-  field nobody can query, and let one column name fill two of the three nearest-name
-  suggestion slots. The marker is now excluded from the index while the provenance it
-  carries is kept on the real entry. Found by driving `DictionaryAgent` for the first
-  time since Plan 26.
-- Nearest-name suggestions from `DictionaryAgent.lookup()` are deduplicated. Only three
-  are offered, and a column name present in two tables used to take two of the slots with
-  the same word, which reads as a bug and costs the reader a real alternative.
-- **Column lineage named a source column that does not exist.** `RuleAnalyzer` read output
-  columns only from `withColumn`, so a `projection` rule — the default kind, and the one
-  the documentation teaches — declared none. The lineage tracker then attributed the
-  column the rule created to the primary source table, reporting
-  `raw_orders.order_class -> order_class` for a column `raw_orders` has never had. The
-  analyzer now reads the returned `{name: Column}` mapping, directly or through a local
-  name, while ignoring a dict that is not returned so a lookup table inside a rule is not
-  mistaken for output columns. A select on a rule-made column is attributed to `<rule>`
-  instead of to a table. Nothing caught this because every analyzer and tracker test wrote
-  `transform` rules; found by writing example 11.
-- **A column operation missing an argument crashed with `IndexError: tuple index out of
-  range`**, raised inside a lambda, naming neither the operation nor the column. The op
-  catalog has declared an arity for every column operation since it was written, and
-  nothing ever read it. `substring:1`, `split:sep`, and a bare `cast`, `round` or
-  `to_date` now say which operation was called, how many arguments it needs, and how many
-  it received. The realistic way to hit this is an unquoted YAML flow sequence, where
-  `[substring:1,7]` is two items rather than one operation, so the message says that too.
-  Found by writing example 07.
-- **Local Spark workers now run the interpreter that started them.** `get_spark_session()`
-  pins `PYSPARK_PYTHON` in local mode, as the test conftest already did privately. Without
-  it, Spark launched whatever `python3` the PATH offered, and a system Python of a
-  different minor version killed the job with `PYTHON_VERSION_MISMATCH` — a message that
-  says nothing about the virtualenv the user is in. It only bit outside pytest, which is
-  exactly where a reader runs an example.
-- **Ten tests depended on a Spark session they never requested.** They build a column
-  with `F.col(...)`, which needs a live JVM context, but declared no `spark` fixture:
-  they passed only because another test in the same process had started the session
-  first. Running any of them alone, filtering with `-k`, or distributing the suite would
-  have failed them — including both `allow_raw_sql` governance guards, exactly the tests
-  one wants to be able to verify in isolation. Measured while sizing a two-tier CI: the
-  2201 tests that need no Spark run in 27s, against 158s for the whole suite.
-- Removed two stale developer handoffs from `docs/`. One of them describes a fix in
-  `src/skifer/backends/spark.py`, a module deleted three plans ago, so it
-  now misinforms anyone who finds it; both duplicate what the changelog and the git
-  history already record. Their filenames also contain a colon, which Windows cannot
-  check out.
-- **The documentation site published 50 internal working artifacts.** Forty-eight
-  implementation plans, a point-in-time feature review, and two developer handoffs
-  each shipped at their own public URL. They were absent from the navigation menu,
-  which is not the same thing: MkDocs builds every page under `docs/`, and omitting
-  one from `nav` hides the menu entry while still publishing the page. They are now
-  excluded from the build itself, and a test asserts the built site contains none of
-  them. Found by running `mkdocs build --strict` for the first time.
-- The strict documentation build now passes with zero warnings, from eleven. Ten came
-  from plan documents linking to source files; the last was an onboarding link to the
-  project README, which does not exist on the published site. Links that leave the
-  site now point at the repository.
-- **Semantic queries now work with `catalog: null`.** A two-part model table such as
-  `gold.fact_orders` was always expanded to a three-part name, producing a literal
-  `None` catalog in local Spark SQL. The resolver now keeps the valid two-part name
-  when no catalog is configured. Found by executing the local semantic onboarding
-  example.
-- Unknown names rejected by the domain-aware semantic planner now include nearest
-  declared-name suggestions, matching the legacy single-model resolver's refusal
-  contract instead of returning only the complete available-name list.
-- **Certified publication now works in local mode.** It never had. Two distinct faults
-  hit the very first staging write: the staging FQN is deliberately built unquoted —
-  it is a stored identity, recorded in every run event — while the local writer only
-  parsed the backtick-quoted form; and `_skifer_staging` was never created,
-  because the engine ensures only the *target* schema and the staging area is an
-  implementation detail of publication. Plan 29 feature 1 was therefore unusable on
-  the documented development path, and the test suite missed it because those tests
-  use fake backends. Found by running a real pipeline as an example.
-- `SkiferEngine.backend` is now public. Building a `DataMonitor` is documented,
-  and the documentation instructed readers to reach into `engine._backend` in twelve
-  places across four pages — which quietly made renaming that attribute a breaking
-  change for everyone who followed the docs.
-- (Plan 29, slice 9.8) A scenario whose own code raises is now reported as `error`,
-  not as a governance `refused`. A crashed scenario has observed nothing — the system
-  did not refuse anything — and labelling it a refusal let a broken scenario wear the
-  costume of a governance decision, so a future scenario that legitimately expects a
-  refusal could have passed on a crash.
-- (Plan 29, slice 9.4) `precondition_hash` no longer hashes wall-clock time. It covered
-  the whole report, `evaluated_at` and each outcome's `observed_at` included, so the
-  hash changed on every re-evaluation even when the state and every verdict were
-  strictly identical. Since an approval is bound to that hash and the report is
-  re-evaluated immediately before execution, **an approval could never validate against
-  a fresh report** and supervised mode was unusable. A fixed test clock hid this
-  completely. The hash now covers what an approver actually approves — the rules, their
-  verdicts and the observed state — while the separate expiry check remains what bounds
-  how long an approval stays good.
-- (Plan 29, slice 9.2) Capability argument validation now stops at the bound it
-  declares. Reporting a breached `maxItems` and then descending into every element
-  bought the caller work proportional to what they sent rather than to the limit the
-  capability declared: 200k surplus items produced 200k error messages and an 8 MB
-  exception string, and 200k unknown keys did the same. An over-length array is now
-  refused without being walked, and the error list is capped at 32 entries plus an
-  explicit truncation notice. Arguments reach this boundary from the caller, so the
-  work they can buy is part of the attack surface.
-- (Plan 29, slice 9.1) The capability validator no longer crashes on a deeply nested
-  document. Nesting is a size, and section 8 of the plan requires sizes to be bounded:
-  without an explicit ceiling the recursive schema walk and the secret-key scan blew
-  the interpreter stack at a nesting depth of 497 under the default recursion limit —
-  a few kilobytes of YAML — and raised `RecursionError` instead of returning a verdict,
-  breaking the validator's own contract that only a wrong argument type may raise. A
-  document that crashes the validator is a document that was never validated, so the
-  refusal must be an answer rather than a crash. Input schemas are now bounded to 8
-  levels and documents to 16.
-- (Plan 29, slice 8.6) An unchanged zero-millisecond baseline is no longer reported
-  as a regression. `after >= before * (1 + ratio)` is satisfied by every
-  non-negative observation once the baseline is zero, so two identical windows of
-  sub-millisecond queries produced a `regressed` verdict and a human review
-  request — on exactly the queries an optimization made too fast to measure, and
-  while the same result's own reason line reported the ratio as improved. A zero
-  baseline is now compared against zero directly, reports `ratio=undefined`
-  instead of a misleading number, and can never read as improved.
-- (Plan 29, slice 8.6) `skifer adaptive evaluate` refuses a `--store` path that
-  does not exist instead of creating it. `sqlite3.connect()` creates the file it is
-  given, so a mistyped path produced an empty store, an `evidence_unavailable`
-  verdict indistinguishable from a genuine retention purge, exit code 0, and a
-  proposal moved to `measured` on a measurement that never ran.
-- (Plan 29, slice 8.4) Proposal artifacts now record paths relative to the proposals
-  root instead of absolute ones. An absolute path pinned a reviewed artifact to the
-  checkout that produced it: it broke as soon as a proposal was read elsewhere, wrote
-  the local filesystem layout — username included — into a file a human is meant to
-  read, and made two runs of identical content differ byte-for-byte even though the
-  `proposal_id` is content-derived. `ProposalGenerator.resolve()` turns a recorded
-  path back into a usable one and refuses anything absolute or escaping the root.
-- (Plan 29, slice 7.3) The MCP query tool now advertises the bounds its service
-  actually enforces. The input schema was built from the hard ceilings, so a service
-  configured with a tighter `ServiceLimits` promised agents up to 1000 rows and 50
-  filters while refusing anything above its own budget. The refusal was fail-closed,
-  but a schema that overstates what may be asked is one an agent cannot plan against.
-  `MCPTools` now derives its descriptor and its argument validation from
-  `service.limits`, and deliberately has no fallback when that budget is absent.
-- (Plan 29, slice 7.2) MCP resource discovery is now filtered by the caller's scopes.
-  `list_resources` and `list_resource_templates` took no request context at all, so an
-  agent holding no scope enumerated the whole governed surface and learned which scope
-  opened each endpoint — reconnaissance the plan's definition of done explicitly rules
-  out ("resources filtrées par scopes"). Both now require a `RequestContext`, the server
-  resolves the caller on every handler rather than only on read, and a non-context
-  argument fails closed instead of listing everything.
-- (Plan 29, slice 7.1) **SQL injection in Spark SQL string literals.** Doubling the
-  single quote is not sufficient: with Spark's default
-  `spark.sql.parser.escapedStringLiterals=false` a backslash escapes the next
-  character, so a value ending in `\` turned the closing quote into an escaped
-  quote and let the rest of the value be parsed as SQL. Reproduced against a real
-  local Spark session: `contract_id="x\\"` with `version=" OR 1=1 --"` returned every
-  row of `contract_definitions` instead of none. New `escape_sql_string()` in
-  `core/sql_compiler.py` doubles backslashes before quotes and is now used by
-  `sql_literal()` and by all ten interpolated literals in `core/spark_backend.py`.
-  The agent-reachable contract read added by this slice is what made the flaw
-  reachable from outside; the other sites shared the same pattern.
-- (Plan 29, slice 7.1) `AgentReadyDataService.get_contract` now shape-checks
-  `contract_id` and `version` at the boundary before they reach storage — they are
-  the only free text an external caller puts on a path that ends in SQL — and does
-  so before touching the certification store.
+## [2.0.0] - 2026-09-10
 
-### Changed
-- (Plan 29) End-to-end run identity. The `run_id` minted by
-  `run_process_to_table` / `run_from_yaml` now travels down to the certification
-  registry, so one pipeline run is one audit identity instead of two correlated
-  only by a shared `trace_id` — a link that disappeared whenever traces were not
-  exported. **This changes persisted data:** `run_id` values written by earlier
-  versions do not follow this convention, so any external tool correlating on
-  them must be checked. The id is minted on the business path, never derived
-  from the trace context, and tests pin it identical whether tracing is on or
-  off (the slice 5.2 guarantee). `PipelinePatterns.run_process_to_table` and
-  `run_from_yaml` accept an optional `run_id` and still mint one when called
-  standalone. `SkiferEngine.run_from_yaml` no longer keeps a second,
-  traced-only copy of its own flow: the two had already drifted apart, and
-  `skifer.schema.load` is now emitted from the single implementation.
+> Version number set on 2026-08-03; published to PyPI on 2026-09-10. Everything below
+> shipped in that one artifact, including the work that had accumulated under
+> "Unreleased" in between.
 
 ### Added
+
 - (Plan 29, slice 9.8) Added a deterministic governed-capability evaluation
   harness and an adversarial fake support-ticket pilot spanning allow, deny,
   unknown, stale approval, live-state drift, duplicate request, timeout, lost
@@ -579,8 +360,224 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conservative: only table-level uniqueness checks and declared contract grain
   can justify a `one` side; otherwise the proposal stays `unknown` and is not
   queryable until a human curates and promotes a real `relationships:` block.
+- (Plan 29, slice 6.1) Semantic models can now declare an optional domain
+  block with `grain`, typed `entities`, and directed `relationships`. The
+  validator parses and validates those fields with the same safe-identifier
+  boundary already enforced for dimensions/metrics, rejects unsupported join
+  types, rejects self-relations, and fails closed on `unknown` cardinality with
+  an explicit action to declare or certify uniqueness before querying. The
+  semantic catalog now stores only entity names and related model keys so
+  candidate discovery stays catalog-first and lazy without preloading full
+  model YAML files.
+- (Plan 29, slice 0.6) `SemanticBuilder` can now enrich a managed semantic
+  draft from a `ProjectedSchema` without letting the LLM invent or overwrite
+  structure. The deterministic draft remains the source of truth: post-LLM
+  filtering rejects invented dimensions, rejects any attempt to rename/retype/
+  redefine managed fields, rejects new metrics whose dependency is not an
+  existing projected output, and only admits descriptions, synonyms, and
+  bounded new metrics before running both `SemanticValidator.validate_yaml()`
+  and `validate_against_projection()`. The no-Spark end-to-end path is now
+  covered from pipeline YAML to draft, constrained fake-LLM enrichment,
+  promotion, lazy catalog loading, and final semantic validation.
+- (Plan 28) Documentation: `docs/core.md` gains two reference sections — "Declarative aggregations" and "Materialized views" (YAML surface, where the DDL runs and what happens when no warehouse is configured, the definition-hash decision table, full refresh, load-time guardrails) — plus cross-links from `run_process_to_table`; `docs/getting_started.md` documents `sql_warehouse_id` alongside `checkpoint_base`; `CLAUDE.md`/`AGENTS.md`/`README.md`/`docs/index.md` updated with the `aggregate:` block, the materialized-view surface and the `[databricks]` extra. Note: `docs/yaml_spec.md` was deliberately left alone — it documents the **semantic** model YAML (dimensions/metrics), not the pipeline YAML, whose reference is `docs/core.md`.
+- (Plan 28) New `[databricks]` optional extra declaring `databricks-sdk` — the SDK was imported by `core/environment.py` and `spark_factory.py` without ever being declared as a dependency (pre-existing gap). The import stays lazy, and a missing SDK is no longer indistinguishable from missing credentials: `get_workspace_client()` logs which of the two is wrong instead of swallowing both, and the materialized-view warehouse error names the install command. The extra is unnecessary on a Databricks runtime, where the SDK is pre-installed.
+- (Plan 28) Materialized-view execution — `run_process_to_table`/`run_from_yaml` now create the view end to end. `materialization: materialized_view` **short-circuits the DataFrame pipeline entirely** (no source is read): the schema is compiled to SQL, wrapped in `CREATE [OR REPLACE] MATERIALIZED VIEW … AS <select>` (clause order: clustering, `COMMENT`, `TBLPROPERTIES`, `SCHEDULE`) and executed on a SQL warehouse through the Statement Execution API — `CREATE MATERIALIZED VIEW` is refused by all-purpose clusters and by Databricks Connect, so the DDL never goes through `spark.sql` on Databricks. New `SparkBackend` primitives `execute_sql_on_warehouse` (with polling to a terminal state and a 30-min ceiling; failures re-raised enriched, never swallowed), `create_/refresh_/drop_materialized_view` and `get_table_property`. **Definition drift is detected**: a SHA-256 of the compiled SELECT *and* of the definition-bearing options (`schedule`, `comment`, `cluster_by`, `partition_by` — not `refresh`) is stored in `TBLPROPERTIES ('skifer.definition_hash')`; absent view → `CREATE`, identical hash → `REFRESH` (skipped under `refresh: never`, leaving it to the `SCHEDULE`), different or unreadable hash → `CREATE OR REPLACE`, so a changed YAML can never leave a stale view in place. Warehouse resolution (`engine.resolve_sql_warehouse_id`) reads `params.sql_warehouse_id` and **fails fast in job/production mode before any compilation** when it is missing; in interactive mode the DDL is written to `{sql_output_dir}/…​.sql` (default `generated_sql/`) with an explicit "NOT CREATED" warning naming the config key, and the post-create monitor is skipped since there is nothing to check. In local mode (`catalog: null`) there are no materialized views in Delta OSS, so the compiled SELECT is executed and persisted through the regular batch write — which also proves at every run that the generated SQL is valid. `engine.full_refresh(..., materialization="materialized_view")` drops the view (no checkpoint to purge); `run_process_and_split` and `run_union_sources_to_table` refuse materialized views with actionable messages, and `_write_dataframe` raises if a DataFrame ever reaches it under an MV materialization (third barrier). Sandbox resolution is shared with the DataFrame path via the extracted `SchemaInterpreter.resolve_source_table`, so both read exactly the same tables.
+- (Plan 28) Materialized-view YAML surface: `materialization: materialized_view` is now accepted (it was recognized-but-rejected since Plan 27), with the dict form `{schedule, comment, cluster_by, partition_by, refresh}` — `schedule` must start with `EVERY ` or `CRON `, `cluster_by`/`partition_by` are mutually exclusive (Databricks accepts one clustering strategy), and `refresh` is `auto` (default) or `never`. The `materialization` allowlist is now **per type** (`MATERIALIZATION_ALLOWED_KEYS` in `core/constants.py`) instead of a flat set, so streaming options can no longer be silently accepted on a materialized view (previously `checkpoint:` on `type: table` passed the allowlist and was caught only by a follow-up check). Load-time cross-validation aggregates every blocker in one error: `business_rules` (Python is not expressible in SQL — materialize upstream), `partials:`, file sources, loaders, `dev_limit` (table and schema level), JDBC sinks, `streaming: true`, `drop_duplicates_on`, `preprocess.qualify`, and `keep_all_columns` with a join or several tables. JSON Schema and `schemas/skifer-pipeline.schema.json` updated accordingly.
+- (Plan 28) `core/sql_compiler.py` (new): compiles a parsed schema (`parse_to_ir`) into a single `WITH … SELECT …` statement — one CTE per table alias (projection + filters + `filter_groups` OR-of-ANDs + `drop_nulls_in`), a join tree using `USING (…)` when key names match and `ON` otherwise, then `select_final` / `keep_all_columns` / `aggregate` as the final projection. Pure Python (no Spark, no catalog access); table names go through a caller-supplied `resolve_table` so sandbox resolution stays in one place. Identifiers are backtick-quoted and every value is emitted as an escaped SQL literal (filter values are never interpolated raw). `_SQL_FILTER_DISPATCH`/`_SQL_OP_DISPATCH` mirror the Spark dispatch tables key-for-key, enforced by drift-guard tests, and `expr:`/`sql:` remain subject to `allow_raw_sql`. Anything without a faithful SQL form raises `SqlCompilationError` instead of emitting approximate SQL: Python `business_rules`, `partials:`, loaders, file sources, streaming reads, `dev_limit`, `quality_checks.drop_duplicates_on` and `preprocess.qualify` (the last two would need a windowed `ROW_NUMBER` with a deterministic `ORDER BY` plus the full column list — neither `QUALIFY` nor `SELECT * EXCEPT` is available). Backed by parity tests that run both paths on a real local Spark session and compare rows.
+- (Plan 28) Declarative `aggregate:` block — a top-level `{group_by, measures, having}` mapping replaces the need to write a Python `kind="aggregation"` rule (and to hand-attach `agg_keys`) for ordinary GROUP BY work. Measures accept the compact `[source, target, func]` form or a `{source, target, func}` mapping; functions come from the new `AGGREGATE_FUNCTIONS` catalog in `core/op_catalog.py` (`sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `sum_distinct`, `approx_count_distinct`, `stddev`, `variance`, `first`, `last`, plus aliases such as `mean`), with `source: "*"` reserved to `count`. `having:` reuses the existing filter grammar and is validated against group keys and measure targets. The block is mutually exclusive with `select_final` and `keep_all_columns`, is rejected on streaming pipelines (load-time and run-time preflight — streaming aggregations need watermarks), and `add_columns` now runs *before* the aggregation so derived columns can feed `group_by`. New backend primitives `agg_expr`/`group_by_agg` (SparkBackend + FakeBackend, dispatch table kept in sync with the catalog by a drift-guard test), IR types `ParsedAggregate`/`ParsedMeasure` on `ParsedSchema.aggregate`, and `AggregateDef`/`MeasureEntry` in the JSON Schema (`schemas/skifer-pipeline.schema.json` regenerated).
+- (Plan 27) Engine wiring for streaming tables — `run_process_to_table`/`run_from_yaml` execute `materialization: streaming_table` end to end: the interpreter reads `streaming: true` tables via `read_table_stream`/`read_source_stream` (sandbox resolution unchanged), the checkpoint is resolved **before** any read (`engine.resolve_checkpoint_location`: explicit path verbatim; `auto` → local `{warehouse}/_checkpoints/{schema+suffix}/{table}` or the `checkpoint_base` env param on Databricks, with a fail-fast error naming the exact config key), and the write dispatches to `write_stream_table`. Run-time preflight rejects `intermediate_mode='table'`, `aggregation`-kind rules (with guidance toward downstream batch/materialized views) and re-checks limit/window incompatibilities for hand-built schema dicts. `run_process_and_split`/`run_union_sources_to_table` refuse streaming schemas with actionable messages. The post-write monitor still runs after `awaitTermination()` (complete data with `available_now`).
+- (Plan 27) `engine.full_refresh(target_layer, table)`: atomically purges the resolved checkpoint AND drops the target table so the next run re-ingests from scratch — prevents the half-purged state (duplicates or incomplete backfill).
+- (Plan 27) CDC Type 1 upsert for streaming tables: `write_stream_table(write_mode="upsert", keys=[...])` runs `foreachBatch` — each micro-batch is deduplicated on the merge keys (batch op, bounded state) then `MERGE INTO` the target (`matched → UPDATE SET *`, `not matched → INSERT *`). Cross-batch uniqueness is guaranteed by the target itself (no streaming state) and replayed micro-batches are idempotent (neutralizes foreachBatch's at-least-once semantics). First micro-batch creates the target if absent (local: path write + metastore registration; Databricks: `saveAsTable`). FakeBackend simulates last-write-wins per key.
+- (Plan 27) Streaming backend primitives in `SparkBackend`: `read_table_stream` (readStream.table), `read_source_stream` (delta/text only — schema-less formats rejected), `write_stream_table` (Delta append + checkpoint, `available_now`/`interval:` triggers, internal `awaitTermination()`, Connect-v2 failures re-raised with an actionable message — never swallowed) and `default_checkpoint_root()` (local: `{warehouse}/_checkpoints`; Databricks: None → explicit config required). `write_table` now rejects streaming DataFrames (the batch path's `isEmpty` guard would silently skip the write). Local twin `writer.write_stream_dataframe_local` registers the metastore entry only after termination and only if a `_delta_log` exists (zero-row first run → skip + warning). FakeBackend mirrors + `_streams` recorder; new `streaming` pytest marker; `.spark-warehouse/` added to `.gitignore` (pre-existing gap).
+- (Plan 27) IR carries the streaming surface: `ParsedTable.streaming` and `ParsedSchema.materialization` (descriptive — feeds `describe_schema`/lineage). JSON Schema gains the top-level `materialization` property (`MaterializationDef`: string shorthand or dict with `trigger`/`checkpoint`/`write_mode`/`keys`) and a `streaming` boolean on `TableDef`; `schemas/skifer-pipeline.schema.json` regenerated.
+- (Plan 27) Streaming-tables YAML surface: per-table `streaming: true` flag and top-level `materialization:` block (string shorthand or dict `{type, trigger, checkpoint, write_mode, keys}`; defaults `trigger: available_now`, `checkpoint: auto`, `write_mode: append`; `keys` required with `write_mode: upsert`). Load-time fail-fast validation of every streaming incompatibility (aggregated errors): strict bijection `streaming` ⇔ `materialization: streaming_table`, single streaming table per schema, stream-static joins restricted to `inner`/`left` with the stream as join base, streaming file sources restricted to `delta`/`text`, and rejections for `dev_limit`, `preprocess.qualify`, `drop_duplicates_on` (error guides to `write_mode: upsert`), loaders, JDBC sinks, `materialized_view`, and streaming inside `partials:` children. New constants `VALID_STREAMING_SOURCE_TYPES`, `VALID_MATERIALIZATION_TYPES`, `DEFAULT_STREAMING_TRIGGER` in `core/constants.py`. Execution wiring lands in later Plan 27 phases.
+- `scripts/release.py`: added a guarded release helper that bumps the package version, promotes the changelog, creates the release commit and tag, and pushes `main` plus the tag to trigger TestPyPI and PyPI.
+
+### Changed
+
+- (Plan 29) End-to-end run identity. The `run_id` minted by
+  `run_process_to_table` / `run_from_yaml` now travels down to the certification
+  registry, so one pipeline run is one audit identity instead of two correlated
+  only by a shared `trace_id` — a link that disappeared whenever traces were not
+  exported. **This changes persisted data:** `run_id` values written by earlier
+  versions do not follow this convention, so any external tool correlating on
+  them must be checked. The id is minted on the business path, never derived
+  from the trace context, and tests pin it identical whether tracing is on or
+  off (the slice 5.2 guarantee). `PipelinePatterns.run_process_to_table` and
+  `run_from_yaml` accept an optional `run_id` and still mint one when called
+  standalone. `SkiferEngine.run_from_yaml` no longer keeps a second,
+  traced-only copy of its own flow: the two had already drifted apart, and
+  `skifer.schema.load` is now emitted from the single implementation.
+- `core/json_schema.py`: the `source.type` enum is now derived from `VALID_SOURCE_TYPES` (single source of truth); `schemas/skifer-pipeline.schema.json` regenerated accordingly.
+- `core/interpreter.py`: the select path now goes through the IR (`apply_op` + `_parse_op`) instead of the deprecated string wrappers.
+- **BREAKING** (Plan 26): `SparkBackend` moved from `skifer.backends.spark` to `skifer.core.spark_backend`; the `backends/` package is gone. `SparkBackend` is now exported at package top level (`from skifer import SparkBackend`, lazily so Spark-less installs keep working).
+- `agentic/orchestrator.py`: the exporter now targets Spark/Databricks only — it emits a Databricks Asset Bundle, an Airflow DAG with the Databricks operator, or a Python script; the Snowflake/BigQuery Airflow branches are gone and `format="auto"` resolves to `script` for non-Spark/local backends.
+
+### Removed
+
+- **BREAKING** (Plan 26): removed the legacy non-Spark backends `skifer.backends.sql_base`, `skifer.backends.snowpark` and `skifer.backends.bigquery`, along with the `snowflake` and `bigquery` optional dependency extras. The product is Spark/Databricks-only; `pip install skifer[snowflake]` / `[bigquery]` are no longer available.
+- **BREAKING** (Plan 26): removed the `Backend` Protocol (`skifer.core.backend`), the `backend=` kwarg of `SkiferEngine.__init__`, the `capabilities` mechanism (SparkBackend property + `temp_view` gate on partials materialization) and the deprecated `_patch_connect_debugging`/`_patch_connect_user_context` engine shims. The engine is now Spark-native and always builds a `SparkBackend`; tests inject doubles via `engine._backend` (duck typing). `VALID_SOURCE_TYPES` moved to `skifer.core.constants` (old import path `skifer.core.backend` is gone).
+- **BREAKING** (Plan 26): removed the dead string-op module `core/operations.py` and the deprecated `SparkBackend.apply_operation` / `build_filter_expression` wrappers.
 
 ### Fixed
+
+- **`<rule>` leaked into the data dictionary as if it were a table.** Attributing a
+  rule-made column to `<rule>` fixed a lineage edge that named a source column no table
+  contains, but the dictionary indexed that marker like any other source: it listed a
+  field nobody can query, and let one column name fill two of the three nearest-name
+  suggestion slots. The marker is now excluded from the index while the provenance it
+  carries is kept on the real entry. Found by driving `DictionaryAgent` for the first
+  time since Plan 26.
+- Nearest-name suggestions from `DictionaryAgent.lookup()` are deduplicated. Only three
+  are offered, and a column name present in two tables used to take two of the slots with
+  the same word, which reads as a bug and costs the reader a real alternative.
+- **Column lineage named a source column that does not exist.** `RuleAnalyzer` read output
+  columns only from `withColumn`, so a `projection` rule — the default kind, and the one
+  the documentation teaches — declared none. The lineage tracker then attributed the
+  column the rule created to the primary source table, reporting
+  `raw_orders.order_class -> order_class` for a column `raw_orders` has never had. The
+  analyzer now reads the returned `{name: Column}` mapping, directly or through a local
+  name, while ignoring a dict that is not returned so a lookup table inside a rule is not
+  mistaken for output columns. A select on a rule-made column is attributed to `<rule>`
+  instead of to a table. Nothing caught this because every analyzer and tracker test wrote
+  `transform` rules; found by writing example 11.
+- **A column operation missing an argument crashed with `IndexError: tuple index out of
+  range`**, raised inside a lambda, naming neither the operation nor the column. The op
+  catalog has declared an arity for every column operation since it was written, and
+  nothing ever read it. `substring:1`, `split:sep`, and a bare `cast`, `round` or
+  `to_date` now say which operation was called, how many arguments it needs, and how many
+  it received. The realistic way to hit this is an unquoted YAML flow sequence, where
+  `[substring:1,7]` is two items rather than one operation, so the message says that too.
+  Found by writing example 07.
+- **Local Spark workers now run the interpreter that started them.** `get_spark_session()`
+  pins `PYSPARK_PYTHON` in local mode, as the test conftest already did privately. Without
+  it, Spark launched whatever `python3` the PATH offered, and a system Python of a
+  different minor version killed the job with `PYTHON_VERSION_MISMATCH` — a message that
+  says nothing about the virtualenv the user is in. It only bit outside pytest, which is
+  exactly where a reader runs an example.
+- **Ten tests depended on a Spark session they never requested.** They build a column
+  with `F.col(...)`, which needs a live JVM context, but declared no `spark` fixture:
+  they passed only because another test in the same process had started the session
+  first. Running any of them alone, filtering with `-k`, or distributing the suite would
+  have failed them — including both `allow_raw_sql` governance guards, exactly the tests
+  one wants to be able to verify in isolation. Measured while sizing a two-tier CI: the
+  2201 tests that need no Spark run in 27s, against 158s for the whole suite.
+- Removed two stale developer handoffs from `docs/`. One of them describes a fix in
+  `src/skifer/backends/spark.py`, a module deleted three plans ago, so it
+  now misinforms anyone who finds it; both duplicate what the changelog and the git
+  history already record. Their filenames also contain a colon, which Windows cannot
+  check out.
+- **The documentation site published 50 internal working artifacts.** Forty-eight
+  implementation plans, a point-in-time feature review, and two developer handoffs
+  each shipped at their own public URL. They were absent from the navigation menu,
+  which is not the same thing: MkDocs builds every page under `docs/`, and omitting
+  one from `nav` hides the menu entry while still publishing the page. They are now
+  excluded from the build itself, and a test asserts the built site contains none of
+  them. Found by running `mkdocs build --strict` for the first time.
+- The strict documentation build now passes with zero warnings, from eleven. Ten came
+  from plan documents linking to source files; the last was an onboarding link to the
+  project README, which does not exist on the published site. Links that leave the
+  site now point at the repository.
+- **Semantic queries now work with `catalog: null`.** A two-part model table such as
+  `gold.fact_orders` was always expanded to a three-part name, producing a literal
+  `None` catalog in local Spark SQL. The resolver now keeps the valid two-part name
+  when no catalog is configured. Found by executing the local semantic onboarding
+  example.
+- Unknown names rejected by the domain-aware semantic planner now include nearest
+  declared-name suggestions, matching the legacy single-model resolver's refusal
+  contract instead of returning only the complete available-name list.
+- **Certified publication now works in local mode.** It never had. Two distinct faults
+  hit the very first staging write: the staging FQN is deliberately built unquoted —
+  it is a stored identity, recorded in every run event — while the local writer only
+  parsed the backtick-quoted form; and `_skifer_staging` was never created,
+  because the engine ensures only the *target* schema and the staging area is an
+  implementation detail of publication. Plan 29 feature 1 was therefore unusable on
+  the documented development path, and the test suite missed it because those tests
+  use fake backends. Found by running a real pipeline as an example.
+- `SkiferEngine.backend` is now public. Building a `DataMonitor` is documented,
+  and the documentation instructed readers to reach into `engine._backend` in twelve
+  places across four pages — which quietly made renaming that attribute a breaking
+  change for everyone who followed the docs.
+- (Plan 29, slice 9.8) A scenario whose own code raises is now reported as `error`,
+  not as a governance `refused`. A crashed scenario has observed nothing — the system
+  did not refuse anything — and labelling it a refusal let a broken scenario wear the
+  costume of a governance decision, so a future scenario that legitimately expects a
+  refusal could have passed on a crash.
+- (Plan 29, slice 9.4) `precondition_hash` no longer hashes wall-clock time. It covered
+  the whole report, `evaluated_at` and each outcome's `observed_at` included, so the
+  hash changed on every re-evaluation even when the state and every verdict were
+  strictly identical. Since an approval is bound to that hash and the report is
+  re-evaluated immediately before execution, **an approval could never validate against
+  a fresh report** and supervised mode was unusable. A fixed test clock hid this
+  completely. The hash now covers what an approver actually approves — the rules, their
+  verdicts and the observed state — while the separate expiry check remains what bounds
+  how long an approval stays good.
+- (Plan 29, slice 9.2) Capability argument validation now stops at the bound it
+  declares. Reporting a breached `maxItems` and then descending into every element
+  bought the caller work proportional to what they sent rather than to the limit the
+  capability declared: 200k surplus items produced 200k error messages and an 8 MB
+  exception string, and 200k unknown keys did the same. An over-length array is now
+  refused without being walked, and the error list is capped at 32 entries plus an
+  explicit truncation notice. Arguments reach this boundary from the caller, so the
+  work they can buy is part of the attack surface.
+- (Plan 29, slice 9.1) The capability validator no longer crashes on a deeply nested
+  document. Nesting is a size, and section 8 of the plan requires sizes to be bounded:
+  without an explicit ceiling the recursive schema walk and the secret-key scan blew
+  the interpreter stack at a nesting depth of 497 under the default recursion limit —
+  a few kilobytes of YAML — and raised `RecursionError` instead of returning a verdict,
+  breaking the validator's own contract that only a wrong argument type may raise. A
+  document that crashes the validator is a document that was never validated, so the
+  refusal must be an answer rather than a crash. Input schemas are now bounded to 8
+  levels and documents to 16.
+- (Plan 29, slice 8.6) An unchanged zero-millisecond baseline is no longer reported
+  as a regression. `after >= before * (1 + ratio)` is satisfied by every
+  non-negative observation once the baseline is zero, so two identical windows of
+  sub-millisecond queries produced a `regressed` verdict and a human review
+  request — on exactly the queries an optimization made too fast to measure, and
+  while the same result's own reason line reported the ratio as improved. A zero
+  baseline is now compared against zero directly, reports `ratio=undefined`
+  instead of a misleading number, and can never read as improved.
+- (Plan 29, slice 8.6) `skifer adaptive evaluate` refuses a `--store` path that
+  does not exist instead of creating it. `sqlite3.connect()` creates the file it is
+  given, so a mistyped path produced an empty store, an `evidence_unavailable`
+  verdict indistinguishable from a genuine retention purge, exit code 0, and a
+  proposal moved to `measured` on a measurement that never ran.
+- (Plan 29, slice 8.4) Proposal artifacts now record paths relative to the proposals
+  root instead of absolute ones. An absolute path pinned a reviewed artifact to the
+  checkout that produced it: it broke as soon as a proposal was read elsewhere, wrote
+  the local filesystem layout — username included — into a file a human is meant to
+  read, and made two runs of identical content differ byte-for-byte even though the
+  `proposal_id` is content-derived. `ProposalGenerator.resolve()` turns a recorded
+  path back into a usable one and refuses anything absolute or escaping the root.
+- (Plan 29, slice 7.3) The MCP query tool now advertises the bounds its service
+  actually enforces. The input schema was built from the hard ceilings, so a service
+  configured with a tighter `ServiceLimits` promised agents up to 1000 rows and 50
+  filters while refusing anything above its own budget. The refusal was fail-closed,
+  but a schema that overstates what may be asked is one an agent cannot plan against.
+  `MCPTools` now derives its descriptor and its argument validation from
+  `service.limits`, and deliberately has no fallback when that budget is absent.
+- (Plan 29, slice 7.2) MCP resource discovery is now filtered by the caller's scopes.
+  `list_resources` and `list_resource_templates` took no request context at all, so an
+  agent holding no scope enumerated the whole governed surface and learned which scope
+  opened each endpoint — reconnaissance the plan's definition of done explicitly rules
+  out ("resources filtrées par scopes"). Both now require a `RequestContext`, the server
+  resolves the caller on every handler rather than only on read, and a non-context
+  argument fails closed instead of listing everything.
+- (Plan 29, slice 7.1) **SQL injection in Spark SQL string literals.** Doubling the
+  single quote is not sufficient: with Spark's default
+  `spark.sql.parser.escapedStringLiterals=false` a backslash escapes the next
+  character, so a value ending in `\` turned the closing quote into an escaped
+  quote and let the rest of the value be parsed as SQL. Reproduced against a real
+  local Spark session: `contract_id="x\\"` with `version=" OR 1=1 --"` returned every
+  row of `contract_definitions` instead of none. New `escape_sql_string()` in
+  `core/sql_compiler.py` doubles backslashes before quotes and is now used by
+  `sql_literal()` and by all ten interpolated literals in `core/spark_backend.py`.
+  The agent-reachable contract read added by this slice is what made the flaw
+  reachable from outside; the other sites shared the same pattern.
+- (Plan 29, slice 7.1) `AgentReadyDataService.get_contract` now shape-checks
+  `contract_id` and `version` at the boundary before they reach storage — they are
+  the only free text an external caller puts on a path that ends in SQL — and does
+  so before touching the certification store.
 - (Plan 29, slice 6.6) The planner now emits the exact mandatory fail-closed
   message for an `unknown` relationship cardinality, instead of prefixing it
   with a relationship name.
@@ -605,8 +602,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validated green with zero entities — an easy mistake to make since the
   *catalog summary* stores exactly that bare-name shape while a model must
   declare full mappings.
-
-### Fixed
 - (Plan 29, correctifs ultrareview 2 — merged_bug_001/bug_003) The
   preflight+recheck double-call to `enforce_certification_gate()` (`SemanticEngine.
   query()`/`create_view()`, `GenBIAgent._process()`/`_execute_query()`) no longer
@@ -695,29 +690,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract versions or authorized scopes.
 - (Plan 29, correctifs review Feature 3 — F02) Completed Delta certification reads for promoted status, history and check results, and wired a default SQLite certification store into agent and serving SemanticEngine entry points.
 - (Plan 29, correctifs review Feature 3) Corrected the semantic certification config example to keep governance keys at the environment root, moved `GenBIAgent` SQL printing after a successful certification gate, and fixed `SemanticEngine.certification_warning_count` so warn-mode queries increment once per logical request instead of once per recheck.
-
-### Added
-- (Plan 29, slice 6.1) Semantic models can now declare an optional domain
-  block with `grain`, typed `entities`, and directed `relationships`. The
-  validator parses and validates those fields with the same safe-identifier
-  boundary already enforced for dimensions/metrics, rejects unsupported join
-  types, rejects self-relations, and fails closed on `unknown` cardinality with
-  an explicit action to declare or certify uniqueness before querying. The
-  semantic catalog now stores only entity names and related model keys so
-  candidate discovery stays catalog-first and lazy without preloading full
-  model YAML files.
-- (Plan 29, slice 0.6) `SemanticBuilder` can now enrich a managed semantic
-  draft from a `ProjectedSchema` without letting the LLM invent or overwrite
-  structure. The deterministic draft remains the source of truth: post-LLM
-  filtering rejects invented dimensions, rejects any attempt to rename/retype/
-  redefine managed fields, rejects new metrics whose dependency is not an
-  existing projected output, and only admits descriptions, synonyms, and
-  bounded new metrics before running both `SemanticValidator.validate_yaml()`
-  and `validate_against_projection()`. The no-Spark end-to-end path is now
-  covered from pipeline YAML to draft, constrained fake-LLM enrichment,
-  promotion, lazy catalog loading, and final semantic validation.
-
-### Fixed
 - (Plan 29, correctifs ultrareview feature 0) The semantic catalog no longer
   churns between runs: auto-derived tags were built with `list(set(...))`, whose
   order varies with Python hash randomization, so `semantic_catalog.yaml` was
@@ -737,8 +709,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allowed to write — as well as hand-authored keys such as `tags` or
   `base_filter`, which made `--promote` refuse permanently after the first
   pipeline drift and broke the documented enrichment loop.
+- `tests/test_schema_loader.py`: `test_parse_schema_malformed_yaml_raises` had lost its `def` line, so its body ran at import time and the malformed-YAML case was never actually exercised as a test. Restored.
+- `core/json_schema.py`: the top-level `partials:` block (Plan 25) was never registered in the generated JSON Schema — with `additionalProperties: false`, any YAML using partials failed editor-side/`skifer validate` validation. Added `partials` property + `PartialDef`.
+- `ceil`, `between` and `not_between` now work on the Spark execution path: they were listed in the operator catalog but missing from the SparkBackend dispatch tables (their only implementations lived in the removed legacy modules), so a YAML `between:` filter raised "Unknown filter operator" at runtime.
+- `expr:`, `lit:`, `nvl:`, `coalesce:` and `when:` values containing commas are no longer truncated by IR parsing (e.g. `expr:concat(col1, '_x')` reaches Spark whole).
+- `in`/`not_in` filter values with leading/trailing spaces now log the same warning on the Spark path as the legacy string path did.
 
 ### Security
+
 - (Plan 29, slice 0.6) `SemanticValidator` now rejects dimension and metric
   names that are not plain SQL identifiers, and the LLM enrichment boundary
   rejects them before they are ever merged. `QueryResolver` interpolates those
@@ -843,41 +821,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON Schema is updated at the same time; schemas that do not use these blocks
   retain their existing behaviour.
 
-## [2.0.0] - 2026-08-03
+### Documentation
 
-
-### Added
-- (Plan 28) Documentation: `docs/core.md` gains two reference sections — "Declarative aggregations" and "Materialized views" (YAML surface, where the DDL runs and what happens when no warehouse is configured, the definition-hash decision table, full refresh, load-time guardrails) — plus cross-links from `run_process_to_table`; `docs/getting_started.md` documents `sql_warehouse_id` alongside `checkpoint_base`; `CLAUDE.md`/`AGENTS.md`/`README.md`/`docs/index.md` updated with the `aggregate:` block, the materialized-view surface and the `[databricks]` extra. Note: `docs/yaml_spec.md` was deliberately left alone — it documents the **semantic** model YAML (dimensions/metrics), not the pipeline YAML, whose reference is `docs/core.md`.
-- (Plan 28) New `[databricks]` optional extra declaring `databricks-sdk` — the SDK was imported by `core/environment.py` and `spark_factory.py` without ever being declared as a dependency (pre-existing gap). The import stays lazy, and a missing SDK is no longer indistinguishable from missing credentials: `get_workspace_client()` logs which of the two is wrong instead of swallowing both, and the materialized-view warehouse error names the install command. The extra is unnecessary on a Databricks runtime, where the SDK is pre-installed.
-- (Plan 28) Materialized-view execution — `run_process_to_table`/`run_from_yaml` now create the view end to end. `materialization: materialized_view` **short-circuits the DataFrame pipeline entirely** (no source is read): the schema is compiled to SQL, wrapped in `CREATE [OR REPLACE] MATERIALIZED VIEW … AS <select>` (clause order: clustering, `COMMENT`, `TBLPROPERTIES`, `SCHEDULE`) and executed on a SQL warehouse through the Statement Execution API — `CREATE MATERIALIZED VIEW` is refused by all-purpose clusters and by Databricks Connect, so the DDL never goes through `spark.sql` on Databricks. New `SparkBackend` primitives `execute_sql_on_warehouse` (with polling to a terminal state and a 30-min ceiling; failures re-raised enriched, never swallowed), `create_/refresh_/drop_materialized_view` and `get_table_property`. **Definition drift is detected**: a SHA-256 of the compiled SELECT *and* of the definition-bearing options (`schedule`, `comment`, `cluster_by`, `partition_by` — not `refresh`) is stored in `TBLPROPERTIES ('skifer.definition_hash')`; absent view → `CREATE`, identical hash → `REFRESH` (skipped under `refresh: never`, leaving it to the `SCHEDULE`), different or unreadable hash → `CREATE OR REPLACE`, so a changed YAML can never leave a stale view in place. Warehouse resolution (`engine.resolve_sql_warehouse_id`) reads `params.sql_warehouse_id` and **fails fast in job/production mode before any compilation** when it is missing; in interactive mode the DDL is written to `{sql_output_dir}/…​.sql` (default `generated_sql/`) with an explicit "NOT CREATED" warning naming the config key, and the post-create monitor is skipped since there is nothing to check. In local mode (`catalog: null`) there are no materialized views in Delta OSS, so the compiled SELECT is executed and persisted through the regular batch write — which also proves at every run that the generated SQL is valid. `engine.full_refresh(..., materialization="materialized_view")` drops the view (no checkpoint to purge); `run_process_and_split` and `run_union_sources_to_table` refuse materialized views with actionable messages, and `_write_dataframe` raises if a DataFrame ever reaches it under an MV materialization (third barrier). Sandbox resolution is shared with the DataFrame path via the extracted `SchemaInterpreter.resolve_source_table`, so both read exactly the same tables.
-- (Plan 28) Materialized-view YAML surface: `materialization: materialized_view` is now accepted (it was recognized-but-rejected since Plan 27), with the dict form `{schedule, comment, cluster_by, partition_by, refresh}` — `schedule` must start with `EVERY ` or `CRON `, `cluster_by`/`partition_by` are mutually exclusive (Databricks accepts one clustering strategy), and `refresh` is `auto` (default) or `never`. The `materialization` allowlist is now **per type** (`MATERIALIZATION_ALLOWED_KEYS` in `core/constants.py`) instead of a flat set, so streaming options can no longer be silently accepted on a materialized view (previously `checkpoint:` on `type: table` passed the allowlist and was caught only by a follow-up check). Load-time cross-validation aggregates every blocker in one error: `business_rules` (Python is not expressible in SQL — materialize upstream), `partials:`, file sources, loaders, `dev_limit` (table and schema level), JDBC sinks, `streaming: true`, `drop_duplicates_on`, `preprocess.qualify`, and `keep_all_columns` with a join or several tables. JSON Schema and `schemas/skifer-pipeline.schema.json` updated accordingly.
-- (Plan 28) `core/sql_compiler.py` (new): compiles a parsed schema (`parse_to_ir`) into a single `WITH … SELECT …` statement — one CTE per table alias (projection + filters + `filter_groups` OR-of-ANDs + `drop_nulls_in`), a join tree using `USING (…)` when key names match and `ON` otherwise, then `select_final` / `keep_all_columns` / `aggregate` as the final projection. Pure Python (no Spark, no catalog access); table names go through a caller-supplied `resolve_table` so sandbox resolution stays in one place. Identifiers are backtick-quoted and every value is emitted as an escaped SQL literal (filter values are never interpolated raw). `_SQL_FILTER_DISPATCH`/`_SQL_OP_DISPATCH` mirror the Spark dispatch tables key-for-key, enforced by drift-guard tests, and `expr:`/`sql:` remain subject to `allow_raw_sql`. Anything without a faithful SQL form raises `SqlCompilationError` instead of emitting approximate SQL: Python `business_rules`, `partials:`, loaders, file sources, streaming reads, `dev_limit`, `quality_checks.drop_duplicates_on` and `preprocess.qualify` (the last two would need a windowed `ROW_NUMBER` with a deterministic `ORDER BY` plus the full column list — neither `QUALIFY` nor `SELECT * EXCEPT` is available). Backed by parity tests that run both paths on a real local Spark session and compare rows.
-- (Plan 28) Declarative `aggregate:` block — a top-level `{group_by, measures, having}` mapping replaces the need to write a Python `kind="aggregation"` rule (and to hand-attach `agg_keys`) for ordinary GROUP BY work. Measures accept the compact `[source, target, func]` form or a `{source, target, func}` mapping; functions come from the new `AGGREGATE_FUNCTIONS` catalog in `core/op_catalog.py` (`sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `sum_distinct`, `approx_count_distinct`, `stddev`, `variance`, `first`, `last`, plus aliases such as `mean`), with `source: "*"` reserved to `count`. `having:` reuses the existing filter grammar and is validated against group keys and measure targets. The block is mutually exclusive with `select_final` and `keep_all_columns`, is rejected on streaming pipelines (load-time and run-time preflight — streaming aggregations need watermarks), and `add_columns` now runs *before* the aggregation so derived columns can feed `group_by`. New backend primitives `agg_expr`/`group_by_agg` (SparkBackend + FakeBackend, dispatch table kept in sync with the catalog by a drift-guard test), IR types `ParsedAggregate`/`ParsedMeasure` on `ParsedSchema.aggregate`, and `AggregateDef`/`MeasureEntry` in the JSON Schema (`schemas/skifer-pipeline.schema.json` regenerated).
-- (Plan 27) Engine wiring for streaming tables — `run_process_to_table`/`run_from_yaml` execute `materialization: streaming_table` end to end: the interpreter reads `streaming: true` tables via `read_table_stream`/`read_source_stream` (sandbox resolution unchanged), the checkpoint is resolved **before** any read (`engine.resolve_checkpoint_location`: explicit path verbatim; `auto` → local `{warehouse}/_checkpoints/{schema+suffix}/{table}` or the `checkpoint_base` env param on Databricks, with a fail-fast error naming the exact config key), and the write dispatches to `write_stream_table`. Run-time preflight rejects `intermediate_mode='table'`, `aggregation`-kind rules (with guidance toward downstream batch/materialized views) and re-checks limit/window incompatibilities for hand-built schema dicts. `run_process_and_split`/`run_union_sources_to_table` refuse streaming schemas with actionable messages. The post-write monitor still runs after `awaitTermination()` (complete data with `available_now`).
-- (Plan 27) `engine.full_refresh(target_layer, table)`: atomically purges the resolved checkpoint AND drops the target table so the next run re-ingests from scratch — prevents the half-purged state (duplicates or incomplete backfill).
-- (Plan 27) CDC Type 1 upsert for streaming tables: `write_stream_table(write_mode="upsert", keys=[...])` runs `foreachBatch` — each micro-batch is deduplicated on the merge keys (batch op, bounded state) then `MERGE INTO` the target (`matched → UPDATE SET *`, `not matched → INSERT *`). Cross-batch uniqueness is guaranteed by the target itself (no streaming state) and replayed micro-batches are idempotent (neutralizes foreachBatch's at-least-once semantics). First micro-batch creates the target if absent (local: path write + metastore registration; Databricks: `saveAsTable`). FakeBackend simulates last-write-wins per key.
-- (Plan 27) Streaming backend primitives in `SparkBackend`: `read_table_stream` (readStream.table), `read_source_stream` (delta/text only — schema-less formats rejected), `write_stream_table` (Delta append + checkpoint, `available_now`/`interval:` triggers, internal `awaitTermination()`, Connect-v2 failures re-raised with an actionable message — never swallowed) and `default_checkpoint_root()` (local: `{warehouse}/_checkpoints`; Databricks: None → explicit config required). `write_table` now rejects streaming DataFrames (the batch path's `isEmpty` guard would silently skip the write). Local twin `writer.write_stream_dataframe_local` registers the metastore entry only after termination and only if a `_delta_log` exists (zero-row first run → skip + warning). FakeBackend mirrors + `_streams` recorder; new `streaming` pytest marker; `.spark-warehouse/` added to `.gitignore` (pre-existing gap).
-- (Plan 27) IR carries the streaming surface: `ParsedTable.streaming` and `ParsedSchema.materialization` (descriptive — feeds `describe_schema`/lineage). JSON Schema gains the top-level `materialization` property (`MaterializationDef`: string shorthand or dict with `trigger`/`checkpoint`/`write_mode`/`keys`) and a `streaming` boolean on `TableDef`; `schemas/skifer-pipeline.schema.json` regenerated.
-- (Plan 27) Streaming-tables YAML surface: per-table `streaming: true` flag and top-level `materialization:` block (string shorthand or dict `{type, trigger, checkpoint, write_mode, keys}`; defaults `trigger: available_now`, `checkpoint: auto`, `write_mode: append`; `keys` required with `write_mode: upsert`). Load-time fail-fast validation of every streaming incompatibility (aggregated errors): strict bijection `streaming` ⇔ `materialization: streaming_table`, single streaming table per schema, stream-static joins restricted to `inner`/`left` with the stream as join base, streaming file sources restricted to `delta`/`text`, and rejections for `dev_limit`, `preprocess.qualify`, `drop_duplicates_on` (error guides to `write_mode: upsert`), loaders, JDBC sinks, `materialized_view`, and streaming inside `partials:` children. New constants `VALID_STREAMING_SOURCE_TYPES`, `VALID_MATERIALIZATION_TYPES`, `DEFAULT_STREAMING_TRIGGER` in `core/constants.py`. Execution wiring lands in later Plan 27 phases.
-- `scripts/release.py`: added a guarded release helper that bumps the package version, promotes the changelog, creates the release commit and tag, and pushes `main` plus the tag to trigger TestPyPI and PyPI.
-
-### Removed
-- **BREAKING** (Plan 26): removed the legacy non-Spark backends `skifer.backends.sql_base`, `skifer.backends.snowpark` and `skifer.backends.bigquery`, along with the `snowflake` and `bigquery` optional dependency extras. The product is Spark/Databricks-only; `pip install skifer[snowflake]` / `[bigquery]` are no longer available.
-- **BREAKING** (Plan 26): removed the `Backend` Protocol (`skifer.core.backend`), the `backend=` kwarg of `SkiferEngine.__init__`, the `capabilities` mechanism (SparkBackend property + `temp_view` gate on partials materialization) and the deprecated `_patch_connect_debugging`/`_patch_connect_user_context` engine shims. The engine is now Spark-native and always builds a `SparkBackend`; tests inject doubles via `engine._backend` (duck typing). `VALID_SOURCE_TYPES` moved to `skifer.core.constants` (old import path `skifer.core.backend` is gone).
-- **BREAKING** (Plan 26): removed the dead string-op module `core/operations.py` and the deprecated `SparkBackend.apply_operation` / `build_filter_expression` wrappers.
-
-### Changed
-- `core/json_schema.py`: the `source.type` enum is now derived from `VALID_SOURCE_TYPES` (single source of truth); `schemas/skifer-pipeline.schema.json` regenerated accordingly.
-- `core/interpreter.py`: the select path now goes through the IR (`apply_op` + `_parse_op`) instead of the deprecated string wrappers.
-- **BREAKING** (Plan 26): `SparkBackend` moved from `skifer.backends.spark` to `skifer.core.spark_backend`; the `backends/` package is gone. `SparkBackend` is now exported at package top level (`from skifer import SparkBackend`, lazily so Spark-less installs keep working).
-- `agentic/orchestrator.py`: the exporter now targets Spark/Databricks only — it emits a Databricks Asset Bundle, an Airflow DAG with the Databricks operator, or a Python script; the Snowflake/BigQuery Airflow branches are gone and `format="auto"` resolves to `script` for non-Spark/local backends.
-
-### Fixed
-- `tests/test_schema_loader.py`: `test_parse_schema_malformed_yaml_raises` had lost its `def` line, so its body ran at import time and the malformed-YAML case was never actually exercised as a test. Restored.
-- `core/json_schema.py`: the top-level `partials:` block (Plan 25) was never registered in the generated JSON Schema — with `additionalProperties: false`, any YAML using partials failed editor-side/`skifer validate` validation. Added `partials` property + `PartialDef`.
-- `ceil`, `between` and `not_between` now work on the Spark execution path: they were listed in the operator catalog but missing from the SparkBackend dispatch tables (their only implementations lived in the removed legacy modules), so a YAML `between:` filter raised "Unknown filter operator" at runtime.
-- `expr:`, `lit:`, `nvl:`, `coalesce:` and `when:` values containing commas are no longer truncated by IR parsing (e.g. `expr:concat(col1, '_x')` reaches Spark whole).
-- `in`/`not_in` filter values with leading/trailing spaces now log the same warning on the Spark path as the legacy string path did.
+- Added runnable examples 21–22 for Spark-free `AgenticHub` routing through the
+  dictionary and lineage agents, plus live `QualityAgent` checks that distinguish
+  failures from execution errors and persist two runs in disposable local history.
+- **Removed `example/`, the Jupyter notebook directory that nothing executed.** It held
+  the pre-Plan-33 version of the same idea as `examples/`, and having both invited the
+  question of which one to trust. Two of its seven notebooks imported
+  `skifer.backends.spark`, deleted by Plan 26, so they had stopped working
+  without anything noticing; the rest had not been run in months. Two published
+  documentation pages still sent readers to it, alongside the tested examples they had
+  just gained. Everything it demonstrated that no example covered is now covered.
+- Added runnable examples 19–20 so that removal loses nothing: static rule redundancy
+  analysis through both `RuleAnalyzer` and `engine.explain_rules()`, and offline
+  `BuilderAgent` drafting with its validation refusal and orchestration export. Example 20
+  prints the generated Airflow task body, which is a TODO scaffold — a DAG copied without
+  reading it schedules nothing and reports success.
+- (Plan 34, phase 6) Wired all eighteen runnable examples into their relevant feature
+  documentation and routed the getting-started next steps through the demonstrated output.
+- (Plan 34, phase 5) Added dependency-free runnable examples 16–18 for the scoped
+  read-only MCP boundary, explainable adaptive Gold proposals and review exit codes,
+  and exact approvals with idempotent capability execution and audited compensation.
+- (Plan 34, phase 4) Added Spark-free runnable examples 13–15 for deterministic
+  semantic projection and sync exit codes, domain-graph join planning with fanout and
+  calendar guardrails, and names-only GenBI interpretation through an offline stub provider.
+- (Plan 34, phase 3) Added locally runnable examples 10–12 for failed certified
+  publication with row-tagged quarantine, static lineage and data-dictionary output,
+  and dependency-free runtime tracing with redaction and exporter-failure isolation.
+- (Plan 34, phase 2) Added locally runnable examples 08–09 for materialized-view SQL
+  compilation and definition hashing without Spark, plus finite streaming-table runs that
+  reuse an automatic checkpoint and apply CDC type 1 upserts; both print real guardrail refusals.
+- (Plan 34, phase 1) Added locally runnable examples 05–07 for Python business rules,
+  joins and declarative aggregates, nested partials and their debug materialization modes,
+  and JSON sources shaped through grouped filters, a registered loader, development limits,
+  and pre-aggregation columns; each example also prints a real framework refusal.
+- (Plan 34, phase 0) The example suite now checks that each example still prints what its
+  README promises, not merely that it exits zero. An example that keeps running while
+  printing something else drifts without failing anything, which is the failure mode
+  documentation examples actually have. Every example gained a uniform
+  `What you should see` section, and each is still run in its own subprocess: a shared
+  process would let one pass because a previous one had started Spark or registered a
+  rule for it.
+- (Plan 33) Brought `CLAUDE.md` and `AGENTS.md` back in step with the code, as the release
+  checklist requires: the `docs` extra and the strict site build are listed among the
+  commands, Plan 29 is recorded as fully merged and Plan 33 added, and both files stated
+  that "all tests mock Spark" — which is false for 182 of them, and is precisely the
+  belief that let five defects ship on the documented local path.
+- (Plan 33) Added a `docs` optional dependency group. The repository has shipped an
+  MkDocs configuration and a release checklist requiring the site to be up to date,
+  while declaring neither MkDocs nor its theme anywhere — so nobody could build or
+  preview the documentation without guessing the toolchain. `pip install -e ".[docs]"`
+  now makes `mkdocs build --strict` runnable.
+- (Plan 33, phases C–D) Split MCP, supervised adaptive Gold, and governed
+  capabilities out of the conversational agentic guide; added an end-to-end
+  governance narrative; made every reader-facing documentation page reachable
+  through grouped MkDocs navigation; added a regression test for orphan pages;
+  and moved root-level workflow notes into `docs/contributing/`.
 
 ## [1.4.1] - 2026-07-02
 

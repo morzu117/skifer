@@ -295,7 +295,7 @@ L'extra `spark` ajoute PySpark et Delta, nécessaires pour exécuter un pipeline
 ### Épingler une version
 
 ```bash
-pip install "skifer[spark]==2.0.0"
+pip install "skifer[spark]==2.1.0"
 ```
 
 ### Installer un état de développement
@@ -344,12 +344,12 @@ version = "0.1.0"
 requires-python = ">=3.9"
 
 dependencies = [
-    "skifer[spark]>=2.0.0",
+    "skifer[spark]>=2.1.0",
     "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
-llm = ["skifer[spark,llm-anthropic]>=2.0.0"]
+llm = ["skifer[spark,llm-anthropic]>=2.1.0"]
 dev = ["pytest", "ruff", "jupyter"]
 ```
 

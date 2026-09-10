@@ -25,7 +25,7 @@ cluster, with no `%pip install` line in the notebooks themselves.
 3. Open the **Libraries** tab.
 4. Click **Install new**.
 5. Select **PyPI** as the source.
-6. Enter `skifer` as the package name, or `skifer==2.0.0` to pin a version.
+6. Enter `skifer` as the package name, or `skifer==2.1.0` to pin a version.
 7. Click **Install**.
 8. **Restart the cluster** for the library to take effect.
 
@@ -50,7 +50,7 @@ dbutils.library.restartPython()
 To pin a version:
 
 ```python
-%pip install skifer==2.0.0
+%pip install skifer==2.1.0
 dbutils.library.restartPython()
 ```
 
@@ -64,7 +64,7 @@ dbutils.library.restartPython()
 ```python
 import skifer
 
-print(skifer.__version__)   # e.g. 2.0.0
+print(skifer.__version__)   # e.g. 2.1.0
 ```
 
 ---
