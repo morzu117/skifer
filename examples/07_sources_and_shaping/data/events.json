@@ -1,0 +1,6 @@
+{"event_id": "E-1001", "event_date": "2026-01-14", "region": "EMEA", "channel": "web", "segment_code": "A", "amount": 120}
+{"event_id": "E-1002", "event_date": "2026-01-22", "region": "APAC", "channel": "store", "segment_code": "B", "amount": 80}
+{"event_id": "E-1003", "event_date": "2026-02-03", "region": "EMEA", "channel": "web", "segment_code": "B", "amount": 300}
+{"event_id": "E-1004", "event_date": "2026-01-19", "region": "EMEA", "channel": "store", "segment_code": "A", "amount": 999}
+{"event_id": "E-1005", "event_date": "2026-02-11", "region": "APAC", "channel": "web", "segment_code": "B", "amount": 999}
+{"event_id": "E-1006", "event_date": "2026-02-25", "region": "LATAM", "channel": "web", "segment_code": "A", "amount": 999}

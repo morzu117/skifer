@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raising, which keeps `PYTHONPATH=src` imports working.
 
 ### Fixed
+- **Restored `examples/07_sources_and_shaping/data/events.json`, which the repository
+  never contained.** `.gitignore` carried a blanket `*.json` with exceptions for `schemas/`
+  and `features/` but not for `examples/`, so the dataset the example reads was silently
+  dropped — while the example's own docstring says "the JSON is checked in". The exception
+  is added, and the example runs again. Its filter now keeps exactly three rows, so
+  `dev_limit: 3` no longer trims: the printed result cannot depend on partition ordering.
 - **`requires-python` is now `>=3.10`.** The package claimed `>=3.9`, but `import skifer`
   raised `TypeError` on 3.9: `schema_loader.py` uses PEP 604 unions in annotations
   evaluated at definition time, and `evidence.py` uses `dataclass(kw_only=True)`, which is
