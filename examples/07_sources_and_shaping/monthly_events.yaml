@@ -1,0 +1,30 @@
+tables:
+  - name: raw_events
+    alias: events
+    source:
+      type: json
+      path: "{{ example_dir }}/data/events.json"
+    # (EMEA AND web) OR (APAC AND store): the groups are ORed, each group is ANDed.
+    filter_groups:
+      - ["region:equals:EMEA", "channel:equals:web"]
+      - ["region:equals:APAC", "channel:equals:store"]
+    dev_limit: 3
+  - name: segment_labels
+    alias: segments
+    source_type: loader
+    function_name: load_segment_labels
+
+join:
+  - table_from: [events, segment_code]
+    table_to: [segments, segment_code]
+    type: inner
+
+# This column is made before aggregation, so it is legal to group by it below.
+add_columns:
+  - [event_date, event_month, ["substring:1,7"]]   # quoted: unquoted, YAML reads two items
+
+aggregate:
+  group_by: [event_month, segment_name]
+  measures:
+    - [amount, total_amount, sum]
+    - [event_id, event_count, count]

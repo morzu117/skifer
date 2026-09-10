@@ -1,0 +1,13 @@
+tables:
+  - name: raw_orders
+    alias: ord
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/orders.csv"
+      options: {header: "true", inferSchema: "true"}
+
+# `join_customer_id` exists only after this Python rule runs.
+business_rules:
+  - normalize_customer_key
+
+keep_all_columns: true

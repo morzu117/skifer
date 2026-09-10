@@ -1,0 +1,42 @@
+# The same pipeline, now declaring what it promises.
+#
+# `data_product` opts this table into certified publication: the engine stages
+# the result, runs the contract checks against it, and only then promotes it —
+# or quarantines it and leaves the previous version in place.
+
+data_product:
+  id: sales.fact_orders
+  version: 1.0.0
+  owner: data-platform
+  description: "Consolidated orders, one row per order"
+
+contract:
+  grain: [order_id]
+  output:
+    order_id:     {logical_type: string,  required: true, unique: true}
+    customer_id:  {logical_type: string,  required: true}
+    region:       {logical_type: string}
+    amount_eur:   {logical_type: decimal, required: true}
+    order_date:   {logical_type: date}
+
+tables:
+  - name: raw_orders
+    alias: ord
+    source:
+      type: csv
+      path: "{{ example_dir }}/../01_first_pipeline/data/orders.csv"
+      options:
+        header: "true"
+        inferSchema: "true"
+    filter:
+      - "status:not_equals:CANCELLED"
+      - "amount:is_not_null"
+    quality_checks:
+      drop_duplicates_on: [order_id]
+
+select_final:
+  - [order_id, order_id, [cast:string]]
+  - [customer_id, customer_id]
+  - [region, region]
+  - [amount, amount_eur, [cast:double, round:2]]
+  - [order_date, order_date, [to_date:yyyy-MM-dd]]

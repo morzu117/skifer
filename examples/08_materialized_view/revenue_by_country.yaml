@@ -1,0 +1,20 @@
+# A materialized view is a persisted SQL definition. Every construct here can
+# therefore be compiled without importing or starting Spark.
+
+materialization:
+  type: materialized_view
+  schedule: "EVERY 6 HOURS"
+  comment: "Completed revenue by country"
+  cluster_by: [country]
+
+tables:
+  - name: silver.orders
+    alias: orders
+    filter:
+      - "status:equals:COMPLETED"
+
+aggregate:
+  group_by: [country]
+  measures:
+    - [amount, total_revenue, sum]
+    - [order_id, order_count, count]

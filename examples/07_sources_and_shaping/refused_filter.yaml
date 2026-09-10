@@ -1,0 +1,10 @@
+tables:
+  - name: raw_events
+    alias: events
+    source:
+      type: json
+      path: "{{ example_dir }}/data/events.json"
+    filter:
+      - "region:equalz:EMEA"
+
+keep_all_columns: true

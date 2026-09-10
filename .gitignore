@@ -1,0 +1,87 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+.pip-cache/
+.brain-runtime/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.pip-cache/
+
+# Spark / Databricks
+spark-warehouse/
+.spark-warehouse/
+metastore_db/
+derby.log
+*.crc
+*.parquet
+*.json
+!schemas/*.json
+!features/**/*.json
+_SUCCESS
+/memory/feedback_workflow.md
+/memory/MEMORY.md
+/example/rapport_demo.pdf
+/.skifer_user
+/.skifer_proposals/
+/.skifer_adaptive.db
+
+# gstack / gbrain
+/.gbrain-source
+# gbrain `put` write-through mirror files (page-id contains a colon)
+*:*.md
+
+# MkDocs generated site
+/site/
+.skifer_observability.db
+claude_max_justification.txt

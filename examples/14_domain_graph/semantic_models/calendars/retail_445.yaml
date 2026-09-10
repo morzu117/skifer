@@ -1,0 +1,6 @@
+key: retail_445
+version: "2025.1"
+periods:
+  - name: FY2025_H1
+    start: "2025-02-01"
+    end: "2025-07-31"

@@ -1,0 +1,23 @@
+models:
+  - name: order_lines
+    key: order_lines
+    description: Order-line detail
+    layer: gold
+    table: gold.order_lines
+    grain: [line]
+    dimensions:
+      - {name: line_sku, sql: sku, type: string}
+    metrics:
+      - {name: line_revenue, sql: line_amount, type: sum}
+    entities:
+      - {name: line, type: primary, key: line_id}
+      - {name: order, type: foreign, key: order_id}
+      - {name: customer, type: foreign, key: customer_id}
+    relationships:
+      - name: lines_customers_unbridged
+        from_entity: customer
+        to_model: customers
+        to_entity: customer
+        cardinality: many_to_many
+        join_type: inner
+        verified_by_contract: true

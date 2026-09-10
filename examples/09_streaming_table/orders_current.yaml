@@ -1,0 +1,16 @@
+materialization:
+  type: streaming_table
+  trigger: available_now
+  checkpoint: auto
+  write_mode: upsert
+  keys: [order_id]
+
+tables:
+  - name: raw_orders
+    alias: orders
+    streaming: true
+    source:
+      type: delta
+      path: "{{ source_path }}"
+
+keep_all_columns: true

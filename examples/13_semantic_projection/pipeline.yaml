@@ -1,0 +1,28 @@
+# The table contract and its semantic seed change together. The managed model
+# is projected from this file; it is not maintained as a second hand-written
+# description after the table has shipped.
+
+data_product:
+  id: sales.orders_summary
+  version: 1.0.0
+  description: Orders by country
+
+contract:
+  grain: [country]
+  output:
+    country: {logical_type: string, description: Order country}
+    orders: {description: Distinct orders}
+
+semantic:
+  model_key: orders_summary
+  entity: order
+
+tables:
+  - name: silver.orders
+
+aggregate:
+  group_by: [country]
+  measures:
+    - [order_id, orders, count_distinct]
+
+sink: {type: delta, schema: gold, table: orders_summary}

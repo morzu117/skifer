@@ -1,0 +1,73 @@
+site_name: Skifer
+site_description: Declarative Data Engineering + Semantic BI + Agentic NL Query — Spark/Databricks lakehouse.
+site_author: Julien Houbart
+
+theme:
+  name: material
+  logo: assets/logo_circle.png
+  favicon: assets/logo_circle.png
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - toc.integrate
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Getting Started: getting_started.md
+      - Local Sandbox Project Bootstrap: sandbox_project_bootstrap.md
+      - Databricks Installation: install_databricks.md
+  - Building pipelines:
+      - Core Engine: core.md
+      - Business Rules: rules.md
+      - Lineage & Dictionary: lineage.md
+      - Data Observability: observability.md
+  - Semantic & agentic:
+      - Semantic Layer: semantic.md
+      - Agentic Layer: agentic.md
+  - Governance:
+      - End-to-end Governance: governance.md
+      - Read-only MCP: mcp.md
+      - Supervised Adaptive Gold: adaptive.md
+      - Governed Capabilities: capabilities.md
+  - Reference:
+      - YAML Model Reference: yaml_spec.md
+      - API Reference: api_reference.md
+  - Contributing:
+      - Workflow Bootstrap: contributing/init.md
+
+# Working artifacts stay in the repository but off the published site: implementation
+# plans, point-in-time reviews, and past workflow handoffs. Excluding them from the
+# build is what unpublishes them — omitting a page from `nav` only hides the menu
+# entry, it still ships the page at its own URL.
+exclude_docs: |
+  roadmap/
+  reviews/
+  ROADMAP_EVOLUTION.md

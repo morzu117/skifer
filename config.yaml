@@ -1,0 +1,52 @@
+# Skifer — project configuration
+#
+# The engine auto-discovers this file by walking up from the working directory.
+# You can also pass config_path= explicitly to SkiferEngine().
+#
+# Environment detection order (priority_check):
+#   1. Each entry is tried in order; the first accessible catalog wins.
+#   2. A null catalog (LOCAL) is always accessible — selected immediately.
+#   3. If all Databricks catalogs fail, 'default_env' is used as final fallback.
+
+# Fallback when no Databricks catalog is reachable (e.g. working offline)
+default_env: LOCAL
+
+# Order in which environments are tried at startup
+priority_check:
+  - DEV
+  - QA
+  - PROD
+  - LOCAL
+
+environments:
+
+  # ── Local development ───────────────────────────────────────────────────────
+  # No Databricks cluster required.
+  # Spark runs in local[*] mode with Delta Lake and Derby embedded metastore.
+  # Tables are stored under .spark-warehouse/ in the working directory.
+  LOCAL:
+    catalog: null           # null = no Unity Catalog, triggers local mode
+    is_production: false
+
+  # ── Databricks environments ──────────────────────────────────────────────────
+  # Fill in the catalog names that match your Unity Catalog setup.
+  # DATABRICKS_HOST / DATABRICKS_TOKEN / DATABRICKS_CLUSTER_ID must be set
+  # in a .env file (or environment) for Databricks Connect to work from an IDE.
+  DEV:
+    catalog: "my_dev_catalog"
+    is_production: false
+    # Optional: default YAML template params for this environment.
+    # Merged into engine.default_params, so notebooks can run templated schemas
+    # ({{ key }}) without passing storage paths. Explicit params passed to
+    # run_from_yaml(params=...) override these; built-in catalog/env always win
+    # on key collision.
+    # params:
+    #   inbound_base_path: "/Volumes/my_dev_catalog/demo_schema/inbound"
+
+  QA:
+    catalog: "my_qa_catalog"
+    is_production: false
+
+  PROD:
+    catalog: "my_prod_catalog"
+    is_production: true

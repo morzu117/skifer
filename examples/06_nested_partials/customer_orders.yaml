@@ -1,0 +1,26 @@
+partials:
+  - alias: prepared_orders
+    path: _partials/prepared_orders.yaml
+
+tables:
+  - name: raw_customers
+    alias: customers
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/customers.csv"
+      options: {header: "true", inferSchema: "true"}
+
+# The parent joins directly to the column made inside the child rule. No child
+# table is needed: the partial exposes its DataFrame under `prepared_orders`.
+join:
+  - table_from: [prepared_orders, join_customer_id]
+    table_to: [customers, customer_id]
+    type: inner
+
+# `join_customer_id` was made by the child's Python rule and is still here in the
+# final output. The join consumed the customers' own `customer_id`.
+select_final:
+  - [order_id, order_id]
+  - [join_customer_id, customer_key]
+  - [customer_name, customer_name]
+  - [amount, amount]

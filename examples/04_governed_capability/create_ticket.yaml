@@ -1,0 +1,26 @@
+id: support.create_ticket
+version: 1.0.0
+owner: support-platform
+description: Propose a support ticket without contacting a ticketing system
+mode: write
+executor: example_create_ticket
+acting_as: delegated_user
+required_scopes: [tickets:create]
+input_schema:
+  type: object
+  additionalProperties: false
+  required: [request_id, description]
+  properties:
+    request_id:
+      type: string
+      maxLength: 64
+    description:
+      type: string
+      maxLength: 200
+preconditions: []
+reversibility: reversible
+approval: guarded
+idempotency_key: request_id
+provenance:
+  policy_uri: policies/support-ticket-v1.md
+  policy_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

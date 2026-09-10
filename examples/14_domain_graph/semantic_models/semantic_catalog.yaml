@@ -1,0 +1,22 @@
+models:
+  - key: orders
+    file: orders.yaml
+    description: Order revenue
+    dimensions: [order_date, status]
+    metrics: [revenue]
+    entities: [order, customer]
+    related_models: [customers, order_lines]
+  - key: customers
+    file: customers.yaml
+    description: Customer attributes
+    dimensions: [segment]
+    metrics: [customer_count]
+    entities: [customer]
+    related_models: []
+  - key: order_lines
+    file: order_lines.yaml
+    description: Order-line detail
+    dimensions: [line_sku]
+    metrics: [line_revenue]
+    entities: [line, order, customer]
+    related_models: [customers]

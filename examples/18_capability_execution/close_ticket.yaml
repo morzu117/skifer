@@ -1,0 +1,26 @@
+id: support.close_ticket
+version: 1.0.0
+owner: support-platform
+description: Compensate ticket creation in the local fake external system
+mode: write
+executor: example_compensate_ticket
+acting_as: delegated_user
+required_scopes: [tickets:close]
+input_schema:
+  type: object
+  additionalProperties: false
+  required: [original_request_hash, reason]
+  properties:
+    original_request_hash:
+      type: string
+      maxLength: 80
+    reason:
+      type: string
+      maxLength: 256
+preconditions: []
+reversibility: reversible
+approval: guarded
+idempotency_key: original_request_hash
+provenance:
+  policy_uri: policies/support-ticket-v1.md
+  policy_hash: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

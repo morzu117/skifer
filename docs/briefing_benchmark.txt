@@ -1,0 +1,478 @@
+================================================================================
+NOTE (29 juillet 2026) — Document historique. Les mentions multi-backend
+(Snowflake, BigQuery, sql_base) ci-dessous sont obsoletes : depuis le Plan 26,
+le produit est exclusivement Spark/Databricks (SparkBackend unique).
+================================================================================
+
+================================================================================
+SKIFER — BRIEFING BENCHMARK
+Préparé le 22 avril 2026
+================================================================================
+
+NOTE 2026-07-02 — ARCHIVE OBSOLETE
+Ce briefing conserve l'historique de réflexion, notamment les pistes
+multi-plateforme Snowflake/BigQuery. Le focus produit courant est désormais
+la stabilisation Spark/Databricks uniquement : Databricks Lakehouse en
+production, Databricks Connect ou local PySpark/Delta en développement.
+Ne pas utiliser ce document comme source de vérité pour la roadmap active.
+
+
+1. QU'EST-CE QUE SKIFER ?
+================================================================================
+
+Skifer est un framework Python de data engineering déclaratif.
+L'idée centrale : décrire les pipelines de données (Bronze → Silver → Gold)
+en YAML, et déléguer les règles métier à un registre Python.
+
+Philosophie fondatrice : le QUOI (YAML) est strictement découplé du COMMENT
+(code Python dans le RuleRegistry). L'utilisateur définit sa logique métier
+dans un fichier YAML sans jamais écrire de code Spark/SQL manuellement.
+
+Origine : framework conçu d'abord pour Databricks Lakehouse (PySpark, Delta
+Lake, Unity Catalog). La stabilisation actuelle revient sur ce périmètre
+Spark/Databricks unique.
+
+
+2. PHILOSOPHIE ET PRINCIPES DE CONCEPTION
+================================================================================
+
+2.1 Déclaratif avant tout
+--------------------------
+Le développeur décrit QUOI faire, pas COMMENT. Un fichier YAML contient :
+- Les sources (tables à lire)
+- Les filtres et conditions de qualité
+- Les jointures
+- Les transformations (select_final, add_columns)
+- Les règles métier à appliquer (références vers le RuleRegistry)
+
+Exemple YAML minimal :
+
+  tables:
+    - name: "{{ catalog }}.silver.orders"
+      alias: ord
+      filter:
+        - "region:equals:EMEA"
+        - "status:in:ACTIVE,PENDING"
+      quality_checks:
+        drop_duplicates_on: [order_id]
+        drop_nulls_in: [amount]
+
+  join:
+    - table_from: [ord, customer_id]
+      table_to: [cust, id]
+      type: left
+
+  business_rules:
+    - flag_high_value
+
+  select_final:
+    - [amount, amount_eur, [cast:double, round:2]]
+    - [literal:ERP, source_system]
+
+2.2 Règles métier en Python pur
+---------------------------------
+Les transformations complexes (non exprimables en YAML) restent en Python,
+enregistrées dans le RuleRegistry via un décorateur :
+
+  @RuleRegistry.register_rule()
+  def flag_high_value(df):
+      return df.withColumn("is_high_value",
+          F.when(F.col("amount") >= 1000, 1).otherwise(0))
+
+Les règles sont découplées du YAML : elles peuvent être réutilisées dans
+n'importe quel pipeline.
+
+2.3 Injection de paramètres
+----------------------------
+Les YAML supportent une injection de paramètres lightweight ({{ key }}) sans
+dépendance Jinja2. Utile pour paramétrer catalog, env, région...
+
+2.4 Smart Sandbox
+------------------
+En mode développement (non-prod, non-job), les tables source se résolvent
+automatiquement vers une copie sandbox (schema_XXXX.table). Les tables
+manquantes sont clonées depuis le schéma principal (SHALLOW CLONE sur
+Databricks, CTAS en local). Aucun code spécifique côté développeur.
+
+2.5 Gouvernance intégrée
+--------------------------
+- Flag allow_raw_sql par environnement dans config.yaml : désactiver le SQL
+  brut en PROD pour éviter les injections.
+- Filtres canoniques (equals, in, is_not_null...) sans SQL string.
+- describe_schema() : dry-run sans exécution Spark.
+
+
+3. ARCHITECTURE TECHNIQUE ACTUELLE
+================================================================================
+
+3.1 Structure des modules
+--------------------------
+
+  src/skifer/
+    core/
+      core.py          → SkiferEngine — point d'entrée principal
+      config.py        → ConfigurationManager (détection LOCAL/DEV/QA/PROD)
+      loaders.py       → Loaders Delta intégrés
+      registry.py      → RuleRegistry (@register_rule, @register_loader)
+      sandbox.py       → SandboxResolver (résolution transparente)
+      schema_loader.py → load_schema(), parse_schema() — YAML → dict normalisé
+      backend.py       → Backend Protocol (contrat d'interface)
+      operations.py    → _apply_operation, _build_filter_expression
+      environment.py   → Détection Databricks, patches gRPC
+      writer.py        → Écriture Delta, gestion schémas
+
+    backends/
+      spark.py         → SparkBackend (PySpark/Databricks) — STABLE
+      snowpark.py      → SnowparkBackend (Snowflake) — STABLE (56 tests)
+      bigquery.py      → BigQueryBackend (Google BigQuery) — STABLE (30 tests)
+      sql_base.py      → SQLBackend (classe de base SQL-only) — STABLE (110 tests)
+
+    semantic/
+      builder.py       → SemanticBuilder (génération YAML via LLM)
+      semantic.py      → SemanticEngine (catalog-first, lazy-load)
+      validator.py     → SemanticValidator
+      extractor.py     → NotebookExtractor, RuleInspector
+      glossary.py      → GlossaryReader (JSON/YAML/TXT/PDF/PPTX)
+      llm_provider.py  → LLMProvider ABC + factory (OpenAI, Anthropic, Google)
+
+    agentic/
+      agent.py         → GenBIAgent (pipeline LLM 2 étapes)
+      resolver.py      → QueryResolver (SQL déterministe, zéro hallucination)
+      models.py        → AgentResponse, FormattedResult, ResponseFormat
+      history.py       → SessionHistory + HistoryEntry
+      exporter.py      → HistoryExporter → PDF (fpdf2)
+
+    spark_factory.py   → Détection auto session (Databricks > Connect v2 > local)
+    utils.py           → safe_columns et autres helpers
+
+3.2 Couche sémantique (SemanticEngine)
+----------------------------------------
+Permet de définir des modèles sémantiques YAML (métriques, dimensions,
+filtres par défaut) pour interroger les données en langage naturel sans
+écrire de SQL. Architecture catalog-first, lazy-loading (O(1) au démarrage).
+
+  semantic_catalog.yaml : index de tous les modèles (mis à jour automatiquement)
+  semantic_models/*.yaml : définitions complètes chargées à la demande
+
+3.3 Couche agentique (GenBIAgent)
+-----------------------------------
+Pipeline LLM en 2 étapes :
+  Étape A : sélection du modèle sémantique depuis le catalogue compact (~500 tokens)
+  Étape B : traduction en SemanticQuery (JSON structuré)
+Puis QueryResolver (déterministe, zéro LLM) valide et construit le SQL.
+
+Zéro SQL halluciné : seuls les noms définis dans les YAML sémantiques sont
+acceptés. Les noms inconnus lèvent une SemanticQueryError avec suggestions
+Levenshtein.
+
+Support multi-LLM : OpenAI, Anthropic, Google Gemini (auto-détecté depuis les
+variables d'environnement).
+
+3.4 Abstraction multi-plateforme (en cours — branche multi_plateforme)
+------------------------------------------------------------------------
+Voir section 5.
+
+
+4. OPÉRATEURS ET CAPACITÉS YAML
+================================================================================
+
+4.1 Opérateurs de filtre
+--------------------------
+equals, not_equals, greater_than, less_than, greater_than_equal,
+less_than_equal, in, not_in, contains, not_contains, starts_with, ends_with,
+is_null, is_not_null, like, not_like, sql (désactivable par env)
+
+4.2 Opérations select_final
+-----------------------------
+cast:type, upper, lower, trim, round:N, abs, length, to_date:fmt,
+nvl:val, coalesce:val, lit:val, expr:sql, split:sep,idx, substring:start,len,
+when:op:val, then:..., else:...
+
+4.3 Structures YAML avancées
+------------------------------
+- filter_groups : OR de groupes AND (flexibilité logique complète)
+- keep_all_columns + add_columns : altnatif à select_final
+- dev_limit : limit N en mode non-prod (ignoré en job/prod)
+- quality_checks : drop_duplicates_on, drop_nulls_in
+- when/else chaîné en dict form dans select_final
+- sandbox.missing_table : copy | error
+
+
+5. MIGRATION MULTI-PLATEFORME (état au 22 avril 2026)
+================================================================================
+
+5.1 Contexte
+-------------
+Le framework était initialement couplé à PySpark/Databricks dans tout le
+core. La migration en cours découple le moteur via un Backend Protocol.
+
+5.2 Architecture Backend Protocol
+-----------------------------------
+Un seul protocole Python (typing.Protocol, @runtime_checkable) définit le
+contrat complet. Deux familles d'implémentation :
+
+  Famille 1 — Plateformes à DataFrame API :
+    SparkBackend   → PySpark/Databricks (SHALLOW CLONE, OPTIMIZE ZORDER)
+    SnowparkBackend → Snowflake Snowpark (CREATE TABLE CLONE zero-copy)
+    (FabricBackend → prévu, API PySpark identique)
+
+  Famille 2 — Plateformes SQL-only (via SQLBackend classe de base) :
+    BigQueryBackend → google-cloud-bigquery (backtick FQN, QUALIFY)
+    (RedshiftBackend → prévu, effort marginal)
+    (SynapseBackend → prévu)
+
+  FakeBackend (Python pur, sans dépendance) → utilisé dans les tests.
+
+5.3 Gestion des capacités (capabilities)
+------------------------------------------
+Chaque backend déclare ses capacités :
+  SparkBackend     : {"optimize", "zorder", "shallow_clone", "cache", "window"}
+  SnowparkBackend  : {"clustering", "zero_copy_clone", "cache_result", "window"}
+  BigQueryBackend  : {"qualify", "window", "clustering", "select_except"}
+
+L'engine utilise les capabilities pour adapter le comportement. Règle :
+  - required  : must-have, le backend n'est pas conforme s'il manque
+  - best-effort : stratégie alternative, logged clairement
+  - optional  : no-op avec log si non supporté
+
+5.4 Compatibilité ascendante totale
+-------------------------------------
+SkiferEngine() sans argument crée automatiquement un SparkBackend.
+Les utilisateurs Databricks existants ne changent rien.
+Passage à un autre backend : SkiferEngine(backend=SnowflakeBackend(session))
+
+5.5 État des implémentations
+------------------------------
+  SparkBackend    : production-ready, tests complets
+  SnowparkBackend : 56 tests unitaires, session Snowpark entièrement mockée
+  BigQueryBackend : 30 tests, client BigQuery entièrement mocké
+  SQLBackend      : 110 tests purs Python (SQLColumn, SQLCondition, SQLQuery)
+  FakeBackend     : 16 tests prouvant le découplage réel (zéro import PySpark)
+
+  Total : 509 tests passent à ce jour.
+
+5.6 SQLBackend — architecture technique
+-----------------------------------------
+Pour les plateformes SQL-only, une infrastructure de query builder lazy est
+implémentée :
+  SQLColumn    → fragment SQL avec opérateurs Python (==, !=, >, ~, .alias()...)
+  SQLCondition → condition booléenne SQL (&, |, ~)
+  SQLWhenExpr  → CASE WHEN … END chaînable
+  SQLQuery     → lazy query builder immutable (clone pattern). Le SQL n'est
+                 matérialisé qu'à write_table/count.
+
+Différence clé vs DataFrame backends : pas de re-matérialisation intermédiaire,
+le SQL complet est envoyé en une fois au moteur cible.
+
+
+6. INSTALLATION ET DÉPENDANCES
+================================================================================
+
+Installation minimale (sans Spark) :
+  pip install skifer
+
+Avec PySpark/Databricks :
+  pip install skifer[spark]
+
+Avec Snowflake :
+  pip install skifer[snowflake]
+
+Avec BigQuery :
+  pip install skifer[bigquery]
+
+Avec support LLM :
+  pip install skifer[llm-anthropic]   # ou llm-openai, llm-google
+
+Version Python : >= 3.9
+Version actuelle : 0.9.0 (prochaine : 1.0 — core 100% agnostique)
+
+
+7. ROADMAP — 5 PISTES D'ÉVOLUTION
+================================================================================
+
+Ces pistes sont documentées dans docs/roadmap/. Elles définissent la vision
+produit à moyen terme.
+
+PISTE 1 — Abstraction multi-plateforme (PRIORITÉ 1/5)
+  Statut : en cours (branche multi_plateforme)
+  Prérequis structurel pour toutes les autres pistes.
+  Backend Protocol + SparkBackend + SnowparkBackend + BigQueryBackend.
+  Prochains backends : Redshift, Azure Synapse/Fabric.
+  Architecture long terme : monorepo avec packages séparés
+    skifer           (core — zéro dépendance plateforme)
+    skifer-spark     (connecteur PySpark/Databricks)
+    skifer-snowflake (connecteur Snowflake)
+    skifer-bigquery  (connecteur BigQuery)
+
+PISTE 2 — Client graphique (PRIORITÉ 5/5)
+  Statut : réflexion initiale
+  Vision : outil visuel (React + TypeScript) + API FastAPI réutilisant
+  directement Skifer. Construction YAML par drag & drop, canvas
+  de tables/jointures, Rule Wizard (génération de règles Python sans code),
+  preview/dry-run via describe_schema(), export YAML + Python.
+  Packaging : Electron (desktop) ou webapp.
+
+PISTE 3 — Lineage & dictionnaire de données (PRIORITÉ 2/5)
+  Statut : réflexion initiale
+  Lineage statique dérivé des YAML sans exécution Spark :
+    - select_final → edges source → cible avec transformations
+    - join → edges sur les clés
+    - business_rules → analyse statique AST ou convention déclarative
+    - modèles sémantiques → métriques SQL
+  Rendu Mermaid / D3.js / JSON. DataDictionary avec sampling distinct.
+  Intégration GlossaryReader pour la définition métier.
+  Différenciateur : le lineage vient du YAML qui est déjà le source of truth.
+
+PISTE 4 — Hub agentique (PRIORITÉ 4/5)
+  Statut : réflexion initiale
+  Extension du GenBIAgent existant vers un hub unifié :
+    GenBIAgent       : questions KPI en langage naturel (existant)
+    LineageAgent     : "d'où vient ce champ ?"
+    QualityAgent     : "cette table est-elle saine ?"
+    BuilderAgent     : "crée un YAML pour joindre orders et customers"
+    DictionaryAgent  : "que signifie gross_revenue ?"
+  Routage : déterministe (mots-clés) ou LLM-assisted (classification d'intent).
+  Historique unifié, export PDF.
+
+PISTE 5 — Data observability (PRIORITÉ 3/5)
+  Statut : réflexion initiale
+  Différenciateur principal vs Great Expectations / Soda / Monte Carlo :
+  les YAML de pipeline SONT les contrats — zéro configuration supplémentaire.
+  Checks auto-dérivés :
+    quality_checks.drop_nulls_in     → ASSERT count_null == 0
+    quality_checks.drop_duplicates_on → ASSERT count == count_distinct
+    filter: "status:in:ACTIVE"       → ASSERT all(status IN ('ACTIVE'))
+    select_final cast:double          → ASSERT typeof == DOUBLE
+  Checks configurables (freshness, volume, schema_drift, custom SQL).
+  Niveaux : info / warning / critical (bloquant).
+  Stockage historique : SQLite local ou Delta table.
+  Alertes : webhook, Slack.
+  Intégration pipeline : post-run automatique ou standalone schedulé.
+
+
+8. POSITIONNEMENT MARCHÉ — ÉLÉMENTS POUR LE BENCHMARK
+================================================================================
+
+8.1 Catégorie de l'outil
+--------------------------
+Skifer se positionne dans l'intersection de :
+  - Frameworks de transformation (dbt, SQLMesh)
+  - Frameworks d'orchestration déclaratifs (Prefect, Dagster — sans l'orchestration)
+  - Couches sémantiques (LookML, MetricFlow, Cube.js)
+  - Plateformes d'observabilité data (Great Expectations, Soda, Monte Carlo)
+
+Il n'est pas un orchestrateur (pas de scheduling, pas de DAG visuel d'exécution).
+Il est un moteur de transformation déclaratif avec une couche sémantique intégrée.
+
+8.2 Différenciateurs clés
+---------------------------
+
+a) YAML + Python sans SQL manuel
+   Le développeur ne touche jamais à du SQL string sauf pour des cas
+   extrêmes (opérateur sql: désactivable). Les transformations sont
+   exprimées dans une syntaxe YAML lisible par des non-développeurs.
+
+b) Règles métier réutilisables
+   Le RuleRegistry découple les règles du pipeline. Une règle écrite une
+   fois peut être appliquée dans n'importe quel YAML. Pas de duplication.
+
+c) Couche sémantique intégrée + agent BI
+   La génération de modèles sémantiques (SemanticBuilder via LLM) et
+   l'agent BI (GenBIAgent) sont dans le même package. Un développeur peut
+   aller de la transformation au self-service analytics sans changer d'outil.
+
+d) QueryResolver déterministe (zéro hallucination)
+   L'agent BI ne génère pas de SQL libre. Il sélectionne des noms définis
+   dans les YAML sémantiques. Le SQL est construit de façon déterministe.
+   Différenciateur fort vs approches LLM text-to-SQL classiques.
+
+e) Smart Sandbox transparent
+   En développement, les tables source sont automatiquement clonées et
+   redirigées vers un espace sandbox sans aucune configuration du développeur.
+
+f) Observabilité gratuite (piste 5)
+   Les YAML sont déjà des data contracts. Les checks de qualité sont
+   dérivés automatiquement sans redéclaration.
+
+g) Multi-plateforme (en cours)
+   Même YAML, même code Python, multiple plateformes. Différenciateur
+   structurel si la migration se finalise : le code métier (règles, YAML)
+   est portable entre Databricks, Snowflake, BigQuery.
+
+8.3 Limites actuelles (honnêteté pour le benchmark)
+-----------------------------------------------------
+- Pas d'orchestration native (dépend de Databricks Workflows, Airflow, etc.)
+- Pas de UI (piste 2 en réflexion)
+- Pas de lineage visuel (piste 3 en réflexion)
+- Multi-plateforme non finalisé (Redshift, Synapse non implémentés)
+- Monitoring/observabilité non implémenté (piste 5 en réflexion)
+- Pas de versioning de schéma intégré (type schema evolution)
+- Taille de communauté : projet interne/émergent
+
+8.4 Outils à comparer (suggestions)
+--------------------------------------
+
+Transformation SQL :
+  - dbt (Data Build Tool) — le plus répandu, SQL-first
+  - SQLMesh — successeur dbt-like avec gestion d'état et tests intégrés
+
+Frameworks Python / DataFrame :
+  - Apache Beam — multi-runner (Dataflow, Spark, Flink)
+  - Hamilton — DAG déclaratif Python (Stitch Fix)
+  - Fugue — abstraction DataFrame (PySpark, Dask, Ray, DuckDB)
+
+Couches sémantiques :
+  - dbt Semantic Layer / MetricFlow
+  - Cube.js — semantic layer + caching
+  - LookML (Looker) — propriétaire Google
+  - AtScale — semantic layer enterprise
+
+Data observability :
+  - Great Expectations — référence marché, config séparée du pipeline
+  - Soda — SQL checks YAML, cloud + open-source
+  - Monte Carlo — SaaS, ML-based, coût élevé
+  - Elementary — observabilité dbt-native
+
+Text-to-SQL / agents BI :
+  - Langchain SQL Agent — SQL libre (risque hallucination)
+  - Vanna.ai — fine-tuning sur schémas
+  - Defog / SQLCoder — modèles spécialisés text-to-SQL
+  - Tableau Pulse / Power BI Copilot — propriétaires
+
+Multi-plateforme :
+  - Ibis Project — abstraction DataFrame multi-backend (DuckDB, Spark, BigQuery...)
+  - dbt adapters — même SQL, multiple backends via adapters
+  - Fugue — portabilité PySpark/Dask/Ray
+
+8.5 Axes d'analyse suggérés pour le benchmark
+-----------------------------------------------
+1. Courbe d'apprentissage : à quelle vitesse un data engineer peut-il
+   produire son premier pipeline ?
+2. Expressivité : quels cas sont couverts nativement, quels cas demandent
+   du code custom ?
+3. Testabilité : est-ce que les pipelines sont testables sans cluster ?
+4. Portabilité : quel effort pour changer de plateforme data ?
+5. Observabilité : les checks sont-ils redéclarés ou dérivés ?
+6. Self-service analytics : peut-on exposer les données à des non-dev ?
+7. Hallucination SQL : dans les approches agentiques, quel niveau de
+   déterminisme ?
+8. Coût opérationnel : SaaS vs open-source vs hybrid ?
+9. Intégration orchestrateur : natif, plugin ou indépendant ?
+10. Versioning et CI/CD : comment les changements de schéma sont-ils gérés ?
+
+
+9. CONTACTS ET RESSOURCES
+================================================================================
+
+Dépôt : projet Python (src/skifer/)
+Branche active multi-plateforme : multi_plateforme
+Branch principale : main
+Tests : pytest (509 tests au 22 avril 2026, 0 dépendance cluster)
+Roadmap : docs/roadmap/*.md
+
+Pour toute question sur l'architecture ou les choix de conception,
+contacter l'auteur du projet.
+
+================================================================================
+FIN DU DOCUMENT
+================================================================================

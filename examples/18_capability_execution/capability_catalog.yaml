@@ -1,0 +1,17 @@
+capabilities:
+  - id: support.create_ticket
+    version: 1.0.0
+    owner: support-platform
+    description: Create a ticket in the local fake external system
+    mode: write
+    approval: supervised
+    reversibility: compensatable
+    path: create_ticket.yaml
+  - id: support.close_ticket
+    version: 1.0.0
+    owner: support-platform
+    description: Compensate ticket creation in the local fake external system
+    mode: write
+    approval: guarded
+    reversibility: reversible
+    path: close_ticket.yaml

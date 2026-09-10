@@ -1,0 +1,129 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skifer"
+version = "2.0.0"
+description = "Declarative data engineering framework for Spark and Databricks Lakehouse."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Julien Houbart", email = "houbartjulien80@gmail.com" }
+]
+keywords = [
+    "databricks", "spark", "pyspark", "delta-lake", "data-engineering", "lakehouse",
+    "declarative", "yaml", "etl", "pipeline", "bronze-silver-gold",
+    "semantic-layer"
+]
+requires-python = ">=3.9"
+dependencies = [
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+[project.urls]
+Homepage = "https://github.com/morzu117/skifer"
+Documentation = "https://morzu117.github.io/skifer"
+Repository = "https://github.com/morzu117/skifer"
+Changelog = "https://github.com/morzu117/skifer/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/morzu117/skifer/issues"
+
+[project.optional-dependencies]
+# --- Runtime Spark / Databricks ---
+spark = [
+    "pyspark>=3.3.0",
+    "delta-spark>=2.0.0"
+]
+
+# --- LLM (couche sémantique / agentique) ---
+llm-openai = [
+    "openai>=1.0.0"
+]
+llm-anthropic = [
+    "anthropic>=0.30.0"
+]
+llm-google = [
+    "google-generativeai>=0.5.0"
+]
+
+# --- Exports (PDF, graphiques) ---
+semantic-pdf = [
+    "fpdf2>=2.7.0",
+    "matplotlib>=3.7.0"
+]
+
+# --- Databricks workspace API (SQL warehouses, materialized views, Connect) ---
+# Unnecessary on a Databricks runtime: the SDK is pre-installed there.
+databricks = [
+    "databricks-sdk>=0.20.0"
+]
+
+# --- Databricks Model Serving ---
+serving = [
+    "mlflow>=2.12.0,<3",
+    "openai>=1.0.0",
+]
+
+# --- Export de traces (imports strictement paresseux) ---
+tracing = [
+    "opentelemetry-sdk>=1.24.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.24.0",
+    "mlflow>=2.12.0,<3",
+]
+
+# --- Model Context Protocol (imports strictement paresseux) ---
+mcp = [
+    "mcp>=2.1,<3",
+]
+
+# --- Bundles pratiques ---
+semantic-full = [
+    "openai>=1.0.0",
+    "anthropic>=0.30.0",
+    "fpdf2>=2.7.0",
+    "matplotlib>=3.7.0"
+]
+
+# --- Documentation (site mkdocs) ---
+# Required by `mkdocs build --strict`; mkdocstrings is declared because
+# mkdocs.yml configures it as a plugin.
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.24",
+]
+
+# --- Développement ---
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1.0",
+    "pytest-mock>=3.10.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+skifer = "skifer.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+markers = [
+    "streaming: real Structured Streaming tests on the local Delta session (slower)",
+]

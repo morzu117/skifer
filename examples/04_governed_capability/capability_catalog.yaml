@@ -1,0 +1,9 @@
+capabilities:
+  - id: support.create_ticket
+    version: 1.0.0
+    owner: support-platform
+    description: Propose a support ticket without contacting a ticketing system
+    mode: write
+    approval: guarded
+    reversibility: reversible
+    path: create_ticket.yaml

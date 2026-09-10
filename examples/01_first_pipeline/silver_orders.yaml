@@ -1,0 +1,32 @@
+# A first pipeline: read a CSV, keep the rows that matter, shape the columns.
+#
+# Everything here is "what", never "how". There is no PySpark in this file and
+# none is needed to run it.
+
+tables:
+  - name: raw_orders
+    alias: ord
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/orders.csv"
+      options:
+        header: "true"
+        inferSchema: "true"
+
+    # Refuse rows we do not want, in the language of the business.
+    filter:
+      - "status:not_equals:CANCELLED"
+      - "amount:is_not_null"
+
+    # Deduplicate on the business key, not on the whole row.
+    quality_checks:
+      drop_duplicates_on: [order_id]
+
+# The output columns, named as the business names them.
+select_final:
+  - [order_id, order_id]
+  - [customer_id, customer_id]
+  - [region, region]
+  - [amount, amount_eur, [cast:double, round:2]]
+  - [order_date, order_date, [to_date:yyyy-MM-dd]]
+  - [literal:erp, source_system]

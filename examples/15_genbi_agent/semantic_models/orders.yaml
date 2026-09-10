@@ -1,0 +1,12 @@
+models:
+  - name: orders
+    key: orders
+    description: Sales orders and revenue
+    layer: gold
+    table: gold.orders
+    dimensions:
+      - {name: region, sql: sales_region, type: string}
+      - {name: channel, sql: sales_channel, type: string}
+    metrics:
+      - {name: revenue, sql: amount, type: sum}
+      - {name: order_count, sql: order_id, type: count_distinct}

@@ -1,0 +1,13 @@
+models:
+  - key: orders
+    file: orders.yaml
+    description: Sales orders and revenue
+    layer: gold
+    dimensions: [region, channel]
+    metrics: [revenue, order_count]
+  - key: inventory
+    file: inventory.yaml
+    description: Inventory by warehouse
+    layer: gold
+    dimensions: [warehouse]
+    metrics: [units_on_hand]

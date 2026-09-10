@@ -1,0 +1,15 @@
+tables:
+  - name: raw_orders
+    alias: ord
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/orders.csv"
+      options: {header: "true", inferSchema: "true"}
+
+aggregate:
+  group_by: [customer_id]
+  measures:
+    - [amount, total_amount, sum]
+
+select_final:
+  - [customer_id, customer_id]

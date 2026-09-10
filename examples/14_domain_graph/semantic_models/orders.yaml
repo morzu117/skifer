@@ -1,0 +1,31 @@
+models:
+  - name: orders
+    key: orders
+    description: Order revenue
+    layer: gold
+    table: gold.orders
+    grain: [order]
+    calendar: retail_445
+    dimensions:
+      - {name: order_date, sql: order_date, type: date}
+      - {name: status, sql: status, type: string}
+    metrics:
+      - {name: revenue, sql: amount, type: sum}
+    entities:
+      - {name: order, type: primary, key: order_id}
+      - {name: customer, type: foreign, key: customer_id}
+    relationships:
+      - name: orders_customers
+        from_entity: customer
+        to_model: customers
+        to_entity: customer
+        cardinality: many_to_one
+        join_type: left
+        verified_by_contract: true
+      - name: order_lines
+        from_entity: order
+        to_model: order_lines
+        to_entity: order
+        cardinality: one_to_many
+        join_type: left
+        verified_by_contract: true

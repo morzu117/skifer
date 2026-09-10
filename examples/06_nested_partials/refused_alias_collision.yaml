@@ -1,0 +1,12 @@
+partials:
+  - alias: customers
+    path: _partials/prepared_orders.yaml
+
+tables:
+  - name: raw_customers
+    alias: customers
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/customers.csv"
+
+keep_all_columns: true

@@ -1,0 +1,10 @@
+materialization: materialized_view
+
+tables:
+  - name: silver.orders
+    alias: orders
+
+business_rules:
+  - classify_order
+
+keep_all_columns: true

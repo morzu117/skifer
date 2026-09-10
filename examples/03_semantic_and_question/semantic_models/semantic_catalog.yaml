@@ -1,0 +1,9 @@
+models:
+  - key: sales.orders
+    file: fact_orders.yaml
+    layer: gold
+    table: gold.fact_orders
+    description: Certified order revenue by region and date
+    tags: [orders, revenue, certified]
+    dimensions: [region, order_date]
+    metrics: [total_revenue, order_count]

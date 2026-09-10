@@ -1,0 +1,35 @@
+# The same join and the same Python rule, stopping one step earlier.
+#
+# This file exists so the example can show the rows the rule produces before
+# the aggregate folds them away. It is a pipeline in its own right, not a
+# debugging trick: `aggregate` is terminal, and the way to see the stage before
+# it is to declare that stage.
+
+tables:
+  - name: raw_orders
+    alias: ord
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/orders.csv"
+      options: {header: "true", inferSchema: "true"}
+  - name: raw_customers
+    alias: cust
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/customers.csv"
+      options: {header: "true", inferSchema: "true"}
+
+join:
+  - table_from: [ord, customer_id]
+    table_to: [cust, customer_id]
+    type: inner
+
+business_rules:
+  - classify_order
+
+select_final:
+  - [order_id, order_id]
+  - [customer_name, customer_name]
+  - [region, region]
+  - [amount, amount]
+  - [order_class, order_class]   # produced by the Python rule named above

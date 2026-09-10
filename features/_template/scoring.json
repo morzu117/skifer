@@ -1,0 +1,22 @@
+{
+  "feature_id": "FEATURE-ID",
+  "tasks": [
+    {
+      "task_id": "TASK-001",
+      "scores": {
+        "complexity": 1,
+        "uncertainty": 1,
+        "blast_radius": 1,
+        "security_sensitivity": 1,
+        "domain_knowledge": 1,
+        "testability_risk": 1,
+        "architecture_impact": 1,
+        "context_size": 1
+      },
+      "weighted_score": 0,
+      "model_recommendation": "fast / economical coding model",
+      "escalation_required": false
+    }
+  ]
+}
+

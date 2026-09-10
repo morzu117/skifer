@@ -1,0 +1,15 @@
+materialization:
+  type: streaming_table
+  trigger: available_now
+  checkpoint: auto
+
+tables:
+  - name: raw_orders
+    alias: orders
+    streaming: true
+    dev_limit: 10
+    source:
+      type: delta
+      path: "{{ source_path }}"
+
+keep_all_columns: true

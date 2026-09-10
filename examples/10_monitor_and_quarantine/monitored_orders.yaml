@@ -1,0 +1,31 @@
+# Certified publication stages this batch and checks it before consumers see it.
+# The Python rule deliberately turns a rejected order's otherwise valid key into
+# NULL, after source cleanup, so the monitor can demonstrate the failing path.
+
+data_product:
+  id: examples.monitored_orders
+  version: 1.0.0
+  owner: data-platform
+
+contract:
+  grain: [order_id]
+  output:
+    order_id: {logical_type: integer, required: true}
+    amount: {logical_type: integer}
+
+tables:
+  - name: incoming_orders
+    alias: orders
+    source:
+      type: csv
+      path: "{{ batch_file }}"
+      options: {header: "true", inferSchema: "true"}
+    quality_checks:
+      drop_nulls_in: [order_id]
+
+business_rules:
+  - invalidate_rejected_order
+
+select_final:
+  - [order_id, order_id]
+  - [amount, amount]

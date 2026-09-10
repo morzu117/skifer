@@ -1,0 +1,23 @@
+models:
+  - key: sales.orders
+    description: Certified order revenue by region and date
+    layer: gold
+    table: gold.fact_orders
+    dimensions:
+      - name: region
+        sql: region
+        type: string
+        description: Sales region
+      - name: order_date
+        sql: order_date
+        type: date
+        description: Date the order was placed
+    metrics:
+      - name: total_revenue
+        sql: amount_eur
+        type: sum
+        description: Total order revenue in EUR
+      - name: order_count
+        sql: order_id
+        type: count_distinct
+        description: Number of distinct orders

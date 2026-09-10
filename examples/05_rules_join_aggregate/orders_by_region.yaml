@@ -1,0 +1,32 @@
+# YAML names the sources, join, Python rule, and aggregation: the WHAT.
+# The implementation of `classify_order` stays in run.py: the HOW.
+
+tables:
+  - name: raw_orders
+    alias: ord
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/orders.csv"
+      options: {header: "true", inferSchema: "true"}
+  - name: raw_customers
+    alias: cust
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/customers.csv"
+      options: {header: "true", inferSchema: "true"}
+
+join:
+  - table_from: [ord, customer_id]
+    table_to: [cust, customer_id]
+    type: inner
+
+business_rules:
+  - classify_order
+
+aggregate:
+  group_by: [region]
+  measures:
+    - [amount, total_amount, sum]
+    - [customer_id, distinct_customers, count_distinct]
+  having:
+    - "total_amount:greater_than:500"
