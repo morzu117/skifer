@@ -1,3 +1,12 @@
+"""Skifer — declarative data engineering framework for Spark and Databricks."""
+
+from importlib.metadata import PackageNotFoundError, version as _distribution_version
+
+try:
+    __version__ = _distribution_version("skifer")
+except PackageNotFoundError:  # running from an uninstalled source checkout
+    __version__ = "unknown"
+
 from .core.core import SkiferEngine
 from .core.registry import RuleRegistry
 from .core.config import ConfigurationManager
@@ -21,6 +30,7 @@ def __getattr__(name):
 
 
 __all__ = [
+    "__version__",
     "SkiferEngine",
     "SparkBackend",
     "RuleRegistry",

@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `skifer.__version__`, read back from the installed distribution metadata rather than
+  restated in the source. `pyproject.toml` stays the single source of truth, so the two
+  can never drift. A source checkout that is not installed reports `"unknown"` instead of
+  raising, which keeps `PYTHONPATH=src` imports working.
+
+### Changed
+- Both publishing workflows now authenticate to PyPI and TestPyPI through **trusted
+  publishing** (OIDC): `id-token: write` at the job level, no API token secret. The
+  token-based configuration failed on its first run, because the action falls back to
+  OIDC when no password is supplied and then lacks the permission to mint an identity.
+
 ### Documentation
+- Rewrote the installation instructions, which still described a private repository and a
+  hand-built wheel. Skifer is on PyPI: `pip install skifer`. `docs/install_databricks.md`
+  now covers cluster and notebook installs, extras, TestPyPI pre-releases, and says why
+  `skifer[spark]` is the wrong extra on a Databricks Runtime, whose own PySpark and Delta
+  it would override.
 - Added runnable examples 21–22 for Spark-free `AgenticHub` routing through the
   dictionary and lineage agents, plus live `QualityAgent` checks that distinguish
   failures from execution errors and persist two runs in disposable local history.

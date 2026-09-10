@@ -282,60 +282,50 @@ Copier en `.env` (ajouté au `.gitignore`).
 
 ---
 
-## Installation depuis le repo GitHub privé
+## Installation
 
-Skifer n'est pas publié sur PyPI — il s'installe directement depuis GitHub.
-
-### Authentification GitHub
-
-Deux options selon l'environnement :
-
-**Option A — HTTPS avec Personal Access Token (recommandé en local et CI)**
-
-Générer un PAT sur GitHub :  
-`Settings → Developer settings → Personal access tokens → Fine-grained tokens`  
-Permissions requises : `Contents: Read-only` sur le repo `morzu117/skifer`.
+Skifer est publié sur PyPI sous le nom `skifer`. Aucun token, aucune authentification.
 
 ```bash
-# Installation directe
-pip install "skifer[spark] @ git+https://<TOKEN>@github.com/morzu117/skifer.git@main"
-
-# Ou via variable d'environnement (plus propre)
-export GH_TOKEN=<your_token>
-pip install "skifer[spark] @ git+https://${GH_TOKEN}@github.com/morzu117/skifer.git@main"
+pip install "skifer[spark]"
 ```
 
-**Option B — SSH (si clé SSH configurée)**
+L'extra `spark` ajoute PySpark et Delta, nécessaires pour exécuter un pipeline en local. Sans lui, seules les parties qui ne dépendent pas de Spark sont disponibles : `skifer validate`, la couche sémantique, le lineage.
+
+### Épingler une version
 
 ```bash
-pip install "skifer[spark] @ git+ssh://git@github.com/morzu117/skifer.git@main"
+pip install "skifer[spark]==2.0.0"
 ```
 
-### Installer une branche ou un tag spécifique
+### Installer un état de développement
+
+TestPyPI reçoit une build à chaque push sur `main` :
 
 ```bash
-# Branche
-pip install "skifer[spark] @ git+https://<TOKEN>@github.com/morzu117/skifer.git@data_observability"
+pip install --index-url https://test.pypi.org/simple/ \
+            --extra-index-url https://pypi.org/simple/ "skifer[spark]"
+```
 
-# Tag (recommandé pour la stabilité)
-pip install "skifer[spark] @ git+https://<TOKEN>@github.com/morzu117/skifer.git@v0.11.0"
+Pour un état non publié, l'installation directe depuis le dépôt reste possible, sans token puisque le repo est public :
+
+```bash
+pip install "skifer[spark] @ git+https://github.com/morzu117/skifer.git@main"
 ```
 
 ### Sur Databricks (cluster ou job)
 
-Ajouter dans les `Libraries` du cluster ou dans le `%pip install` du notebook :
+Ajouter `skifer[spark]` dans les `Libraries` du cluster, ou dans une cellule de notebook :
 
 ```python
-# Dans une cellule notebook Databricks
-%pip install "skifer[spark] @ git+https://<TOKEN>@github.com/morzu117/skifer.git@main"
+%pip install "skifer[spark]"
 dbutils.library.restartPython()
 ```
 
-Pour éviter d'exposer le token dans le notebook, utiliser un Databricks Secret :
+Sur un Databricks Runtime, PySpark et Delta sont déjà fournis. Préférer alors `skifer` sans extra, pour ne pas écraser les versions du runtime :
 
 ```python
-token = dbutils.secrets.get(scope="github", key="pat_token")
-%pip install f"skifer[spark] @ git+https://{token}@github.com/morzu117/skifer.git@main"
+%pip install skifer
 dbutils.library.restartPython()
 ```
 
@@ -354,29 +344,17 @@ version = "0.1.0"
 requires-python = ">=3.9"
 
 dependencies = [
-    "skifer[spark] @ git+https://github.com/morzu117/skifer.git@main",
+    "skifer[spark]>=2.0.0",
     "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
-llm = [
-    "skifer[spark,llm-anthropic] @ git+https://github.com/morzu117/skifer.git@main",
-]
+llm = ["skifer[spark,llm-anthropic]>=2.0.0"]
 dev = ["pytest", "ruff", "jupyter"]
 ```
 
-> **Note** : pour `pip install -e ".[dev]"` depuis un repo privé, le token doit être configuré via `git config` ou la variable `GH_TOKEN`. Alternativement, utiliser un fichier `requirements.txt` local avec le token interpolé (ne pas committer ce fichier).
-
-### `requirements.txt` (alternatif, non committer)
-
-```
-# requirements.txt — NE PAS COMMITTER (contient le token)
-git+https://<TOKEN>@github.com/morzu117/skifer.git@main#egg=skifer[spark]
-python-dotenv>=1.0.0
-```
-
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
 ---

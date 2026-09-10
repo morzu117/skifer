@@ -1,27 +1,36 @@
-# Installing Skifer on Azure Databricks
+# Installing Skifer on Databricks
+
+Skifer is published on PyPI as [`skifer`](https://pypi.org/project/skifer/). No token and no
+manually built wheel are needed.
 
 ## Prerequisites
 
-- An Azure Databricks workspace
+- A Databricks workspace
 - A running cluster (Databricks Runtime 11.x or higher recommended)
-- The `.whl` file provided by your administrator
+- Outbound access to PyPI from the cluster
+
+> **Which extra to install** : a Databricks Runtime already ships PySpark and Delta. Install plain
+> `skifer` there, so the runtime's own versions are left untouched. Use `skifer[spark]` only for
+> local development, where PySpark and Delta have to come from PyPI.
 
 ---
 
 ## Option 1 — Cluster-level installation (recommended)
 
-Installing at the cluster level makes the library available to all notebooks attached to that cluster without any extra `%pip install` line.
+Installing at the cluster level makes the library available to every notebook attached to that
+cluster, with no `%pip install` line in the notebooks themselves.
 
-1. In your Databricks workspace, go to **Compute** in the left sidebar.
-2. Click on your cluster name.
+1. In your workspace, go to **Compute** in the left sidebar.
+2. Click your cluster name.
 3. Open the **Libraries** tab.
 4. Click **Install new**.
-5. Select **Upload** as the source, then choose **Python Whl**.
-6. Upload the file `skifer-0.6.5-py3-none-any.whl`.
+5. Select **PyPI** as the source.
+6. Enter `skifer` as the package name, or `skifer==2.0.0` to pin a version.
 7. Click **Install**.
 8. **Restart the cluster** for the library to take effect.
 
-Once the cluster restarts, the library status will show **Installed**. You can then import it in any attached notebook:
+Once the cluster restarts, the library status shows **Installed** and you can import it from any
+attached notebook:
 
 ```python
 from skifer import SkiferEngine, RuleRegistry
@@ -31,59 +40,91 @@ from skifer import SkiferEngine, RuleRegistry
 
 ## Option 2 — Notebook-level installation
 
-If you do not have permission to modify the cluster configuration, you can install the library directly from a notebook.
-
-### From DBFS
-
-Upload the `.whl` file to DBFS first (via the Databricks UI: **Catalog** → **Browse DBFS** → upload to `/FileStore/libs/`), then run in a notebook cell:
+If you cannot modify the cluster configuration, install from a notebook cell instead:
 
 ```python
-%pip install /dbfs/FileStore/libs/skifer-0.6.5-py3-none-any.whl
+%pip install skifer
+dbutils.library.restartPython()
 ```
 
-### From a local path (Databricks Connect / local dev)
+To pin a version:
 
 ```python
-%pip install /path/to/skifer-0.6.5-py3-none-any.whl
+%pip install skifer==2.0.0
+dbutils.library.restartPython()
 ```
 
-> **Note:** `%pip install` automatically restarts the Python kernel. Place it in the first cell of your notebook, before any other imports.
+> **Attention** : `%pip install` restarts the Python kernel. Put it in the first cell of the
+> notebook, before any other import, and re-run the cells below it afterwards.
 
 ---
 
 ## Verifying the installation
 
-Run the following cell to confirm the library is correctly installed:
-
 ```python
 import skifer
-print(skifer.__version__)  # expected: 0.6.5
+
+print(skifer.__version__)   # e.g. 2.0.0
 ```
 
 ---
 
 ## Optional dependencies
 
-Skifer has optional dependency groups. Install them alongside the wheel if needed:
+Skifer declares optional dependency groups. Install them as extras rather than one package at a
+time, so version constraints stay consistent:
 
-| Feature | Extra packages to install |
+| Feature | Install |
 |---|---|
-| LLM (OpenAI) | `pip install openai>=1.0.0` |
-| LLM (Anthropic) | `pip install anthropic>=0.30.0` |
-| LLM (Google Gemini) | `pip install google-generativeai>=0.5.0` |
-| PDF export | `pip install fpdf2>=2.7.0 matplotlib>=3.7.0` |
+| Databricks workspace API (SQL warehouses, materialized views) | `skifer[databricks]` |
+| LLM — OpenAI | `skifer[llm-openai]` |
+| LLM — Anthropic | `skifer[llm-anthropic]` |
+| LLM — Google Gemini | `skifer[llm-google]` |
+| PDF export | `skifer[semantic-pdf]` |
+| Full semantic layer | `skifer[semantic-full]` |
+| Read-only MCP server | `skifer[mcp]` |
+| Runtime tracing | `skifer[tracing]` |
+| Model Serving deployment | `skifer[serving]` |
 
-Install them the same way — either via the cluster **Libraries** tab or with `%pip install` in a notebook cell.
+Combine them in one install:
+
+```python
+%pip install "skifer[databricks,llm-anthropic]"
+dbutils.library.restartPython()
+```
+
+The same names work in the cluster **Libraries** tab, in the PyPI package field.
+
+---
+
+## Pre-release builds
+
+Every push to `main` publishes a build to TestPyPI. To install one:
+
+```python
+%pip install --index-url https://test.pypi.org/simple/ \
+             --extra-index-url https://pypi.org/simple/ skifer
+dbutils.library.restartPython()
+```
+
+The second index is required: Skifer's dependencies live on PyPI, not on TestPyPI.
 
 ---
 
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'skifer'`**
-→ The cluster was not restarted after installation. Restart the cluster and reattach your notebook.
-
-**`%pip install` output shows a warning about the kernel restarting**
-→ This is expected. Re-run the cells below the `%pip install` cell after the restart.
+→ The cluster was not restarted after a cluster-level install. Restart it and reattach the notebook.
+After a notebook-level install, check that `dbutils.library.restartPython()` actually ran.
 
 **Library status shows `Failed` in the cluster Libraries tab**
-→ Check that the `.whl` file is not corrupted (re-download or re-upload it) and that the Databricks Runtime version is 11.x or higher.
+→ Most often the cluster has no outbound access to PyPI. Check with your workspace administrator,
+who may need to configure an internal package mirror.
+
+**`skifer.__version__` reports an unexpected version**
+→ Two installs are shadowing each other, typically a cluster-level library plus a notebook-level
+`%pip install`. Remove one of the two.
+
+**Spark or Delta errors right after installing `skifer[spark]` on a cluster**
+→ That extra pulls PySpark and Delta from PyPI and overrides the runtime's own versions. Install
+plain `skifer` on Databricks instead.
