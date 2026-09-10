@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raising, which keeps `PYTHONPATH=src` imports working.
 
 ### Fixed
+- **The read-only MCP server rejected every resource URI on Python 3.10 and below.**
+  `_parse_uri` called `parse_qs(..., strict_parsing=True)` unconditionally, and before
+  Python 3.11 that raises on the empty string. A URI carrying no parameters — nearly all of
+  them — was therefore reported as `invalid_request`, so the whole MCP surface was
+  unreachable. Strict parsing now applies only to a query that actually exists.
 - **Restored `examples/07_sources_and_shaping/data/events.json`, which the repository
   never contained.** `.gitignore` carried a blanket `*.json` with exceptions for `schemas/`
   and `features/` but not for `examples/`, so the dataset the example reads was silently

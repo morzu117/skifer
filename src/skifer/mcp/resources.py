@@ -269,15 +269,21 @@ def _parse_uri(uri: str) -> tuple[str, tuple[str, ...], dict[str, list[str]]]:
     if not raw_segments or any(not segment for segment in raw_segments):
         raise InvalidRequest("Resource URI path is malformed.")
     segments = tuple(_decode_segment(segment) for segment in raw_segments)
-    try:
-        query = parse_qs(
-            parsed.query,
-            keep_blank_values=True,
-            strict_parsing=True,
-            max_num_fields=2,
-        )
-    except ValueError as exc:
-        raise InvalidRequest("Resource URI query is malformed.") from exc
+    # An absent query is not a malformed one. Before Python 3.11, parse_qs raised on the
+    # empty string under strict_parsing, which rejected every URI carrying no parameters —
+    # that is, nearly all of them. Guarding here keeps strict parsing where it belongs, on
+    # a query that actually exists.
+    query: dict[str, list[str]] = {}
+    if parsed.query:
+        try:
+            query = parse_qs(
+                parsed.query,
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=2,
+            )
+        except ValueError as exc:
+            raise InvalidRequest("Resource URI query is malformed.") from exc
     return parsed.netloc, segments, query
 
 

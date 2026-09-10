@@ -25,6 +25,7 @@ from skifer.agentic.data_service import (
     ScopeDenied,
 )
 from skifer.mcp.resources import (
+    _parse_uri,
     CATALOG_RESOURCE,
     ETAG_META_KEY,
     INTERNAL_ERROR,
@@ -487,3 +488,35 @@ def test_discovery_refuses_anything_that_is_not_a_request_context(bad_ctx):
         resources.list_resources(bad_ctx)
     with pytest.raises(InvalidRequest):
         resources.list_resource_templates(bad_ctx)
+
+
+# ---------------------------------------------------------------------------
+# URI query parsing across Python versions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "uri, expected_query",
+    [
+        ("skifer://semantic/catalog", {}),
+        ("skifer://semantic/models/orders", {}),
+        ("skifer://semantic/catalog?limit=10", {"limit": ["10"]}),
+        ("skifer://semantic/catalog?limit=", {"limit": [""]}),
+    ],
+)
+def test_a_uri_without_a_query_is_not_a_malformed_uri(uri, expected_query):
+    """An absent query must parse as an empty one, on every supported Python.
+
+    Before 3.11, ``parse_qs`` raised on the empty string under ``strict_parsing``. Calling it
+    unconditionally therefore rejected every URI carrying no parameters — which is nearly all of
+    them — and the whole MCP surface answered ``invalid_request`` on 3.10. The suite only ever ran
+    on 3.12, so nothing noticed until CI covered the declared minimum.
+    """
+    _, _, query = _parse_uri(uri)
+    assert query == expected_query
+
+
+@pytest.mark.parametrize("uri", ["skifer://semantic/catalog?%%", "skifer://semantic/catalog?a&b&c"])
+def test_a_present_query_is_still_parsed_strictly(uri):
+    """Guarding the empty case must not loosen parsing of a query that does exist."""
+    with pytest.raises(InvalidRequest):
+        _parse_uri(uri)
