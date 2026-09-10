@@ -76,7 +76,6 @@ def get_spark_session(
         _delta_version = _delta.__version__
         import pyspark as _pyspark
         _spark_short = ".".join(_pyspark.__version__.split(".")[:2])  # e.g. "4.1"
-        import platform as _platform
         # Scala 2.13 is used for Spark 3.3+ on Python 3.11+; safe default for 4.x
         _scala = "2.13"
         _delta_package = f"io.delta:delta-spark_{_spark_short}_{_scala}:{_delta_version}"
@@ -112,6 +111,6 @@ def get_spark_session(
     # Silence noisy loggers for local dev
     session.sparkContext.setLogLevel("WARN")
 
-    print(f"   [SparkFactory] Local PySpark + Delta Lake session initialized.")
+    print("   [SparkFactory] Local PySpark + Delta Lake session initialized.")
     print(f"   [SparkFactory] Warehouse: {_warehouse}")
     return session, "local"

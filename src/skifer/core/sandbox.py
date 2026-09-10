@@ -1,7 +1,6 @@
 """
 Sandbox resolver — transparent sandbox schema/table resolution for interactive mode.
 """
-import os
 
 
 class SandboxResolver:
@@ -117,7 +116,7 @@ class SandboxResolver:
                 if not self.table_exists(catalog, schema, table):
                     raise ValueError(f"[Sandbox] Source table '{schema}.{table}' not found in main schema.")
                 self.clone_table(catalog, schema, table, tgt_catalog, tgt_schema, tgt_table)
-                print(f"    -> [Sandbox] Clone complete. Resuming workflow.")
+                print("    -> [Sandbox] Clone complete. Resuming workflow.")
         else:
             # Sandbox schema doesn't exist — create it
             print(f"    -> [Sandbox] Schema '{tgt_schema}' not found. Creating...")
@@ -134,7 +133,7 @@ class SandboxResolver:
             if not self.table_exists(catalog, schema, table):
                 raise ValueError(f"[Sandbox] Source table '{schema}.{table}' not found in main schema.")
             self.clone_table(catalog, schema, table, tgt_catalog, tgt_schema, tgt_table)
-            print(f"    -> [Sandbox] Clone complete. Resuming workflow.")
+            print("    -> [Sandbox] Clone complete. Resuming workflow.")
 
         if tgt_catalog:
             return f"`{tgt_catalog}`.`{tgt_schema}`.`{tgt_table}`"

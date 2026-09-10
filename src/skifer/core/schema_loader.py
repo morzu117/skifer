@@ -1,6 +1,8 @@
 """
 Schema loader — loads and normalizes pipeline schemas from YAML files or inline strings.
 """
+
+from __future__ import annotations
 import difflib
 import logging
 import re

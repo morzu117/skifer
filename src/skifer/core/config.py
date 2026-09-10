@@ -2,6 +2,8 @@
 Configuration module. Handles YAML loading and Environment detection.
 Includes auto-discovery mechanism to find config.yaml at project root.
 """
+
+from __future__ import annotations
 import yaml
 import os
 from dataclasses import dataclass, field

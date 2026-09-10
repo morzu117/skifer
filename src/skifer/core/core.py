@@ -2,6 +2,8 @@
 Core Engine Module. Handles the execution flow: Schema Parsing -> Processing -> Writing.
 """
 
+from __future__ import annotations
+
 import logging
 import yaml
 from dotenv import load_dotenv

@@ -1,6 +1,8 @@
 """
 Utility helpers for rule authoring — compatible with Databricks Connect v2.
 """
+
+from __future__ import annotations
 import logging
 import sys
 from pathlib import Path

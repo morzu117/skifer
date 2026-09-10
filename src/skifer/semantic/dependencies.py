@@ -1,5 +1,7 @@
 """Deterministic semantic-model dependency resolution."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 

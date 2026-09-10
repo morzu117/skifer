@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raising, which keeps `PYTHONPATH=src` imports working.
 
 ### Fixed
+- **`requires-python` is now `>=3.10`.** The package claimed `>=3.9`, but `import skifer`
+  raised `TypeError` on 3.9: `schema_loader.py` uses PEP 604 unions in annotations
+  evaluated at definition time, and `evidence.py` uses `dataclass(kw_only=True)`, which is
+  3.10 only. Nothing ever ran on 3.9, so the claim went unchallenged. The 3.9 classifier is
+  dropped. Python 3.9 reached end of life in October 2025.
+- Added `from __future__ import annotations` to the five modules that use PEP 604 unions,
+  so annotations are never evaluated at runtime.
+- Removed dead imports and f-strings with no placeholders in `loaders.py`, `sandbox.py`
+  and `spark_factory.py`.
 - `UserProfile.save()` and `.load()` resolve the default profile path **at call time**
   instead of binding it at import. Bound at import, `_PROFILE_PATH` could not be
   substituted, so `add_alias()` — which saves on its own — wrote to the real
@@ -26,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/test_json_schema.py` and declared nowhere, so in a fresh environment its 15 tests
   skipped silently — the only tests that validate the published
   `schemas/skifer-pipeline.schema.json`. A skipped test reads like a passing suite.
+
+### Added
+- A `Tests` workflow running the suite on every push and pull request, across Python 3.10
+  to 3.13, with a JVM installed so the Spark-backed tests actually run rather than error
+  out. Until now the only workflows published; nothing verified anything.
 
 ### Changed
 - Both publishing workflows now authenticate to PyPI and TestPyPI through **trusted

@@ -1,0 +1,52 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    # Every version claimed in pyproject.toml's requires-python and classifiers.
+    # The matrix is what makes those claims true: the 3.9 promise the project used to
+    # publish was broken for months because nothing ever ran on it.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # PySpark needs a JVM. Without this step the Spark-backed tests error out
+      # instead of running, which looks like a much greener suite than it is.
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install
+        run: pip install -e ".[dev,spark]"
+
+      - name: Import on the declared minimum
+        run: python -c "import skifer; print(skifer.__version__)"
+
+      - name: Lint
+        run: ruff check src/ --select E4,E7,E9,F
+
+      - name: Test
+        run: pytest -q --no-header

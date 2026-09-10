@@ -8,7 +8,6 @@ Loaders now receive the backend via ``backend=`` keyword argument injected by th
 with a ``.spark`` attribute (i.e. SparkBackend). Passing any other backend will raise
 a ``RuntimeError``.
 """
-from functools import reduce
 from .registry import RuleRegistry
 
 
