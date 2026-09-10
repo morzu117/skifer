@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can never drift. A source checkout that is not installed reports `"unknown"` instead of
   raising, which keeps `PYTHONPATH=src` imports working.
 
+### Fixed
+- `jsonschema` is now declared in the `dev` extra. It was used only by
+  `tests/test_json_schema.py` and declared nowhere, so in a fresh environment its 15 tests
+  skipped silently — the only tests that validate the published
+  `schemas/skifer-pipeline.schema.json`. A skipped test reads like a passing suite.
+
 ### Changed
 - Both publishing workflows now authenticate to PyPI and TestPyPI through **trusted
   publishing** (OIDC): `id-token: write` at the job level, no API token secret. The

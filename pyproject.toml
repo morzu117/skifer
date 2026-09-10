@@ -113,7 +113,10 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.1.0",
-    "pytest-mock>=3.10.0"
+    "pytest-mock>=3.10.0",
+    # Validates schemas/skifer-pipeline.schema.json. Left undeclared, the 15 tests that
+    # exercise the published JSON schema skip silently in a fresh environment.
+    "jsonschema>=4.0"
 ]
 
 [tool.setuptools.packages.find]
