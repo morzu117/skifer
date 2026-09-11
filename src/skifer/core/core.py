@@ -121,6 +121,7 @@ class SkiferEngine:
         force_env=None,
         monitor=None,
         certification_store=None,
+        metadata_store=None,
     ):
         """
         Initializes the SkiferEngine.
@@ -141,6 +142,9 @@ class SkiferEngine:
                                              certified publication when a schema declares
                                              data_product. No default store is created for
                                              batch writes.
+            metadata_store (MetadataStore, optional): Explicit metadata registry store.
+                                             When provided, certified publication indexes
+                                             promoted datasets non-blockingly.
         """
         # Initialize _context unconditionally before any property access so that a
         # partially-constructed engine (init raises mid-way) never silently exposes a
@@ -262,6 +266,7 @@ class SkiferEngine:
         # ======================================================================
         self.monitor = monitor
         self.certification_store = certification_store
+        self.metadata_store = metadata_store
         if self.monitor is not None and hasattr(self.monitor, "tracer"):
             self.monitor.tracer = self._tracer
         if self.monitor is not None and hasattr(self.monitor, "tracing_required"):

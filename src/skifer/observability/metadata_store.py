@@ -1,7 +1,7 @@
 """metadata_store.py - MetadataStore Protocol + SQLite/Delta backends (Plan 31.2)."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 import hashlib
 import json
@@ -186,6 +186,32 @@ class SqliteMetadataStore:
         self._conn.commit()
         return True
 
+    def attach_run_id(
+        self,
+        target_fqn: str,
+        definition_hash: str,
+        last_run_id: str,
+    ) -> bool:
+        """Attach the latest certified run id without changing content idempotence."""
+        row = self._conn.execute(
+            "SELECT record FROM metadata_registry "
+            "WHERE target_fqn = ? AND definition_hash = ?",
+            (target_fqn, definition_hash),
+        ).fetchone()
+        if row is None:
+            return False
+        record = _record_from_json(row[0])
+        if record.last_run_id == last_run_id:
+            return False
+        updated = replace(record, last_run_id=last_run_id)
+        self._conn.execute(
+            "UPDATE metadata_registry SET record = ? "
+            "WHERE target_fqn = ? AND definition_hash = ?",
+            (_record_to_json(updated), target_fqn, definition_hash),
+        )
+        self._conn.commit()
+        return True
+
     def get(self, target_fqn: str) -> DatasetRecord | None:
         row = self._conn.execute(
             "SELECT record FROM metadata_registry WHERE target_fqn = ? "
@@ -281,6 +307,39 @@ class DeltaMetadataStore:
                 source.`record`,
                 source.indexed_at
             )
+            """
+        )
+        return True
+
+    def attach_run_id(
+        self,
+        target_fqn: str,
+        definition_hash: str,
+        last_run_id: str,
+    ) -> bool:
+        """Attach the latest certified run id without changing content idempotence."""
+        spark = self._spark()
+        rows = spark.sql(
+            f"""
+            SELECT `record`
+            FROM {self._table_fqn}
+            WHERE target_fqn = {_sql_literal(target_fqn)}
+              AND definition_hash = {_sql_literal(definition_hash)}
+            LIMIT 1
+            """
+        ).collect()
+        if not rows:
+            return False
+        record = _record_from_json(_row_value(rows[0], "record"))
+        if record.last_run_id == last_run_id:
+            return False
+        updated = replace(record, last_run_id=last_run_id)
+        spark.sql(
+            f"""
+            UPDATE {self._table_fqn}
+            SET `record` = {_sql_literal(_record_to_json(updated))}
+            WHERE target_fqn = {_sql_literal(target_fqn)}
+              AND definition_hash = {_sql_literal(definition_hash)}
             """
         )
         return True

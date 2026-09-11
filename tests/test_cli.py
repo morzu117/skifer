@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from skifer.cli import (
+    INDEX_EXIT_OK,
     SEMANTIC_EXIT_CONFLICT,
     SEMANTIC_EXIT_DRIFT,
     SEMANTIC_EXIT_ERROR,
@@ -247,6 +248,28 @@ def test_validate_help_exits_zero():
     """skifer validate --help exits 0."""
     result = _run_cli("validate", "--help")
     assert result.returncode == 0
+
+
+def test_index_subcommand_indexes_without_spark(tmp_path):
+    schema_file = tmp_path / "orders.yaml"
+    db_path = tmp_path / "metadata.db"
+    schema_file.write_text(
+        """
+data_product: {id: sales.orders, version: 1.0.0}
+tables: [{name: silver.orders, alias: ord}]
+select_final:
+  - [id, order_id]
+""",
+        encoding="utf-8",
+    )
+
+    first = _run_cli("index", str(schema_file), "--db", str(db_path))
+    second = _run_cli("index", str(schema_file), "--db", str(db_path))
+
+    assert first.returncode == INDEX_EXIT_OK, first.stdout + first.stderr
+    assert second.returncode == INDEX_EXIT_OK, second.stdout + second.stderr
+    assert "updated" in first.stdout
+    assert "unchanged" in second.stdout
 
 
 BASE_SYNC_YAML = """

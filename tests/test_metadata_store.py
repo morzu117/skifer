@@ -118,6 +118,24 @@ def test_upsert_new_run_id_only_is_still_noop():
     assert store.get(record.target_fqn) == record
 
 
+def test_attach_run_id_updates_record_without_changing_content_hash_or_indexed_at():
+    store = SqliteMetadataStore(":memory:")
+    record = _record(last_run_id="run-1")
+    assert store.upsert(record) is True
+    before_content_hash, _, before_indexed_at = _raw_row(store)
+
+    assert store.attach_run_id(
+        record.target_fqn,
+        record.definition_hash,
+        "run-2",
+    ) is True
+
+    after_content_hash, _, after_indexed_at = _raw_row(store)
+    assert after_content_hash == before_content_hash
+    assert after_indexed_at == before_indexed_at
+    assert store.get(record.target_fqn).last_run_id == "run-2"
+
+
 def test_upsert_changed_columns_replaces_row():
     store = SqliteMetadataStore(":memory:")
     record = _record()

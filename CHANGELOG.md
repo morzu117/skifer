@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `observability/metadata_index.py`: pure `index_schema(schema_dict, path)`
+  builds a `DatasetRecord` from `OutputProjector`, `LineageTracker.from_schema`
+  and contract output, with the Spark-free `skifer index PATHS` CLI.
 - `observability/metadata_store.py`: `DatasetRecord`/`ColumnRecord`, the `MetadataStore`
   Protocol and its `SqliteMetadataStore` (`.skifer_metadata.db`) /
   `DeltaMetadataStore` (`_skifer_metadata`) backends. Upsert is idempotent by
@@ -38,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Certified publication now triggers a non-blocking metadata-index hook after
+  `PROMOTED`; store failures only log a warning, and promoted records retain the
+  pipeline `run_id`. `SkiferEngine` accepts `metadata_store=`.
 - The contract canonicalization version moved from 1 to 2: `sla` and `security` are now part of the
   contract hash, while `status`, `reviewers` and the effective dates are deliberately excluded.
   Version-1 definition hashes remain readable; a documentation- or lifecycle-only change never

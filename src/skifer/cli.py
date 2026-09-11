@@ -33,6 +33,10 @@ ADAPTIVE_EXIT_STALE = 3
 ADAPTIVE_EXIT_CONFLICT = 4
 ADAPTIVE_EXIT_REGRESSED = 5
 
+INDEX_EXIT_OK = 0
+INDEX_EXIT_ERROR = 1
+INDEX_EXIT_USAGE = 2
+
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
@@ -53,6 +57,27 @@ def main() -> None:
         nargs="+",
         metavar="PATH",
         help="Schema file path(s) or glob patterns (e.g. schemas/**/*.yaml).",
+    )
+
+    index_parser = subparsers.add_parser(
+        "index",
+        help="Index pipeline metadata into the registry (no Spark).",
+    )
+    index_parser.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATHS",
+        help="Pipeline YAML paths to index.",
+    )
+    index_parser.add_argument(
+        "--db",
+        default=".skifer_metadata.db",
+        help="SQLite registry path.",
+    )
+    index_parser.add_argument(
+        "--target-fqn",
+        default=None,
+        help="Override target FQN (single path only).",
     )
 
     hub_parser = subparsers.add_parser(
@@ -213,6 +238,8 @@ def main() -> None:
 
     if args.command == "validate":
         _run_validate(args)
+    elif args.command == "index":
+        _run_index(args)
     elif args.command == "hub":
         _run_hub(args)
     elif args.command == "semantic":
@@ -231,6 +258,35 @@ def main() -> None:
 def _run_adaptive(args: argparse.Namespace) -> None:
     """Run the human review boundary with stable, category-specific exit codes."""
     sys.exit(run_adaptive_command(args))
+
+
+def _run_index(args: argparse.Namespace) -> None:
+    """Run Spark-free metadata indexing with stable exit codes."""
+    sys.exit(run_index_command(args))
+
+
+def run_index_command(args: argparse.Namespace, *, store=None) -> int:
+    """Index one or more pipeline YAML files into the local metadata registry."""
+    from skifer.observability.metadata_index import index_from_path
+    from skifer.observability.metadata_store import SqliteMetadataStore
+
+    if args.target_fqn and len(args.paths) > 1:
+        print("[index] --target-fqn is only valid with a single path.", file=sys.stderr)
+        return INDEX_EXIT_USAGE
+
+    registry = store or SqliteMetadataStore(args.db)
+    changed = 0
+    for path in args.paths:
+        try:
+            wrote = index_from_path(path, registry, target_fqn=args.target_fqn)
+        except Exception as exc:
+            print(f"[index] Failed to index '{path}': {exc}", file=sys.stderr)
+            return INDEX_EXIT_ERROR
+        changed += int(wrote)
+        print(f"[index] {path} -> {'updated' if wrote else 'unchanged'}")
+
+    print(f"[index] {changed} record(s) written, {len(args.paths) - changed} unchanged.")
+    return INDEX_EXIT_OK
 
 
 def _run_contract(args: argparse.Namespace) -> None:

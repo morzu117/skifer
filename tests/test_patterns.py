@@ -6,6 +6,8 @@ network) propagate out of run_union_sources_to_table.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import logging
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +23,7 @@ def _make_patterns_engine(table_exists_map: dict | None = None):
     engine._write_dataframe.return_value = None
     engine.certification_store = None
     engine.monitor = None
+    engine.metadata_store = None
 
     backend = MagicMock()
     backend.union_by_name.side_effect = lambda dfs: dfs[0] if len(dfs) == 1 else dfs
@@ -254,6 +257,91 @@ def test_run_process_to_table_certified_schema_uses_publication_coordinator():
     engine.monitor = MagicMock()
     engine.certification_store = MagicMock()
     run = PublicationRun("run-1", "gold_schema.fact_orders", "staging.fact_orders", RunState.PROMOTED)
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    coordinator.return_value.publish.assert_called_once()
+    engine._write_dataframe.assert_not_called()
+
+
+def test_promoted_publication_indexes_metadata_and_attaches_latest_run_id():
+    from skifer.observability.metadata_index import index_schema
+    from skifer.observability.metadata_store import SqliteMetadataStore
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    store = SqliteMetadataStore(":memory:")
+    engine.metadata_store = store
+    schema = _certified_schema()
+    fqn = "`gold_schema`.`fact_orders`"
+    old_record = index_schema(
+        schema,
+        "sales.orders",
+        target_fqn=fqn,
+        last_run_id="run-old",
+        now=datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc),
+    )
+    assert store.upsert(old_record) is True
+
+    run = PublicationRun("run-new", fqn, "staging.fact_orders", RunState.PROMOTED)
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(schema, "gold", "fact_orders")
+
+    assert store.get(fqn).last_run_id == "run-new"
+
+
+def test_metadata_store_failure_does_not_fail_publication(caplog):
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    class FailingMetadataStore:
+        def upsert(self, record):
+            raise RuntimeError("metadata db unavailable")
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.metadata_store = FailingMetadataStore()
+    run = PublicationRun(
+        "run-1",
+        "`gold_schema`.`fact_orders`",
+        "staging.fact_orders",
+        RunState.PROMOTED,
+    )
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        with caplog.at_level(logging.WARNING, logger="skifer.core.patterns"):
+            patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    assert any("indexing skipped (non-blocking)" in r.message for r in caplog.records)
+    engine._write_dataframe.assert_not_called()
+
+
+def test_publication_without_metadata_store_keeps_certified_publication_flow():
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.metadata_store = None
+    run = PublicationRun(
+        "run-1",
+        "`gold_schema`.`fact_orders`",
+        "staging.fact_orders",
+        RunState.PROMOTED,
+    )
     result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
 
     with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:

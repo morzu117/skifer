@@ -136,6 +136,8 @@ class PipelinePatterns:
                 "   -> [Certified Publication] run=%s state=%s (target: %s)",
                 result.run.run_id, result.state, fqn,
             )
+            if result.state == "PROMOTED":
+                _index_promoted_metadata(e, schema_dict, fqn, result.run.run_id)
         else:
             e._write_dataframe(
                 df,
@@ -334,3 +336,38 @@ class PipelinePatterns:
             schema_dict, target_layer, target_table_name,
             intermediate_mode=intermediate_mode, run_id=run_id,
         )
+
+
+def _index_promoted_metadata(e: Any, schema_dict: dict, fqn: str, run_id: str) -> None:
+    """Best-effort metadata indexing hook for certified publication."""
+    store = getattr(e, "metadata_store", None)
+    if store is None:
+        return
+    try:
+        from skifer.observability.metadata_index import (
+            index_schema,
+            upsert_index_record,
+        )
+
+        path_hint = _schema_path_hint(schema_dict, fqn)
+        record = index_schema(
+            schema_dict,
+            path_hint,
+            target_fqn=fqn,
+            last_run_id=run_id,
+        )
+        upsert_index_record(store, record)
+    except Exception as exc:
+        logger.warning("   -> [Metadata] SYNC_ERROR indexing skipped (non-blocking): %s", exc)
+
+
+def _schema_path_hint(schema_dict: dict, fqn: str) -> str:
+    source_path = schema_dict.get("_source_path")
+    if isinstance(source_path, str) and source_path:
+        return source_path
+    data_product = schema_dict.get("data_product")
+    if isinstance(data_product, dict):
+        product_id = data_product.get("id")
+        if isinstance(product_id, str) and product_id:
+            return product_id
+    return fqn
