@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Plan 31 (4.1)** — Incidents in the certification store (SQLite + Delta):
+  automatically open one incident per failed critical check on quarantine,
+  deduplicate while open, stay idempotent under `resume()`, and auto-resolve
+  open incidents as `recovered` on the next `PROMOTED`. Incident hooks are
+  non-blocking and persist no data values.
 - Coverage audit (`skifer.observability.audit`): pure, deterministic
   `audit_project(paths) -> AuditReport` measuring, across a project's pipeline
   YAMLs, the share declaring `data_product`, `contract`, a structured owner, a

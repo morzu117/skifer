@@ -350,6 +350,111 @@ class SparkBackend:
         ).collect()
         return [row.asDict(recursive=True) for row in rows]
 
+    def upsert_incident(self, schema: str, row: dict) -> None:
+        from skifer.core.sql_compiler import quote_ident
+
+        plain = f"{schema}.incidents"
+        qualified = f"{quote_ident(schema)}.{quote_ident('incidents')}"
+        self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_ident(schema)}")
+        schema_ddl = (
+            "id STRING, target_fqn STRING, run_id STRING, check_name STRING, "
+            "severity STRING, status STRING, opened_at STRING, assignee STRING, "
+            "root_cause STRING, resolved_at STRING"
+        )
+        if not self._spark.catalog.tableExists(plain):
+            self._spark.createDataFrame([row], schema=schema_ddl).write.format(
+                "delta"
+            ).saveAsTable(plain)
+            return
+        view_name = "_skifer_incident_src"
+        self._spark.createDataFrame([row], schema=schema_ddl).createOrReplaceTempView(
+            view_name
+        )
+        assignments = ", ".join(
+            f"t.{quote_ident(key)} = s.{quote_ident(key)}" for key in row
+        )
+        self._spark.sql(
+            f"MERGE INTO {qualified} t USING {view_name} s ON t.id = s.id "
+            f"WHEN MATCHED THEN UPDATE SET {assignments} "
+            "WHEN NOT MATCHED THEN INSERT *"
+        )
+
+    def get_open_incident(
+        self, schema: str, target_fqn: str, check_name: str
+    ) -> dict | None:
+        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+
+        plain = f"{schema}.incidents"
+        if not self._spark.catalog.tableExists(plain):
+            return None
+        escaped_target = escape_sql_string(target_fqn)
+        escaped_check = escape_sql_string(check_name)
+        row = self._spark.sql(
+            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('incidents')} "
+            f"WHERE {quote_ident('target_fqn')} = '{escaped_target}' "
+            f"AND {quote_ident('check_name')} = '{escaped_check}' "
+            f"AND {quote_ident('status')} != 'RESOLVED' "
+            f"ORDER BY {quote_ident('opened_at')} DESC LIMIT 1"
+        ).first()
+        return row.asDict(recursive=True) if row else None
+
+    def list_open_incidents(self, schema: str, target_fqn: str) -> list[dict]:
+        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+
+        plain = f"{schema}.incidents"
+        if not self._spark.catalog.tableExists(plain):
+            return []
+        escaped = escape_sql_string(target_fqn)
+        rows = self._spark.sql(
+            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('incidents')} "
+            f"WHERE {quote_ident('target_fqn')} = '{escaped}' "
+            f"AND {quote_ident('status')} != 'RESOLVED' "
+            f"ORDER BY {quote_ident('opened_at')} DESC"
+        ).collect()
+        return [row.asDict(recursive=True) for row in rows]
+
+    def get_incident(self, schema: str, incident_id: str) -> dict | None:
+        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+
+        plain = f"{schema}.incidents"
+        if not self._spark.catalog.tableExists(plain):
+            return None
+        escaped = escape_sql_string(incident_id)
+        row = self._spark.sql(
+            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('incidents')} "
+            f"WHERE {quote_ident('id')} = '{escaped}' LIMIT 1"
+        ).first()
+        return row.asDict(recursive=True) if row else None
+
+    def list_incidents(
+        self,
+        schema: str,
+        *,
+        status: str | None = None,
+        target_fqn: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+
+        plain = f"{schema}.incidents"
+        if not self._spark.catalog.tableExists(plain):
+            return []
+        clauses = []
+        if status is not None:
+            clauses.append(
+                f"{quote_ident('status')} = '{escape_sql_string(status)}'"
+            )
+        if target_fqn is not None:
+            clauses.append(
+                f"{quote_ident('target_fqn')} = '{escape_sql_string(target_fqn)}'"
+            )
+        query = f"SELECT * FROM {quote_ident(schema)}.{quote_ident('incidents')}"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += f" ORDER BY {quote_ident('opened_at')} DESC LIMIT {int(limit)}"
+        rows = self._spark.sql(query).collect()
+        return [row.asDict(recursive=True) for row in rows]
+
     def append_semantic_usage_event(self, schema: str, row: dict) -> None:
         """Append one idempotent, value-free adaptive usage event to Delta."""
         from skifer.core.sql_compiler import escape_sql_string, quote_ident

@@ -9,6 +9,7 @@ from skifer.observability.certification_store import (
     DeltaCertificationStore, RunEvent, SqliteCertificationStore, StoredCheckResult,
 )
 from skifer.observability.checks import CheckStatus, ContractScope
+from skifer.observability.incidents import Incident, IncidentStatus
 from skifer.observability.uc_mirror import mirror_certification
 from skifer.observability.certification_store import Certification
 
@@ -155,6 +156,52 @@ def test_sqlite_get_certification_allows_non_critical_or_non_failed_checks():
     assert cert.checks_passed is True
 
 
+def test_incident_roundtrip_sqlite():
+    store = SqliteCertificationStore(":memory:")
+    opened_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    incident = Incident(
+        "run-1:NullCheck:id",
+        "sales.orders",
+        "run-1",
+        "NullCheck:id",
+        "critical",
+        IncidentStatus.NEW,
+        opened_at,
+    )
+
+    opened = store.open_incident(incident)
+    acknowledged = store.update_incident(
+        incident.id,
+        IncidentStatus.ACKNOWLEDGED,
+        at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    assigned = store.update_incident(
+        incident.id,
+        IncidentStatus.ASSIGNED,
+        at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        assignee="alice",
+    )
+    resolved = store.update_incident(
+        incident.id,
+        IncidentStatus.RESOLVED,
+        at=datetime(2026, 1, 4, tzinfo=timezone.utc),
+        root_cause="recovered",
+    )
+
+    assert opened == incident
+    assert acknowledged.status is IncidentStatus.ACKNOWLEDGED
+    assert assigned.assignee == "alice"
+    assert resolved.status is IncidentStatus.RESOLVED
+    assert resolved.root_cause == "recovered"
+    assert resolved.resolved_at == datetime(2026, 1, 4, tzinfo=timezone.utc)
+    reloaded = store.get_incident(incident.id)
+    assert reloaded == resolved
+    assert store.list_incidents(status=IncidentStatus.RESOLVED) == [resolved]
+    assert store._conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = 2"
+    ).fetchone() == (1,)
+
+
 def test_delta_adapter_delegates_to_certification_specific_backend_methods():
     class Backend:
         def __init__(self): self.calls = []
@@ -163,6 +210,76 @@ def test_delta_adapter_delegates_to_certification_specific_backend_methods():
     DeltaCertificationStore(backend).append_run_event(_event())
     assert backend.calls[0][0] == "_skifer_certification"
     assert backend.calls[0][1]["run_id"] == "run-1"
+
+
+def test_delta_incident_adapter_roundtrip():
+    class Backend:
+        def __init__(self):
+            self.rows = {}
+
+        def upsert_incident(self, schema, row):
+            self.rows[row["id"]] = dict(row)
+
+        def get_open_incident(self, schema, target_fqn, check_name):
+            for row in self.rows.values():
+                if (
+                    row["target_fqn"] == target_fqn
+                    and row["check_name"] == check_name
+                    and row["status"] != "RESOLVED"
+                ):
+                    return row
+            return None
+
+        def list_open_incidents(self, schema, target_fqn):
+            return [
+                row
+                for row in self.rows.values()
+                if row["target_fqn"] == target_fqn and row["status"] != "RESOLVED"
+            ]
+
+        def get_incident(self, schema, incident_id):
+            return self.rows.get(incident_id)
+
+        def list_incidents(self, schema, *, status=None, target_fqn=None, limit=50):
+            rows = list(self.rows.values())
+            if status is not None:
+                rows = [row for row in rows if row["status"] == status]
+            if target_fqn is not None:
+                rows = [row for row in rows if row["target_fqn"] == target_fqn]
+            return rows[:limit]
+
+    store = DeltaCertificationStore(Backend())
+    incident = Incident(
+        "run-1:NullCheck:id",
+        "sales.orders",
+        "run-1",
+        "NullCheck:id",
+        "critical",
+        IncidentStatus.NEW,
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert store.open_incident(incident) == incident
+    assert store.open_incident(
+        Incident(
+            "run-2:NullCheck:id",
+            "sales.orders",
+            "run-2",
+            "NullCheck:id",
+            "critical",
+            IncidentStatus.NEW,
+            datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+    ).id == incident.id
+    resolved = store.resolve_open_incidents(
+        "sales.orders",
+        root_cause="recovered",
+        resolved_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+    )
+
+    assert resolved[0].status is IncidentStatus.RESOLVED
+    assert store.list_open_incidents("sales.orders") == []
+    assert store.get_incident(incident.id).root_cause == "recovered"
 
 
 def test_delta_get_contract_delegates_and_rebuilds_definition():

@@ -9,6 +9,7 @@ from typing import Protocol, Sequence
 
 from skifer.observability.certification import ContractDefinition
 from skifer.observability.checks import CheckStatus, ContractScope
+from skifer.observability.incidents import Incident, IncidentStatus
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,29 @@ class CertificationStore(Protocol):
     def get_latest_promoted(self, dataset: str) -> RunEvent | None: ...
     def get_certification(self, dataset: str, consumer_class: str = "default") -> Certification: ...
     def list_history(self, dataset: str, limit: int = 50) -> list[RunEvent]: ...
+    def open_incident(self, incident: Incident) -> Incident: ...
+    def get_open_incident(self, target_fqn: str, check_name: str) -> Incident | None: ...
+    def list_open_incidents(self, target_fqn: str) -> list[Incident]: ...
+    def resolve_open_incidents(
+        self, target_fqn: str, *, root_cause: str, resolved_at: datetime
+    ) -> list[Incident]: ...
+    def get_incident(self, incident_id: str) -> Incident | None: ...
+    def update_incident(
+        self,
+        incident_id: str,
+        new_status: IncidentStatus,
+        *,
+        at: datetime,
+        assignee: str | None = None,
+        root_cause: str | None = None,
+    ) -> Incident: ...
+    def list_incidents(
+        self,
+        *,
+        status: str | None = None,
+        target_fqn: str | None = None,
+        limit: int = 50,
+    ) -> list[Incident]: ...
 
 
 def _coerce_datetime(value: object) -> datetime:
@@ -133,6 +157,35 @@ def _check_result_from_row(row: Sequence | dict) -> StoredCheckResult:
     )
 
 
+def _incident_from_row(row: Sequence | dict) -> Incident:
+    if isinstance(row, dict):
+        resolved_at = row.get("resolved_at")
+        return Incident(
+            id=row["id"],
+            target_fqn=row["target_fqn"],
+            run_id=row["run_id"],
+            check_name=row["check_name"],
+            severity=row["severity"],
+            status=IncidentStatus(row["status"]),
+            opened_at=_coerce_datetime(row["opened_at"]),
+            assignee=row.get("assignee"),
+            root_cause=row.get("root_cause"),
+            resolved_at=_coerce_datetime(resolved_at) if resolved_at else None,
+        )
+    return Incident(
+        id=row[0],
+        target_fqn=row[1],
+        run_id=row[2],
+        check_name=row[3],
+        severity=row[4],
+        status=IncidentStatus(row[5]),
+        opened_at=_coerce_datetime(row[6]),
+        assignee=row[7],
+        root_cause=row[8],
+        resolved_at=_coerce_datetime(row[9]) if row[9] else None,
+    )
+
+
 class SqliteCertificationStore:
     """Local certification store; rows are immutable and event IDs are idempotency keys."""
 
@@ -153,7 +206,13 @@ class SqliteCertificationStore:
         CREATE TABLE IF NOT EXISTS check_results (
           event_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, check_type TEXT NOT NULL, scope TEXT NOT NULL,
           severity TEXT NOT NULL, status TEXT NOT NULL, actual_value TEXT, expected_value TEXT, message TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS incidents (
+          id TEXT PRIMARY KEY, target_fqn TEXT NOT NULL, run_id TEXT NOT NULL,
+          check_name TEXT NOT NULL, severity TEXT NOT NULL, status TEXT NOT NULL,
+          opened_at TEXT NOT NULL, assignee TEXT, root_cause TEXT, resolved_at TEXT);
+        CREATE INDEX IF NOT EXISTS idx_incidents_open ON incidents(target_fqn, check_name, status);
         INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
+        INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
         """)
         self._conn.commit()
 
@@ -244,6 +303,135 @@ class SqliteCertificationStore:
         ).fetchall()
         return [_check_result_from_row(row) for row in rows]
 
+    def open_incident(self, incident: Incident) -> Incident:
+        existing = self.get_open_incident(incident.target_fqn, incident.check_name)
+        if existing is not None:
+            return existing
+        self._conn.execute(
+            "INSERT OR IGNORE INTO incidents "
+            "(id, target_fqn, run_id, check_name, severity, status, opened_at, assignee, root_cause, resolved_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                incident.id,
+                incident.target_fqn,
+                incident.run_id,
+                incident.check_name,
+                incident.severity,
+                incident.status.value,
+                incident.opened_at.isoformat(),
+                incident.assignee,
+                incident.root_cause,
+                incident.resolved_at.isoformat() if incident.resolved_at else None,
+            ),
+        )
+        self._conn.commit()
+        return self.get_incident(incident.id) or incident
+
+    def get_open_incident(self, target_fqn: str, check_name: str) -> Incident | None:
+        row = self._conn.execute(
+            "SELECT id, target_fqn, run_id, check_name, severity, status, opened_at, assignee, root_cause, resolved_at "
+            "FROM incidents WHERE target_fqn = ? AND check_name = ? AND status != ? "
+            "ORDER BY opened_at DESC LIMIT 1",
+            (target_fqn, check_name, IncidentStatus.RESOLVED.value),
+        ).fetchone()
+        return _incident_from_row(row) if row else None
+
+    def list_open_incidents(self, target_fqn: str) -> list[Incident]:
+        rows = self._conn.execute(
+            "SELECT id, target_fqn, run_id, check_name, severity, status, opened_at, assignee, root_cause, resolved_at "
+            "FROM incidents WHERE target_fqn = ? AND status != ? ORDER BY opened_at DESC",
+            (target_fqn, IncidentStatus.RESOLVED.value),
+        ).fetchall()
+        return [_incident_from_row(row) for row in rows]
+
+    def resolve_open_incidents(
+        self, target_fqn: str, *, root_cause: str, resolved_at: datetime
+    ) -> list[Incident]:
+        updated = [
+            incident.transition(
+                IncidentStatus.RESOLVED, at=resolved_at, root_cause=root_cause
+            )
+            for incident in self.list_open_incidents(target_fqn)
+        ]
+        self._conn.executemany(
+            "UPDATE incidents SET status = ?, assignee = ?, root_cause = ?, resolved_at = ? WHERE id = ?",
+            [
+                (
+                    incident.status.value,
+                    incident.assignee,
+                    incident.root_cause,
+                    incident.resolved_at.isoformat() if incident.resolved_at else None,
+                    incident.id,
+                )
+                for incident in updated
+            ],
+        )
+        self._conn.commit()
+        return updated
+
+    def get_incident(self, incident_id: str) -> Incident | None:
+        row = self._conn.execute(
+            "SELECT id, target_fqn, run_id, check_name, severity, status, opened_at, assignee, root_cause, resolved_at "
+            "FROM incidents WHERE id = ?",
+            (incident_id,),
+        ).fetchone()
+        return _incident_from_row(row) if row else None
+
+    def update_incident(
+        self,
+        incident_id: str,
+        new_status: IncidentStatus,
+        *,
+        at: datetime,
+        assignee: str | None = None,
+        root_cause: str | None = None,
+    ) -> Incident:
+        current = self.get_incident(incident_id)
+        if current is None:
+            raise KeyError(incident_id)
+        updated = current.transition(
+            new_status, at=at, assignee=assignee, root_cause=root_cause
+        )
+        self._conn.execute(
+            "UPDATE incidents SET status = ?, assignee = ?, root_cause = ?, resolved_at = ? WHERE id = ?",
+            (
+                updated.status.value,
+                updated.assignee,
+                updated.root_cause,
+                updated.resolved_at.isoformat() if updated.resolved_at else None,
+                incident_id,
+            ),
+        )
+        self._conn.commit()
+        return updated
+
+    def list_incidents(
+        self,
+        *,
+        status: str | None = None,
+        target_fqn: str | None = None,
+        limit: int = 50,
+    ) -> list[Incident]:
+        clauses = []
+        values: list[object] = []
+        if status is not None:
+            status_value = status.value if hasattr(status, "value") else status
+            clauses.append("status = ?")
+            values.append(status_value)
+        if target_fqn is not None:
+            clauses.append("target_fqn = ?")
+            values.append(target_fqn)
+        query = (
+            "SELECT id, target_fqn, run_id, check_name, severity, status, opened_at, assignee, root_cause, resolved_at "
+            "FROM incidents"
+        )
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY opened_at DESC LIMIT ?"
+        values.append(limit)
+        rows = self._conn.execute(query, values).fetchall()
+        return [_incident_from_row(row) for row in rows]
+
     def close(self) -> None:
         self._conn.close()
 
@@ -311,3 +499,68 @@ class DeltaCertificationStore:
     def get_check_results(self, run_id: str) -> list[StoredCheckResult]:
         rows = self.backend.get_certification_check_results(self.schema, run_id)
         return [_check_result_from_row(row) for row in rows]
+
+    def open_incident(self, incident: Incident) -> Incident:
+        existing = self.get_open_incident(incident.target_fqn, incident.check_name)
+        if existing is not None:
+            return existing
+        self.backend.upsert_incident(self.schema, self._row(incident))
+        return self.get_incident(incident.id) or incident
+
+    def get_open_incident(self, target_fqn: str, check_name: str) -> Incident | None:
+        row = self.backend.get_open_incident(self.schema, target_fqn, check_name)
+        return _incident_from_row(row) if row else None
+
+    def list_open_incidents(self, target_fqn: str) -> list[Incident]:
+        rows = self.backend.list_open_incidents(self.schema, target_fqn)
+        return [_incident_from_row(row) for row in rows]
+
+    def resolve_open_incidents(
+        self, target_fqn: str, *, root_cause: str, resolved_at: datetime
+    ) -> list[Incident]:
+        resolved = []
+        for incident in self.list_open_incidents(target_fqn):
+            resolved.append(
+                self.update_incident(
+                    incident.id,
+                    IncidentStatus.RESOLVED,
+                    at=resolved_at,
+                    root_cause=root_cause,
+                )
+            )
+        return resolved
+
+    def get_incident(self, incident_id: str) -> Incident | None:
+        row = self.backend.get_incident(self.schema, incident_id)
+        return _incident_from_row(row) if row else None
+
+    def update_incident(
+        self,
+        incident_id: str,
+        new_status: IncidentStatus,
+        *,
+        at: datetime,
+        assignee: str | None = None,
+        root_cause: str | None = None,
+    ) -> Incident:
+        current = self.get_incident(incident_id)
+        if current is None:
+            raise KeyError(incident_id)
+        updated = current.transition(
+            new_status, at=at, assignee=assignee, root_cause=root_cause
+        )
+        self.backend.upsert_incident(self.schema, self._row(updated))
+        return updated
+
+    def list_incidents(
+        self,
+        *,
+        status: str | None = None,
+        target_fqn: str | None = None,
+        limit: int = 50,
+    ) -> list[Incident]:
+        status_value = status.value if hasattr(status, "value") else status
+        rows = self.backend.list_incidents(
+            self.schema, status=status_value, target_fqn=target_fqn, limit=limit
+        )
+        return [_incident_from_row(row) for row in rows]
