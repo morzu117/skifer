@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Plan 31 (5.2)** — `ExecutionService.submit/status/cancel/logs` :
+  background pipeline jobs (`preview|run|full_refresh|check`) with a single
+  active job per project; concurrent submit is refused with `JobConflict`.
+  Cancellation flips logical state immediately and best-effort cancels the
+  Spark job group; logs are cursor-based and session close cancels an active
+  job. `SkiferEngine.run_process_to_table`/`run_from_yaml` accept and return
+  `run_id`, and the service uses `job_id` as that audit identity end to end.
 - **Plan 31 (5.1)** — `services/execution.py` :
   `ExecutionService.connect/session/close` and `SessionView(session_id, mode, env,
   catalog, user, sandbox_suffix, is_production, state, cause)`. A single session

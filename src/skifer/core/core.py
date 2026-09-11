@@ -741,6 +741,7 @@ class SkiferEngine:
         target_table_name: str,
         checkpoint: str | None = None,
         materialization: str = "streaming_table",
+        run_id: str | None = None,
     ):
         """
         Full refresh of a streaming table (Plan 27): atomically purge its
@@ -758,14 +759,17 @@ class SkiferEngine:
             materialization: ``streaming_table`` (default) or ``materialized_view``
                         — the latter has no checkpoint, so it simply drops the
                         view and lets the next run rebuild it (Plan 28).
+            run_id: Optional correlation id supplied by ExecutionService jobs.
+                    Full refresh does not persist certification.
         """
         import shutil
 
+        run_id = run_id or str(uuid4())
         actual_schema = self.get_target_schema(target_layer)
         fqn = self._build_fqn(actual_schema, target_table_name)
 
         if materialization == "materialized_view":
-            logger.info("[FullRefresh] Dropping materialized view: %s", fqn)
+            logger.info("[FullRefresh] run=%s Dropping materialized view: %s", run_id, fqn)
             if self.is_local:
                 self._drop_table_if_exists(fqn)
             else:
@@ -776,13 +780,13 @@ class SkiferEngine:
                 "[FullRefresh] Done — the next run of '%s' will recreate the view.",
                 target_table_name,
             )
-            return
+            return run_id
 
         checkpoint_path = checkpoint or self.resolve_checkpoint_location(
             actual_schema, target_table_name, {"checkpoint": "auto"}
         )
 
-        logger.info("[FullRefresh] Purging checkpoint: %s", checkpoint_path)
+        logger.info("[FullRefresh] run=%s Purging checkpoint: %s", run_id, checkpoint_path)
         shutil.rmtree(checkpoint_path.replace("file:", ""), ignore_errors=True)
         logger.info("[FullRefresh] Dropping target table: %s", fqn)
         self._drop_table_if_exists(fqn)
@@ -790,6 +794,7 @@ class SkiferEngine:
             "[FullRefresh] Done — the next run of '%s' will re-ingest the full source.",
             target_table_name,
         )
+        return run_id
 
     def get_agent(
         self,
@@ -927,13 +932,20 @@ class SkiferEngine:
             with self._trace_span("skifer.pipeline.run", attributes):
                 return business_call()
 
-    def run_process_to_table(self, schema_dict, target_layer, target_table_name, intermediate_mode="inline"):
+    def run_process_to_table(
+        self,
+        schema_dict,
+        target_layer,
+        target_table_name,
+        intermediate_mode="inline",
+        run_id=None,
+    ):
         """Delegates to PipelinePatterns.run_process_to_table (plan17-2.4)."""
         # Minted on the business path, never only when tracing is on: this id is
         # what the certification registry persists, so an audit trail that
         # existed only under an exporter would be no audit trail at all.
-        run_id = str(uuid4())
-        return self._traced_pipeline_run(
+        run_id = run_id or str(uuid4())
+        self._traced_pipeline_run(
             run_id,
             lambda: self._patterns.run_process_to_table(
                 schema_dict,
@@ -943,11 +955,19 @@ class SkiferEngine:
                 run_id=run_id,
             ),
         )
+        return run_id
 
-    def run_from_yaml(self, yaml_path, target_layer, target_table_name=None, params=None):
+    def run_from_yaml(
+        self,
+        yaml_path,
+        target_layer,
+        target_table_name=None,
+        params=None,
+        run_id=None,
+    ):
         """Delegates to PipelinePatterns.run_from_yaml (plan17-2.4)."""
-        run_id = str(uuid4())
-        return self._traced_pipeline_run(
+        run_id = run_id or str(uuid4())
+        self._traced_pipeline_run(
             run_id,
             lambda: self._patterns.run_from_yaml(
                 yaml_path,
@@ -957,6 +977,7 @@ class SkiferEngine:
                 run_id=run_id,
             ),
         )
+        return run_id
 
     def run_union_sources_to_table(self, schema_dict, source_partitions, source_layer, target_layer, target_table_name, source_base_names, source_alias, dedup_after_union=True):
         """Delegates to PipelinePatterns.run_union_sources_to_table (plan17-2.4)."""
