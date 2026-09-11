@@ -1,5 +1,6 @@
 from dataclasses import asdict
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +8,7 @@ from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification_store import SqliteCertificationStore
 from skifer.observability.checks import CheckResult, CheckStatus, NullCheck, UniqueCheck
 from skifer.observability.incidents import (
+    AlertRouter,
     Incident,
     IncidentStatus,
     InvalidIncidentTransition,
@@ -315,3 +317,148 @@ def test_no_data_value_persisted():
     assert "expected_value" not in payload
     assert "customer@example.com" not in repr(payload)
     assert "redacted" not in repr(payload)
+
+
+class _FakeGovernance:
+    def __init__(self, *, owners, edges, columns=None):
+        self._owners = owners
+        self._edges = edges
+        self._columns = columns or {}
+        self.downstream_calls = []
+
+    def get_dataset_owner(self, ctx, target_fqn):
+        return self._owners.get(target_fqn)
+
+    def get_dataset(self, ctx, target_fqn):
+        return SimpleNamespace(
+            columns=[
+                SimpleNamespace(name=column)
+                for column in self._columns.get(target_fqn, ("amount",))
+            ]
+        )
+
+    def registry_downstream(self, ctx, fqn, column, max_depth=None):
+        self.downstream_calls.append((fqn, column, max_depth))
+        return list(self._edges)
+
+
+class _CapturingDispatcher:
+    def __init__(self):
+        self.calls = []
+
+    def dispatch_incident(self, *, target_fqn, incidents, recipients, config):
+        self.calls.append(
+            {
+                "target_fqn": target_fqn,
+                "incidents": list(incidents),
+                "recipients": list(recipients),
+                "config": dict(config),
+            }
+        )
+        return [recipient.contact for recipient in recipients]
+
+
+def _owner(contact: str, team: str):
+    return {"contact": contact, "team": team}
+
+
+def _edge(source: str, target: str):
+    return {
+        "source_table": source,
+        "source_column": "amount",
+        "target_table": target,
+        "target_column": "amount",
+        "transformations": [],
+        "edge_type": "select",
+    }
+
+
+def test_recipients_owner_plus_downstream():
+    governance = _FakeGovernance(
+        owners={
+            "gold.orders": _owner("owner@example.com", "gold-team"),
+            "mart.revenue": _owner("revenue@example.com", "revenue-team"),
+            "mart.margin": _owner("owner@example.com", "gold-team"),
+            "app.dashboard": _owner("dashboard@example.com", "dashboard-team"),
+        },
+        edges=(
+            _edge("gold.orders", "mart.revenue"),
+            _edge("gold.orders", "mart.margin"),
+            _edge("gold.orders", "app.dashboard"),
+        ),
+        columns={"gold.orders": ("amount",)},
+    )
+
+    recipients = AlertRouter(governance, _CapturingDispatcher()).resolve_recipients(
+        object(),
+        "gold.orders",
+    )
+
+    assert [(r.contact, r.team, r.source_fqn) for r in recipients] == [
+        ("owner@example.com", "gold-team", "gold.orders"),
+        ("dashboard@example.com", "dashboard-team", "app.dashboard"),
+        ("revenue@example.com", "revenue-team", "mart.revenue"),
+    ]
+    assert governance.downstream_calls == [("gold.orders", "amount", 3)]
+
+
+def test_n_level_propagation_bounded():
+    edges = tuple(_edge(f"table_{index}", f"table_{index + 1}") for index in range(5))
+    governance = _FakeGovernance(
+        owners={
+            f"table_{index}": _owner(f"owner{index}@example.com", f"team-{index}")
+            for index in range(6)
+        },
+        edges=edges,
+        columns={"table_0": ("amount",)},
+    )
+
+    recipients = AlertRouter(
+        governance,
+        _CapturingDispatcher(),
+        max_depth=2,
+    ).resolve_recipients(object(), "table_0")
+
+    assert [recipient.contact for recipient in recipients] == [
+        "owner0@example.com",
+        "owner1@example.com",
+        "owner2@example.com",
+    ]
+
+
+def test_alert_breaking_only_on_breaking():
+    dispatcher = _CapturingDispatcher()
+    governance = _FakeGovernance(
+        owners={
+            "gold.orders": _owner("owner@example.com", "gold-team"),
+            "app.dashboard": _owner("dashboard@example.com", "dashboard-team"),
+        },
+        edges=(_edge("gold.orders", "app.dashboard"),),
+        columns={"gold.orders": ("amount",)},
+    )
+    router = AlertRouter(governance, dispatcher)
+
+    assert router.alert_breaking_change(
+        object(),
+        target_fqn="gold.orders",
+        diff=SimpleNamespace(breaking=False),
+        config={"msteams_webhook": "http://teams"},
+    ) == []
+    assert dispatcher.calls == []
+
+    notified = router.alert_breaking_change(
+        object(),
+        target_fqn="gold.orders",
+        diff=SimpleNamespace(
+            breaking=True,
+            from_version="1.0.0",
+            to_version="2.0.0",
+        ),
+        config={"msteams_webhook": "http://teams"},
+    )
+
+    assert notified == ["owner@example.com", "dashboard@example.com"]
+    alert = dispatcher.calls[0]["incidents"][0]
+    assert alert.check_name == "breaking contract change"
+    assert alert.from_version == "1.0.0"
+    assert alert.to_version == "2.0.0"

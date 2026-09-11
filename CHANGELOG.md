@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deduplicate while open, stay idempotent under `resume()`, and auto-resolve
   open incidents as `recovered` on the next `PROMOTED`. Incident hooks are
   non-blocking and persist no data values.
+- **Plan 31 (4.2)** — Alert routing now targets the structured dataset owner
+  plus downstream consumer owners through bounded registry lineage. MS Teams and
+  Google Chat channels were added to `AlertDispatcher`; channel failures remain
+  warnings. `ContractDiff.breaking` is the only contract-diff alert trigger, and
+  incident/breaking alert messages use a separate redacted payload with no data
+  values.
 - Coverage audit (`skifer.observability.audit`): pure, deterministic
   `audit_project(paths) -> AuditReport` measuring, across a project's pipeline
   YAMLs, the share declaring `data_product`, `contract`, a structured owner, a
