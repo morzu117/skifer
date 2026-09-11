@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `observability/metadata_store.py`: `DatasetRecord`/`ColumnRecord`, the `MetadataStore`
+  Protocol and its `SqliteMetadataStore` (`.skifer_metadata.db`) /
+  `DeltaMetadataStore` (`_skifer_metadata`) backends. Upsert is idempotent by
+  `(target_fqn, definition_hash)`: re-indexing an unchanged definition writes nothing.
 - `diff_contracts(a, b)` reports contract deltas (added/removed/retyped/required/classification/SLA)
   and flags breaking changes (column removal, retype, `required` hardening, classification downgrade,
   SLA relaxation or any non-comparable SLA change). It is surfaced in `semantic sync` reporting and
