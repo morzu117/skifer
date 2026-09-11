@@ -16,6 +16,12 @@ CLASSIFICATION_RANK: dict[str, int] = {
 # Restricted and PII filter values remain visible in governed audit evidence.
 SENSITIVE_CLASSIFICATIONS: frozenset[str] = frozenset({"restricted", "pii"})
 
+# Contract lifecycle statuses accepted in the ``contract:`` block (Plan 31.3.3).
+VALID_CONTRACT_STATUSES: frozenset[str] = frozenset(
+    {"draft", "active", "deprecated"}
+)
+DEFAULT_CONTRACT_STATUS: str = "active"
+
 #: Spark file formats supported by the declarative ``source:`` block (Plan 14).
 VALID_SOURCE_TYPES: frozenset[str] = frozenset(
     {"csv", "parquet", "json", "avro", "orc", "delta", "text"}

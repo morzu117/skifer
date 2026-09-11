@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from skifer.core.constants import DEFAULT_CONTRACT_STATUS
+
 VALID_JOIN_TYPES: frozenset[str] = frozenset(
     {"left", "right", "inner", "full", "cross", "left_anti", "left_semi"}
 )
@@ -240,6 +242,22 @@ class ParsedOutputField:
 
 
 @dataclass(frozen=True)
+class ParsedSla:
+    """Contract SLA metadata (Plan 31.3.3)."""
+
+    refresh_frequency: str | None = None
+    max_latency: str | None = None
+
+
+@dataclass(frozen=True)
+class ParsedSecurity:
+    """Contract security metadata (Plan 31.3.3)."""
+
+    level: str | None = None
+    access_policy: str | None = None
+
+
+@dataclass(frozen=True)
 class ParsedSemanticSeed:
     """Minimal semantic metadata co-authored with a pipeline (Plan 29)."""
 
@@ -271,6 +289,12 @@ class ParsedSchema:
         data_product: Optional versioned product metadata (Plan 29).
         contract_output: Explicit output-field contracts (Plan 29).
         contract_grain: Optional declared output grain (Plan 29).
+        contract_status: Contract lifecycle status (Plan 31.3.3).
+        contract_reviewers: Human reviewers for lifecycle governance.
+        contract_effective_from: Optional inclusive ISO date lower bound.
+        contract_effective_until: Optional inclusive ISO date upper bound.
+        contract_sla: Optional SLA block.
+        contract_security: Optional security block.
         semantic: Optional seed for a generated semantic model (Plan 29).
         raw: The original normalized schema dict (for callers not yet on IR).
     """
@@ -288,6 +312,12 @@ class ParsedSchema:
     data_product: ParsedDataProduct | None = None
     contract_output: list[ParsedOutputField] = field(default_factory=list)
     contract_grain: list[str] = field(default_factory=list)
+    contract_status: str = DEFAULT_CONTRACT_STATUS
+    contract_reviewers: tuple[str, ...] = field(default_factory=tuple)
+    contract_effective_from: str | None = None
+    contract_effective_until: str | None = None
+    contract_sla: ParsedSla | None = None
+    contract_security: ParsedSecurity | None = None
     semantic: ParsedSemanticSeed | None = None
     raw: dict = field(default_factory=dict)
 
@@ -405,6 +435,10 @@ def parse_to_ir(schema_dict: dict) -> ParsedSchema:
         for name, metadata in raw_contract.get("output", {}).items()
     ]
     contract_grain = list(raw_contract.get("grain", []))
+    contract_sla = ParsedSla(**raw_contract["sla"]) if raw_contract.get("sla") else None
+    contract_security = (
+        ParsedSecurity(**raw_contract["security"]) if raw_contract.get("security") else None
+    )
 
     raw_semantic = schema_dict.get("semantic")
     semantic = None
@@ -431,6 +465,12 @@ def parse_to_ir(schema_dict: dict) -> ParsedSchema:
         data_product=data_product,
         contract_output=contract_output,
         contract_grain=contract_grain,
+        contract_status=raw_contract.get("status", DEFAULT_CONTRACT_STATUS),
+        contract_reviewers=tuple(raw_contract.get("reviewers", [])),
+        contract_effective_from=raw_contract.get("effective_from"),
+        contract_effective_until=raw_contract.get("effective_until"),
+        contract_sla=contract_sla,
+        contract_security=contract_security,
         semantic=semantic,
         raw=schema_dict,
     )

@@ -25,6 +25,7 @@ from skifer.observability.checks import (
     TypeCheck,
     FilterInvariantCheck,
     FreshnessCheck,
+    LoadFreshnessCheck,
     VolumeCheck,
     VolumeVariationCheck,
     SchemaDriftCheck,
@@ -107,6 +108,22 @@ class ContractExtractor:
         if observability_cfg:
             obs_contracts = self._extract_observability(first_table_fqn, observability_cfg, schema_dict)
             contracts.extend(obs_contracts)
+
+        sla = (schema_dict.get("contract") or {}).get("sla") or {}
+        max_latency = sla.get("max_latency")
+        if max_latency:
+            try:
+                FreshnessCheck._parse_delay(str(max_latency))
+            except ValueError:
+                pass
+            else:
+                contracts.append(
+                    LoadFreshnessCheck(
+                        table=first_table_fqn,
+                        max_delay=str(max_latency),
+                        severity="critical",
+                    )
+                )
 
         return contracts
 

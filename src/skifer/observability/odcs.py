@@ -73,18 +73,32 @@ def export_odcs_31(schema: ParsedSchema, definition: ContractDefinition) -> Odcs
     if product and product.owner_domain:
         custom_properties["skifer.domain"] = product.owner_domain
 
+    sla_properties = []
+    if schema.contract_sla:
+        if schema.contract_sla.refresh_frequency:
+            sla_properties.append(
+                {
+                    "property": "refreshFrequency",
+                    "value": schema.contract_sla.refresh_frequency,
+                }
+            )
+        if schema.contract_sla.max_latency:
+            sla_properties.append(
+                {"property": "latency", "value": schema.contract_sla.max_latency}
+            )
+
     document = {
         "apiVersion": "v3.1.0",
         "kind": "DataContract",
         "id": definition.contract_id,
         "version": definition.contract_version,
-        "status": definition.status.lower(),
+        "status": schema.contract_status or definition.status.lower(),
         "description": product.description if product else None,
         "schema": {"properties": fields},
         "quality": quality,
         "team": team,
         "roles": [{"role": "reader", "access": "read"}],
-        "slaProperties": [],
+        "slaProperties": sla_properties,
         "customProperties": custom_properties,
     }
     return OdcsExport(document=document, warnings=tuple(warnings))

@@ -199,6 +199,57 @@
           "additionalProperties": {
             "$ref": "#/$defs/OutputFieldDef"
           }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "deprecated",
+            "draft"
+          ]
+        },
+        "reviewers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "effective_from": {
+          "type": "string",
+          "format": "date"
+        },
+        "effective_until": {
+          "type": "string",
+          "format": "date"
+        },
+        "sla": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "refresh_frequency": {
+              "type": "string",
+              "minLength": 1
+            },
+            "max_latency": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "security": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "level": {
+              "type": "string",
+              "minLength": 1
+            },
+            "access_policy": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },

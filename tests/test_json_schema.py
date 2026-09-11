@@ -15,7 +15,7 @@ import pathlib
 import pytest
 
 from skifer.core.json_schema import generate_json_schema
-from skifer.core.constants import CLASSIFICATION_LEVELS
+from skifer.core.constants import CLASSIFICATION_LEVELS, VALID_CONTRACT_STATUSES
 from skifer.core.op_catalog import FILTER_OPERATORS, COLUMN_OPS
 
 
@@ -111,6 +111,18 @@ class TestGenerateJsonSchema:
         ]["classification"]
 
         assert classification["enum"] == list(CLASSIFICATION_LEVELS)
+
+    def test_contract_lifecycle_sla_and_security_schema(self):
+        contract = generate_json_schema()["$defs"]["ContractDef"]["properties"]
+
+        assert contract["status"]["enum"] == sorted(VALID_CONTRACT_STATUSES)
+        assert contract["reviewers"]["items"] == {"type": "string", "minLength": 1}
+        assert contract["effective_from"] == {"type": "string", "format": "date"}
+        assert contract["effective_until"] == {"type": "string", "format": "date"}
+        assert contract["sla"]["additionalProperties"] is False
+        assert set(contract["sla"]["properties"]) == {"refresh_frequency", "max_latency"}
+        assert contract["security"]["additionalProperties"] is False
+        assert set(contract["security"]["properties"]) == {"level", "access_policy"}
 
     def test_table_def_has_streaming_flag(self):
         s = generate_json_schema()
@@ -272,7 +284,15 @@ class TestValidation:
             "tables": [{"name": "silver.orders"}],
             "select_final": [["order_id", "order_id"]],
             "data_product": {"id": "sales.orders", "version": "1.0.0"},
-            "contract": {"output": {"order_id": {"required": True}}},
+            "contract": {
+                "status": "active",
+                "reviewers": ["alice@example.com"],
+                "effective_from": "2026-01-01",
+                "effective_until": "2026-12-31",
+                "sla": {"refresh_frequency": "1h", "max_latency": "12h"},
+                "security": {"level": "restricted", "access_policy": "row_filter:region"},
+                "output": {"order_id": {"required": True}},
+            },
             "semantic": {"model_key": "orders", "dimensions": ["order_id"]},
         })
 

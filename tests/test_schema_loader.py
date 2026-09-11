@@ -165,6 +165,7 @@ select_final:
         "description": "Certified orders",
     }
     assert schema["contract"]["grain"] == ["order_id"]
+    assert schema["contract"]["status"] == "active"
     assert schema["contract"]["output"]["order_id"]["required"] is True
     assert schema["semantic"] == {
         "model_key": "orders",
@@ -261,6 +262,79 @@ select_final:
     )
 
     assert schema["data_product"]["domain"] == "commerce"
+
+
+def test_contract_lifecycle_metadata_is_normalized():
+    schema = parse_schema(
+        """
+data_product: {id: sales.orders, version: 1.0.0}
+contract:
+  status: deprecated
+  reviewers: [" alice@example.com ", " bob@example.com "]
+  effective_from: "2026-01-01"
+  effective_until: "2026-12-31"
+  sla:
+    refresh_frequency: " 1h "
+    max_latency: " 12h "
+  security:
+    level: " restricted "
+    access_policy: " row_filter:region "
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+    )
+
+    assert schema["contract"]["status"] == "deprecated"
+    assert schema["contract"]["reviewers"] == ["alice@example.com", "bob@example.com"]
+    assert schema["contract"]["effective_from"] == "2026-01-01"
+    assert schema["contract"]["effective_until"] == "2026-12-31"
+    assert schema["contract"]["sla"] == {
+        "refresh_frequency": "1h",
+        "max_latency": "12h",
+    }
+    assert schema["contract"]["security"] == {
+        "level": "restricted",
+        "access_policy": "row_filter:region",
+    }
+
+
+def test_invalid_status_refused():
+    with pytest.raises(ValueError, match=r"contract.status.*retired.*Allowed"):
+        parse_schema(
+            """
+data_product: {id: sales.orders, version: 1.0.0}
+contract:
+  status: retired
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+        )
+
+
+def test_effective_from_after_until_refused():
+    with pytest.raises(ValueError, match="effective_from must be <= effective_until"):
+        parse_schema(
+            """
+data_product: {id: sales.orders, version: 1.0.0}
+contract:
+  effective_from: "2026-12-31"
+  effective_until: "2026-01-01"
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+        )
 
 
 @pytest.mark.parametrize(

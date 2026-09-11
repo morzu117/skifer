@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from skifer.core.constants import (
     CLASSIFICATION_LEVELS,
+    VALID_CONTRACT_STATUSES,
     VALID_MATERIALIZATION_TYPES,
     VALID_MV_REFRESH_MODES,
     VALID_SOURCE_TYPES,
@@ -193,6 +194,32 @@ def generate_json_schema() -> dict:
                         "minProperties": 1,
                         "propertyNames": {"pattern": "^[A-Za-z0-9_.-]+$"},
                         "additionalProperties": {"$ref": "#/$defs/OutputFieldDef"},
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": sorted(VALID_CONTRACT_STATUSES),
+                    },
+                    "reviewers": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                    "effective_from": {"type": "string", "format": "date"},
+                    "effective_until": {"type": "string", "format": "date"},
+                    "sla": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "refresh_frequency": {"type": "string", "minLength": 1},
+                            "max_latency": {"type": "string", "minLength": 1},
+                        },
+                    },
+                    "security": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "level": {"type": "string", "minLength": 1},
+                            "access_policy": {"type": "string", "minLength": 1},
+                        },
                     },
                 },
             },

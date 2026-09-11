@@ -83,3 +83,26 @@ select_final: [[ssn, ssn]]
     exported = export_odcs_31(schema, canonicalize_contract(schema))
 
     assert exported.document["schema"]["properties"][0]["classification"] == "pii"
+
+
+def test_odcs_sla_properties_filled():
+    schema = parse_to_ir(parse_schema("""
+data_product: {id: sales.orders, version: 1.0.0}
+contract:
+  status: deprecated
+  sla:
+    refresh_frequency: 1h
+    max_latency: 12h
+  output:
+    order_id: {}
+tables: [{name: silver.orders}]
+select_final: [[id, order_id]]
+"""))
+
+    exported = export_odcs_31(schema, canonicalize_contract(schema))
+
+    assert exported.document["status"] == "deprecated"
+    assert exported.document["slaProperties"] == [
+        {"property": "refreshFrequency", "value": "1h"},
+        {"property": "latency", "value": "12h"},
+    ]

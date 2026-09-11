@@ -10,7 +10,7 @@ import re
 from skifer.core.ir import ParsedSchema
 
 
-CANONICALIZATION_VERSION = 1
+CANONICALIZATION_VERSION = 2
 HASH_ALGORITHM = "sha256"
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -67,6 +67,22 @@ def canonicalize_contract(schema: ParsedSchema) -> ContractDefinition:
                 }
                 for field in schema.contract_output
             ],
+            "sla": (
+                {
+                    "refresh_frequency": schema.contract_sla.refresh_frequency,
+                    "max_latency": schema.contract_sla.max_latency,
+                }
+                if schema.contract_sla
+                else None
+            ),
+            "security": (
+                {
+                    "level": schema.contract_security.level,
+                    "access_policy": schema.contract_security.access_policy,
+                }
+                if schema.contract_security
+                else None
+            ),
         },
         "semantic": (
             {

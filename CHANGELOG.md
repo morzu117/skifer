@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The `contract:` block gains lifecycle metadata (`status`: draft/active/deprecated,
+  `reviewers[]`, `effective_from`/`effective_until`), an `sla`
+  (`refresh_frequency`/`max_latency`) and a `security` (`level`/`access_policy`) block. A
+  `LoadFreshnessCheck` is derived from the SLA, and `access_policy.evaluate_lifecycle()` warns on
+  deprecated contracts and denies reads outside the effective window.
 - `data_product.owner` now accepts a structured mapping (`team`/`steward`/`domain`/`contact`) in
   addition to a plain string, plus a top-level `data_product.domain`. Ownership flows into the ODCS
   `team[]` block and the Unity Catalog `skifer_owner`/`skifer_domain` tags. Ownership stays excluded
@@ -21,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The contract canonicalization version moved from 1 to 2: `sla` and `security` are now part of the
+  contract hash, while `status`, `reviewers` and the effective dates are deliberately excluded.
+  Version-1 definition hashes remain readable; a documentation- or lifecycle-only change never
+  invalidates a certification.
 - **Plan 31 (1.6)** — `services/identity.py` :
   `LocalIdentity`/`LOCAL_DEFAULT_SCOPES`/`local_request_context` pour le MCP stdio
   et tout client local. Tous les scopes nommés sauf `certification_override`

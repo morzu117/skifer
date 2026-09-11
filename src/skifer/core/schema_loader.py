@@ -5,6 +5,7 @@ Schema loader — loads and normalizes pipeline schemas from YAML files or inlin
 from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import date
 import difflib
 import logging
 import re
@@ -13,8 +14,10 @@ import yaml
 
 from skifer.core.constants import (
     CLASSIFICATION_LEVELS,
+    DEFAULT_CONTRACT_STATUS,
     DEFAULT_STREAMING_TRIGGER,
     MATERIALIZATION_ALLOWED_KEYS,
+    VALID_CONTRACT_STATUSES,
     VALID_MATERIALIZATION_TYPES,
     VALID_MV_REFRESH_MODES,
     VALID_MV_SCHEDULE_PREFIXES,
@@ -39,7 +42,20 @@ VALID_SINK_TYPES: frozenset[str] = frozenset({"delta", "postgres", "jdbc"})
 _AGENT_READY_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _DATA_PRODUCT_ALLOWED_KEYS = frozenset({"id", "version", "owner", "description", "domain"})
 _OWNER_ALLOWED_KEYS = frozenset({"team", "steward", "domain", "contact"})
-_CONTRACT_ALLOWED_KEYS = frozenset({"grain", "output"})
+_CONTRACT_ALLOWED_KEYS = frozenset(
+    {
+        "grain",
+        "output",
+        "status",
+        "reviewers",
+        "effective_from",
+        "effective_until",
+        "sla",
+        "security",
+    }
+)
+_SLA_ALLOWED_KEYS = frozenset({"refresh_frequency", "max_latency"})
+_SECURITY_ALLOWED_KEYS = frozenset({"level", "access_policy"})
 _OUTPUT_FIELD_ALLOWED_KEYS = frozenset(
     {"logical_type", "required", "unique", "classification", "entity", "description"}
 )
@@ -99,6 +115,53 @@ def _normalize_data_product_owner(owner: object, errors: list[str]) -> str | dic
             )
             continue
         normalized[key] = value.strip()
+    return normalized
+
+
+def _normalize_string_mapping(
+    value: object,
+    *,
+    location: str,
+    allowed_keys: frozenset[str],
+    errors: list[str],
+) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        errors.append(f"  [{location}] must be a mapping when provided.")
+        return None
+
+    unknown = set(value) - allowed_keys
+    if unknown:
+        errors.append(
+            f"  [{location}] unknown keys: {sorted(unknown)}. "
+            f"Allowed keys: {sorted(allowed_keys)}"
+        )
+
+    normalized: dict[str, str] = {}
+    for key, item in value.items():
+        if key not in allowed_keys:
+            continue
+        if not isinstance(item, str) or not item.strip():
+            errors.append(f"  [{location}.{key}] must be a non-empty string when provided.")
+            continue
+        normalized[key] = item.strip()
+    return normalized
+
+
+def _normalize_contract_date(
+    value: object,
+    *,
+    location: str,
+    errors: list[str],
+) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"  [{location}] must be an ISO date string (YYYY-MM-DD) when provided.")
+        return None
+    normalized = value.strip()
+    try:
+        date.fromisoformat(normalized)
+    except ValueError:
+        errors.append(f"  [{location}] must be an ISO date string (YYYY-MM-DD), got {value!r}.")
+        return None
     return normalized
 
 
@@ -632,10 +695,95 @@ def _normalize_agent_ready_metadata(schema_dict: dict) -> None:
                         f"  [contract.grain] column '{field_name}' is not declared in contract.output."
                     )
 
+            status = contract.get("status", DEFAULT_CONTRACT_STATUS)
+            normalized_status = DEFAULT_CONTRACT_STATUS
+            if not isinstance(status, str) or not status.strip():
+                errors.append("  [contract.status] must be a non-empty string when provided.")
+            else:
+                normalized_status = status.strip()
+                if normalized_status not in VALID_CONTRACT_STATUSES:
+                    errors.append(
+                        f"  [contract.status] '{normalized_status}' is invalid. "
+                        f"Allowed: {sorted(VALID_CONTRACT_STATUSES)}"
+                    )
+
+            normalized_reviewers: list[str] = []
+            if "reviewers" in contract:
+                reviewers = contract["reviewers"]
+                if not isinstance(reviewers, list):
+                    errors.append("  [contract.reviewers] must be a list of non-empty strings.")
+                else:
+                    for index, reviewer in enumerate(reviewers):
+                        if not isinstance(reviewer, str) or not reviewer.strip():
+                            errors.append(
+                                f"  [contract.reviewers[{index}]] must be a non-empty string."
+                            )
+                        else:
+                            normalized_reviewers.append(reviewer.strip())
+
+            normalized_effective_from = (
+                _normalize_contract_date(
+                    contract["effective_from"],
+                    location="contract.effective_from",
+                    errors=errors,
+                )
+                if "effective_from" in contract
+                else None
+            )
+            normalized_effective_until = (
+                _normalize_contract_date(
+                    contract["effective_until"],
+                    location="contract.effective_until",
+                    errors=errors,
+                )
+                if "effective_until" in contract
+                else None
+            )
+            if normalized_effective_from and normalized_effective_until:
+                if date.fromisoformat(normalized_effective_from) > date.fromisoformat(
+                    normalized_effective_until
+                ):
+                    errors.append("  [contract] effective_from must be <= effective_until.")
+
+            normalized_sla = (
+                _normalize_string_mapping(
+                    contract["sla"],
+                    location="contract.sla",
+                    allowed_keys=_SLA_ALLOWED_KEYS,
+                    errors=errors,
+                )
+                if "sla" in contract
+                else None
+            )
+            normalized_security = (
+                _normalize_string_mapping(
+                    contract["security"],
+                    location="contract.security",
+                    allowed_keys=_SECURITY_ALLOWED_KEYS,
+                    errors=errors,
+                )
+                if "security" in contract
+                else None
+            )
+
             if not errors and isinstance(output, dict):
-                schema_dict["contract"] = {"output": normalized_output}
+                normalized_contract: dict[str, object] = {
+                    "output": normalized_output,
+                    "status": normalized_status,
+                }
                 if "grain" in contract:
-                    schema_dict["contract"]["grain"] = normalized_grain
+                    normalized_contract["grain"] = normalized_grain
+                if "reviewers" in contract:
+                    normalized_contract["reviewers"] = normalized_reviewers
+                if normalized_effective_from is not None:
+                    normalized_contract["effective_from"] = normalized_effective_from
+                if normalized_effective_until is not None:
+                    normalized_contract["effective_until"] = normalized_effective_until
+                if normalized_sla is not None:
+                    normalized_contract["sla"] = normalized_sla
+                if normalized_security is not None:
+                    normalized_contract["security"] = normalized_security
+                schema_dict["contract"] = normalized_contract
 
     # --- semantic seed ---------------------------------------------------
     if "semantic" in schema_dict:
