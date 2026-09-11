@@ -123,10 +123,76 @@ class GovernanceService:
         if not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows < 1:
             raise ValueError("max_rows must be a positive integer.")
         self._store = certification_store
+        self._metadata_store = metadata_store
         self._registry = (
             MetadataRegistryQuery(metadata_store) if metadata_store is not None else None
         )
         self._max_rows = min(max_rows, HARD_MAX_PAGE_SIZE)
+
+    def versions(
+        self, ctx: RequestContext, contract_id: str
+    ) -> ContractVersionView:
+        """List versions when the injected certification store supports discovery."""
+        require_scope(ctx, SCOPE_CONTRACTS_READ)
+        reader = self._reader("list_contract_versions", "contract version discovery")
+        versions = reader(contract_id)
+        if not isinstance(versions, (list, tuple)) or not all(
+            isinstance(version, str) for version in versions
+        ):
+            raise ResourceUnavailable(
+                "The certification store returned invalid contract versions."
+            )
+        return ContractVersionView(contract_id, tuple(versions))
+
+    def list_data_products(self, ctx: RequestContext) -> list[DataProductView]:
+        """List products when the injected certification store supports discovery."""
+        require_scope(ctx, SCOPE_CONTRACTS_READ)
+        reader = self._reader("list_data_products", "data product discovery")
+        products = reader()
+        if not isinstance(products, (list, tuple)) or not all(
+            isinstance(product, DataProductView) for product in products
+        ):
+            raise ResourceUnavailable(
+                "The certification store returned invalid data products."
+            )
+        return list(products)
+
+    def get_data_product(
+        self, ctx: RequestContext, data_product_id: str
+    ) -> DataProductView:
+        """Read one product when the injected store supports product discovery."""
+        require_scope(ctx, SCOPE_CONTRACTS_READ)
+        reader = self._reader("get_data_product", "data product reads")
+        product = reader(data_product_id)
+        if product is None:
+            raise ResourceNotFound(f"Data product '{data_product_id}' was not found.")
+        if not isinstance(product, DataProductView):
+            raise ResourceUnavailable(
+                "The certification store returned an invalid data product."
+            )
+        return product
+
+    def dictionary(self, ctx: RequestContext, dataset: str) -> dict[str, Any]:
+        """Return the allowlisted columns of one registry dataset."""
+        require_scope(ctx, SCOPE_LINEAGE_READ)
+        if self._metadata_store is None:
+            raise ResourceUnavailable("The metadata registry is unavailable.")
+        record = self._metadata_store.get(dataset)
+        if record is None:
+            raise ResourceNotFound(f"Dataset '{dataset}' was not found.")
+        return {
+            "target_fqn": record.target_fqn,
+            "columns": [
+                {
+                    "name": column.name,
+                    "logical_type": column.logical_type,
+                    "classification": column.classification,
+                    "description": column.description,
+                    "sources": list(column.sources),
+                }
+                for column in sorted(record.columns, key=lambda item: item.name)
+            ],
+        }
 
     def get_contract(
         self, ctx: RequestContext, contract_id: str, version: str

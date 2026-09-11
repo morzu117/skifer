@@ -36,6 +36,18 @@ SEMANTIC_CONFLICT = 3
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
+def semantic_query_from_dict(payload: dict[str, Any]) -> Any:
+    """Build the service query DTO while keeping transports domain-import free."""
+    from skifer.agentic.resolver import SemanticQuery
+
+    if not isinstance(payload, dict):
+        raise InvalidRequest("Semantic query body must be an object.")
+    try:
+        return SemanticQuery.from_dict(payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidRequest("Semantic query body is invalid.") from exc
+
+
 @dataclass(frozen=True)
 class SyncOutcome:
     code: int
@@ -219,4 +231,5 @@ __all__ = [
     "SEMANTIC_CONFLICT",
     "SyncOutcome",
     "SemanticService",
+    "semantic_query_from_dict",
 ]

@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Plan 31 (6.1)** — New optional `api/` package (`[api]`: FastAPI and
+  Uvicorn, strictly lazy imports) providing a thin, scoped local HTTP surface
+  over `services/`, uniform `{code, message, path}` errors, and localhost-only
+  CORS. Service wiring lives in `services/container.py`; `api/` imports no
+  engine or store.
 - **Plan 31 (5.3)** — `ExecutionService.result` returns a bounded, JSON-native
   `ResultView` with exact totals, schema, monitor summary, publication decision,
   and bounded quarantine rows. Publication outcomes are resolved by `run_id`

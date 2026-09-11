@@ -91,6 +91,12 @@ mcp = [
     "mcp>=2.1,<3",
 ]
 
+# --- API locale (imports strictement paresseux) ---
+api = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
 # --- Bundles pratiques ---
 semantic-full = [
     "openai>=1.0.0",
@@ -116,7 +122,9 @@ dev = [
     "pytest-mock>=3.10.0",
     # Validates schemas/skifer-pipeline.schema.json. Left undeclared, the 15 tests that
     # exercise the published JSON schema skip silently in a fresh environment.
-    "jsonschema>=4.0"
+    "jsonschema>=4.0",
+    # Required by FastAPI's TestClient (starlette) to exercise the [api] routes.
+    "httpx>=0.27",
 ]
 
 [tool.setuptools.packages.find]

@@ -77,6 +77,16 @@ class SnippetSpec:
     expression: str | None = None
 
 
+def snippet_spec_from_dict(payload: dict[str, Any]) -> SnippetSpec:
+    """Build a snippet request while keeping transports free of validation logic."""
+    if not isinstance(payload, dict):
+        raise InvalidRequest("Rule snippet body must be an object.")
+    try:
+        return SnippetSpec(**payload)
+    except TypeError as exc:
+        raise InvalidRequest("Rule snippet body is invalid.") from exc
+
+
 class RuleService:
     """Application service for rule files, with no Spark runtime boundary."""
 
@@ -371,4 +381,10 @@ class RuleService:
             self._require_identifier(argument.value, "expression column")
 
 
-__all__ = ["RuleService", "RuleView", "ScanReport", "SnippetSpec"]
+__all__ = [
+    "RuleService",
+    "RuleView",
+    "ScanReport",
+    "SnippetSpec",
+    "snippet_spec_from_dict",
+]
