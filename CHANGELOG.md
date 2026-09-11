@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `import_odcs_31(doc)` reconstructs the Skifer `data_product:`/`contract:` YAML blocks from an ODCS
+  3.1 DataContract (symmetric to the export, loss-aware: unmapped fields are reported, never
+  dropped), exposed through the new `skifer contract import FILE` command.
 - The `contract:` block gains lifecycle metadata (`status`: draft/active/deprecated,
   `reviewers[]`, `effective_from`/`effective_until`), an `sla`
   (`refresh_frequency`/`max_latency`) and a `security` (`level`/`access_policy`) block. A

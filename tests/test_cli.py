@@ -6,6 +6,7 @@ On teste uniquement les chemins de sortie rapide (pas le REPL interactif).
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ from skifer.cli import (
     SEMANTIC_EXIT_DRIFT,
     SEMANTIC_EXIT_ERROR,
     SEMANTIC_EXIT_OK,
+    run_contract_command,
     run_semantic_sync,
     run_semantic_validate,
 )
@@ -119,6 +121,48 @@ def test_cli_main_importable():
     )
     assert result.returncode == 0
     assert "ok" in result.stdout
+
+
+def test_cli_contract_import_prints_yaml_block(tmp_path, capsys):
+    contract_file = tmp_path / "contract.yaml"
+    contract_file.write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "v3.1.0",
+                "kind": "DataContract",
+                "id": "sales.orders",
+                "version": "1.0.0",
+                "schema": {"properties": [{"name": "order_id", "logicalType": "identifier"}]},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = run_contract_command(
+        argparse.Namespace(contract_command="import", file=str(contract_file))
+    )
+
+    assert exit_code == 0
+    payload = yaml.safe_load(capsys.readouterr().out)
+    assert payload["data_product"] == {"id": "sales.orders", "version": "1.0.0"}
+    assert payload["contract"]["output"]["order_id"]["logical_type"] == "identifier"
+
+
+def test_cli_contract_import_missing_file_exit_1(tmp_path, capsys):
+    exit_code = run_contract_command(
+        argparse.Namespace(contract_command="import", file=str(tmp_path / "missing.yaml"))
+    )
+
+    assert exit_code == 1
+    assert "Import failed:" in capsys.readouterr().out
+
+
+def test_cli_contract_missing_subcommand_exit_2(capsys):
+    exit_code = run_contract_command(argparse.Namespace(contract_command=None))
+
+    assert exit_code == 2
+    assert "Contract command missing" in capsys.readouterr().out
 
 
 # ==============================================================================

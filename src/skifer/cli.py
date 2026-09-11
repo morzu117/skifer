@@ -194,6 +194,21 @@ def main() -> None:
         help="Days in each comparison window (default: 30).",
     )
 
+    contract_parser = subparsers.add_parser(
+        "contract",
+        help="Data-contract utilities (Plan 31).",
+    )
+    contract_subparsers = contract_parser.add_subparsers(dest="contract_command")
+    contract_import_parser = contract_subparsers.add_parser(
+        "import",
+        help="Import an ODCS 3.1 DataContract and print the Skifer YAML block.",
+    )
+    contract_import_parser.add_argument(
+        "file",
+        metavar="FILE",
+        help="Path to an ODCS 3.1 YAML/JSON document.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "validate":
@@ -206,6 +221,8 @@ def main() -> None:
         _run_mcp(args)
     elif args.command == "adaptive":
         _run_adaptive(args)
+    elif args.command == "contract":
+        _run_contract(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -214,6 +231,34 @@ def main() -> None:
 def _run_adaptive(args: argparse.Namespace) -> None:
     """Run the human review boundary with stable, category-specific exit codes."""
     sys.exit(run_adaptive_command(args))
+
+
+def _run_contract(args: argparse.Namespace) -> None:
+    """Run data-contract utilities with stable exit codes."""
+    sys.exit(run_contract_command(args))
+
+
+def run_contract_command(args: argparse.Namespace) -> int:
+    """0 success; 1 technical/validation error; 2 usage error."""
+    import yaml
+
+    from skifer.observability.odcs import import_odcs_31
+
+    if getattr(args, "contract_command", None) != "import":
+        print("Contract command missing. Use 'skifer contract import FILE'.")
+        return 2
+    try:
+        with open(args.file, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        result = import_odcs_31(doc)
+    except (OSError, ValueError) as exc:
+        print(f"Import failed: {exc}")
+        return 1
+    block = {"data_product": result.data_product, "contract": result.contract}
+    print(yaml.safe_dump(block, sort_keys=False, allow_unicode=True))
+    for warning in result.warnings:
+        print(f"# warning: {warning}")
+    return 0
 
 
 def run_adaptive_command(args: argparse.Namespace, *, workflow=None) -> int:
