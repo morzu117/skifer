@@ -1,4 +1,6 @@
 """Staging identity tests for Plan 29 certified publication."""
+import json
+
 from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification_store import RunEvent, SqliteCertificationStore, StoredCheckResult
 from skifer.observability.monitor import MonitorReport
@@ -36,6 +38,29 @@ class _SequenceMonitor:
 
 def _definition():
     return ContractDefinition("sales.orders", "1.0.0", "hash", "{}", "sales.orders", None)
+
+
+def _metadata_definition():
+    canonical_json = json.dumps({
+        "data_product": {"id": "sales.orders", "version": "1.0.0"},
+        "contract": {
+            "output": [
+                {
+                    "name": "customer_email",
+                    "logical_type": "string",
+                    "classification": "pii",
+                }
+            ]
+        },
+    })
+    return ContractDefinition(
+        "sales.orders",
+        "1.0.0",
+        "definition-hash",
+        canonical_json,
+        "sales.orders",
+        "data-platform",
+    )
 
 
 def _pass_result(fqn):
@@ -148,6 +173,68 @@ def test_promotion_resumes_run_recorded_as_promoting_after_crash():
     assert resumed.report is None
     assert store.get_run(run.run_id).state == "PROMOTED"
     assert backend._written["gold.orders"] == [{"id": 1}]
+
+
+def test_resume_indexes_metadata_reconstructed_from_contract():
+    from skifer.observability.metadata_store import SqliteMetadataStore
+
+    definition = _metadata_definition()
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    metadata_store = SqliteMetadataStore(":memory:")
+    coordinator = PublicationCoordinator(
+        backend, _Monitor(_pass_result), store, metadata_store=metadata_store
+    )
+    run = stage_dataframe(
+        backend,
+        start_publication_run("gold.orders", definition, store),
+        definition,
+        store,
+        FakeDataFrame([{"customer_email": "person@example.com"}]),
+    )
+
+    result = coordinator.resume(run, definition)
+
+    record = metadata_store.get("gold.orders")
+    assert result.state == "PROMOTED"
+    assert record is not None
+    assert record.data_product_id == "sales.orders"
+    assert record.contract_version == "1.0.0"
+    assert record.definition_hash == "definition-hash"
+    assert record.last_run_id == run.run_id
+    assert record.columns[0].name == "customer_email"
+    assert record.columns[0].logical_type == "string"
+    assert record.columns[0].classification == "pii"
+    assert record.lineage == {}
+
+
+def test_resume_metadata_store_failure_is_non_blocking():
+    class _FailingMetadataStore:
+        def get(self, target_fqn):
+            return None
+
+        def upsert(self, record):
+            raise RuntimeError("metadata unavailable")
+
+    definition = _metadata_definition()
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(
+        backend, _Monitor(_pass_result), store, metadata_store=_FailingMetadataStore()
+    )
+    run = stage_dataframe(
+        backend,
+        start_publication_run("gold.orders", definition, store),
+        definition,
+        store,
+        FakeDataFrame([{"customer_email": "person@example.com"}]),
+    )
+
+    with pytest.warns(RuntimeWarning, match="failed to index resumed publication"):
+        result = coordinator.resume(run, definition)
+
+    assert result.state == "PROMOTED"
+    assert backend._written["gold.orders"] == [
+        {"customer_email": "person@example.com"}
+    ]
 
 
 def test_promotion_fast_path_drops_orphaned_staging_without_rewriting_target(monkeypatch):

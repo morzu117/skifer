@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Metadata registry** — Crash-recovered certified publications now reconstruct
+  and index contract metadata after promotion, while normal promoted publications
+  inherit undeclared output classifications from already-indexed upstream columns.
+
 ### Added
 
 - **Plan 31 (6.2)** — CLI `skifer api serve --project DIR [--port]` (fixed

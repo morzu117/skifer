@@ -55,10 +55,11 @@ class PublicationResult:
 class PublicationCoordinator:
     """Stage, validate, persist check results, then promote or quarantine."""
 
-    def __init__(self, backend, monitor, store):
+    def __init__(self, backend, monitor, store, metadata_store=None):
         self.backend = backend
         self.monitor = monitor
         self.store = store
+        self.metadata_store = metadata_store
         # Plain getattr, not monitor.__dict__: a monitor exposing `tracer` as a
         # property was silently downgraded to NoOpTracer, i.e. tracing quietly
         # off with no way to notice.
@@ -152,6 +153,7 @@ class PublicationCoordinator:
         if isinstance(self.tracer, NoOpTracer):
             promoted = promote_staging(self.backend, run, definition, self.store)
             self._resolve_recovered(promoted)
+            self._index_resumed_metadata(promoted, definition)
             return PublicationResult(run=promoted, report=None, state="PROMOTED")
         attributes = {
             "run_id": run.run_id,
@@ -166,7 +168,36 @@ class PublicationCoordinator:
         ):
             promoted = promote_staging(self.backend, run, definition, self.store)
         self._resolve_recovered(promoted)
+        self._index_resumed_metadata(promoted, definition)
         return PublicationResult(run=promoted, report=None, state="PROMOTED")
+
+    def _index_resumed_metadata(self, run, definition) -> None:
+        """Index contract metadata recovered without the original pipeline schema."""
+        if self.metadata_store is None:
+            return
+        try:
+            from dataclasses import replace
+
+            from skifer.observability.metadata_index import (
+                dataset_record_from_definition,
+                upsert_index_record,
+            )
+
+            record = dataset_record_from_definition(
+                definition, run.target_fqn, run.run_id
+            )
+            existing = self.metadata_store.get(run.target_fqn)
+            if (
+                existing is not None
+                and existing.definition_hash == definition.definition_hash
+            ):
+                record = replace(existing, last_run_id=run.run_id)
+            upsert_index_record(self.metadata_store, record)
+        except Exception as exc:
+            warnings.warn(
+                f"[Metadata] failed to index resumed publication: {type(exc).__name__}",
+                RuntimeWarning,
+            )
 
     def _record_incidents(self, run, definition, report) -> None:
         """Open incidents for failed critical checks without blocking publication."""

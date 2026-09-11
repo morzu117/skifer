@@ -10,7 +10,12 @@ from skifer.cli import (
     run_index_command,
 )
 from skifer.core.schema_loader import parse_schema
-from skifer.observability.metadata_index import index_from_path, index_schema
+from skifer.observability.certification import ContractDefinition
+from skifer.observability.metadata_index import (
+    dataset_record_from_definition,
+    index_from_path,
+    index_schema,
+)
 from skifer.observability.metadata_store import SqliteMetadataStore
 
 
@@ -111,6 +116,32 @@ def test_index_schema_lineage_graph_populated():
 
     assert record.lineage["edges"]
     assert record.lineage["summary"]["total_edges"] == 2
+
+
+def test_dataset_record_from_definition_uses_contract_metadata():
+    definition = ContractDefinition(
+        contract_id="sales.orders",
+        contract_version="1.2.0",
+        definition_hash="definition-hash",
+        canonical_json='{"contract":{"output":[{"classification":"pii",'
+        '"description":"Customer email","logical_type":"string",'
+        '"name":"email"}]}}',
+        data_product_id="sales.orders",
+        owner="data-platform",
+    )
+
+    record = dataset_record_from_definition(definition, "gold.orders", "run-1")
+
+    assert record.target_fqn == "gold.orders"
+    assert record.pipeline_path == "sales.orders"
+    assert record.data_product_id == "sales.orders"
+    assert record.contract_version == "1.2.0"
+    assert record.definition_hash == "definition-hash"
+    assert record.owner == "data-platform"
+    assert record.last_run_id == "run-1"
+    assert record.lineage == {}
+    assert record.columns[0].classification == "pii"
+    assert record.columns[0].description == "Customer email"
 
 
 def test_index_from_path_upsert_and_noop(tmp_path):

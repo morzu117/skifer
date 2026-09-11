@@ -299,6 +299,54 @@ def test_promoted_publication_indexes_metadata_and_attaches_latest_run_id():
     assert store.get(fqn).last_run_id == "run-new"
 
 
+def test_promoted_publication_inherits_upstream_pii_classification():
+    from skifer.lineage.classification import ClassificationPropagationWarning
+    from skifer.observability.metadata_store import (
+        ColumnRecord,
+        DatasetRecord,
+        SqliteMetadataStore,
+    )
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    store = SqliteMetadataStore(":memory:")
+    engine.metadata_store = store
+    store.upsert(DatasetRecord(
+        target_fqn="silver.orders",
+        pipeline_path="upstream.yaml",
+        data_product_id="sales.raw_orders",
+        contract_version="1.0.0",
+        definition_hash="upstream-hash",
+        owner=None,
+        columns=(ColumnRecord("email", classification="pii"),),
+        indexed_at=datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc),
+    ))
+    schema = _certified_schema(
+        contract={
+            "output": {
+                "email_hash": {"logical_type": "string", "required": True},
+            },
+        },
+        select_final=[["email", "email_hash", ["upper"]]],
+    )
+    fqn = "`gold_schema`.`fact_orders`"
+    run = PublicationRun("run-new", fqn, "staging.fact_orders", RunState.PROMOTED)
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        with pytest.warns(ClassificationPropagationWarning, match="inherits classification 'pii'"):
+            patterns.run_process_to_table(schema, "gold", "fact_orders")
+
+    record = store.get(fqn)
+    assert record is not None
+    assert record.columns[0].name == "email_hash"
+    assert record.columns[0].classification == "pii"
+
+
 def test_metadata_store_failure_does_not_fail_publication(caplog):
     from skifer.observability.monitor import MonitorReport
     from skifer.observability.publication import PublicationResult, PublicationRun, RunState

@@ -2,17 +2,50 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import re
 
 from skifer.core.ir import parse_to_ir
 from skifer.core.schema_loader import parse_schema
 from skifer.lineage.tracker import LineageTracker
+from skifer.observability.certification import ContractDefinition
 from skifer.observability.metadata_store import ColumnRecord, DatasetRecord
 from skifer.semantic.output_projection import OutputProjector
 
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+
+def dataset_record_from_definition(
+    definition: ContractDefinition,
+    target_fqn: str,
+    run_id: str,
+) -> DatasetRecord:
+    """Reconstruct the metadata available during publication crash recovery."""
+    payload = json.loads(definition.canonical_json)
+    output = payload["contract"]["output"]
+    columns = tuple(
+        ColumnRecord(
+            name=field["name"],
+            logical_type=field.get("logical_type"),
+            classification=field.get("classification"),
+            description=field.get("description"),
+        )
+        for field in output
+    )
+    return DatasetRecord(
+        target_fqn=target_fqn,
+        pipeline_path=definition.data_product_id,
+        data_product_id=definition.data_product_id,
+        contract_version=definition.contract_version,
+        definition_hash=definition.definition_hash,
+        owner=definition.owner,
+        columns=columns,
+        indexed_at=datetime.now(timezone.utc),
+        last_run_id=run_id,
+        lineage={},
+    )
 
 
 def index_schema(

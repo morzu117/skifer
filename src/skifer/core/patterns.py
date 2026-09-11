@@ -126,7 +126,12 @@ class PipelinePatterns:
             from skifer.observability.publication import PublicationCoordinator
 
             definition = canonicalize_contract(parse_to_ir(schema_dict))
-            coordinator = PublicationCoordinator(e._get_backend(), e.monitor, e.certification_store)
+            coordinator = PublicationCoordinator(
+                e._get_backend(),
+                e.monitor,
+                e.certification_store,
+                metadata_store=getattr(e, "metadata_store", None),
+            )
             # Same identity from the pipeline down to the certification record,
             # so the link survives without exported traces (Plan 29).
             result = coordinator.publish(df, fqn, schema_dict, definition, run_id=run_id)
@@ -356,9 +361,78 @@ def _index_promoted_metadata(e: Any, schema_dict: dict, fqn: str, run_id: str) -
             target_fqn=fqn,
             last_run_id=run_id,
         )
+        record = _inherit_registry_classifications(store, record)
         upsert_index_record(store, record)
     except Exception as exc:
         logger.warning("   -> [Metadata] SYNC_ERROR indexing skipped (non-blocking): %s", exc)
+
+
+def _inherit_registry_classifications(store: Any, record: Any) -> Any:
+    """Enrich undeclared output classifications from indexed source columns."""
+    from dataclasses import replace
+
+    from skifer.core.constants import CLASSIFICATION_RANK
+    from skifer.lineage.classification import resolve_field_classifications
+    from skifer.lineage.tracker import LineageGraph
+
+    graph = LineageGraph.from_dict(record.lineage)
+    source_records: dict[str, Any] = {}
+    inherited: dict[str, str] = {}
+    for output_column in record.columns:
+        if output_column.classification is not None:
+            continue
+        column_graph = LineageGraph()
+        source_classifications: dict[str, str] = {}
+        for edge in graph.upstream(record.target_fqn, output_column.name):
+            column_graph.add_edge(edge)
+            if edge.source_table not in source_records:
+                try:
+                    source_records[edge.source_table] = store.get(edge.source_table)
+                except Exception:
+                    source_records[edge.source_table] = None
+            source_record = source_records[edge.source_table]
+            if source_record is None:
+                continue
+            source_column = next(
+                (
+                    column
+                    for column in source_record.columns
+                    if column.name == edge.source_column
+                ),
+                None,
+            )
+            if source_column is None or source_column.classification is None:
+                continue
+            existing = source_classifications.get(edge.source_column)
+            if existing is None or (
+                CLASSIFICATION_RANK[source_column.classification]
+                > CLASSIFICATION_RANK[existing]
+            ):
+                source_classifications[edge.source_column] = source_column.classification
+
+        if not source_classifications:
+            continue
+        inherited.update(
+            resolve_field_classifications(
+                column_graph,
+                record.target_fqn,
+                {},
+                source_classifications,
+                mode="warn",
+            )
+        )
+
+    if not inherited:
+        return record
+    return replace(
+        record,
+        columns=tuple(
+            replace(column, classification=inherited[column.name])
+            if column.classification is None and column.name in inherited
+            else column
+            for column in record.columns
+        ),
+    )
 
 
 def _schema_path_hint(schema_dict: dict, fqn: str) -> str:
