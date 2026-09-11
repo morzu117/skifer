@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `skifer lineage FQN[.column] --direction up|down --format mermaid|json`
+  and `skifer dictionary FQN` now read the persistent metadata registry
+  without Spark or pipeline re-parsing. Mermaid uses the existing
+  `LineageRenderer`, JSON output is deterministic, and both commands use the
+  metadata CLI exit-code contract (`0/1/2/3`).
 - `observability/metadata_index.py`: pure `index_schema(schema_dict, path)`
   builds a `DatasetRecord` from `OutputProjector`, `LineageTracker.from_schema`
   and contract output, with the Spark-free `skifer index PATHS` CLI.

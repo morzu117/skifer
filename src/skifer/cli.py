@@ -10,6 +10,7 @@ Usage :
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -36,6 +37,11 @@ ADAPTIVE_EXIT_REGRESSED = 5
 INDEX_EXIT_OK = 0
 INDEX_EXIT_ERROR = 1
 INDEX_EXIT_USAGE = 2
+
+META_EXIT_OK = 0
+META_EXIT_ERROR = 1
+META_EXIT_USAGE = 2
+META_EXIT_NOT_FOUND = 3
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
@@ -79,6 +85,31 @@ def main() -> None:
         default=None,
         help="Override target FQN (single path only).",
     )
+
+    lineage_parser = subparsers.add_parser(
+        "lineage",
+        help="Show lineage for a dataset column from the registry.",
+    )
+    lineage_parser.add_argument(
+        "target",
+        metavar="FQN[.column]",
+        help=(
+            "Dataset FQN, optionally .column. If the whole value matches a "
+            "registry FQN it selects the dataset; otherwise the final dot "
+            "separates the column."
+        ),
+    )
+    lineage_parser.add_argument("--direction", choices=["up", "down"], default="down")
+    lineage_parser.add_argument("--format", choices=["mermaid", "json"], default="mermaid")
+    lineage_parser.add_argument("--db", default=".skifer_metadata.db")
+
+    dictionary_parser = subparsers.add_parser(
+        "dictionary",
+        help="Show the column dictionary for a dataset.",
+    )
+    dictionary_parser.add_argument("target", metavar="FQN")
+    dictionary_parser.add_argument("--db", default=".skifer_metadata.db")
+    dictionary_parser.add_argument("--format", choices=["text", "json"], default="text")
 
     hub_parser = subparsers.add_parser(
         "hub",
@@ -240,6 +271,10 @@ def main() -> None:
         _run_validate(args)
     elif args.command == "index":
         _run_index(args)
+    elif args.command == "lineage":
+        _run_lineage(args)
+    elif args.command == "dictionary":
+        _run_dictionary(args)
     elif args.command == "hub":
         _run_hub(args)
     elif args.command == "semantic":
@@ -265,6 +300,16 @@ def _run_index(args: argparse.Namespace) -> None:
     sys.exit(run_index_command(args))
 
 
+def _run_lineage(args: argparse.Namespace) -> None:
+    """Render registry-backed lineage with stable exit codes."""
+    sys.exit(run_lineage_command(args))
+
+
+def _run_dictionary(args: argparse.Namespace) -> None:
+    """Render the registry-backed column dictionary with stable exit codes."""
+    sys.exit(run_dictionary_command(args))
+
+
 def run_index_command(args: argparse.Namespace, *, store=None) -> int:
     """Index one or more pipeline YAML files into the local metadata registry."""
     from skifer.observability.metadata_index import index_from_path
@@ -287,6 +332,132 @@ def run_index_command(args: argparse.Namespace, *, store=None) -> int:
 
     print(f"[index] {changed} record(s) written, {len(args.paths) - changed} unchanged.")
     return INDEX_EXIT_OK
+
+
+def run_lineage_command(args: argparse.Namespace, *, store=None) -> int:
+    """Show upstream or downstream lineage from the persisted metadata registry."""
+    from skifer.lineage.renderer import LineageRenderer
+    from skifer.lineage.tracker import LineageGraph
+    from skifer.observability.metadata_store import (
+        MetadataRegistryQuery,
+        SqliteMetadataStore,
+    )
+
+    if args.direction not in {"up", "down"} or args.format not in {"mermaid", "json"}:
+        print("[lineage] Invalid direction or format.", file=sys.stderr)
+        return META_EXIT_USAGE
+
+    registry = store or SqliteMetadataStore(args.db)
+    try:
+        resolved = _resolve_registry_target(registry, args.target)
+        if resolved is None:
+            print(
+                f"[lineage] '{args.target}' was not found in the metadata registry.",
+                file=sys.stderr,
+            )
+            return META_EXIT_NOT_FOUND
+        fqn, columns = resolved
+        query = MetadataRegistryQuery(registry)
+        graph = LineageGraph()
+        for column in columns:
+            edges = (
+                query.upstream(fqn, column)
+                if args.direction == "up"
+                else query.downstream(fqn, column)
+            )
+            for edge in edges:
+                graph.add_edge(edge)
+        if args.format == "json":
+            print(json.dumps(graph.to_dict(), sort_keys=True))
+        else:
+            print(LineageRenderer().to_mermaid(graph))
+        return META_EXIT_OK
+    except Exception as exc:
+        print(f"[lineage] Failed to read metadata registry: {exc}", file=sys.stderr)
+        return META_EXIT_ERROR
+
+
+def run_dictionary_command(args: argparse.Namespace, *, store=None) -> int:
+    """Show a dataset column dictionary from the persisted metadata registry."""
+    from skifer.observability.metadata_store import SqliteMetadataStore
+
+    if args.format not in {"text", "json"}:
+        print("[dictionary] Invalid format.", file=sys.stderr)
+        return META_EXIT_USAGE
+
+    registry = store or SqliteMetadataStore(args.db)
+    try:
+        record = registry.get(args.target)
+        if record is None:
+            print(
+                f"[dictionary] '{args.target}' was not found in the metadata registry.",
+                file=sys.stderr,
+            )
+            return META_EXIT_NOT_FOUND
+        columns = sorted(record.columns, key=lambda column: column.name)
+        if args.format == "json":
+            print(
+                json.dumps(
+                    {
+                        "target_fqn": record.target_fqn,
+                        "columns": [asdict(column) for column in columns],
+                    },
+                    default=str,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(_format_dictionary_text(columns))
+        return META_EXIT_OK
+    except Exception as exc:
+        print(f"[dictionary] Failed to read metadata registry: {exc}", file=sys.stderr)
+        return META_EXIT_ERROR
+
+
+def _resolve_registry_target(store, target: str) -> tuple[str, list[str]] | None:
+    records = store.list_all()
+    known_fqns = {record.target_fqn for record in records}
+    if target in known_fqns:
+        record = store.get(target)
+        if record is None:
+            return None
+        return target, sorted(column.name for column in record.columns)
+
+    fqn, sep, column = target.rpartition(".")
+    if not sep or fqn not in known_fqns:
+        return None
+    record = store.get(fqn)
+    if record is None:
+        return None
+    column_names = {item.name for item in record.columns}
+    if column not in column_names:
+        return None
+    return fqn, [column]
+
+
+def _format_dictionary_text(columns) -> str:
+    rows = [
+        (
+            column.name,
+            column.logical_type or "",
+            column.classification or "",
+            ",".join(column.sources),
+        )
+        for column in columns
+    ]
+    headers = ("name", "logical_type", "classification", "sources")
+    widths = [
+        max(len(str(row[index])) for row in (headers, *rows))
+        for index in range(len(headers))
+    ]
+
+    def render(row: tuple[str, str, str, str]) -> str:
+        return "  ".join(
+            str(value).ljust(widths[index])
+            for index, value in enumerate(row)
+        ).rstrip()
+
+    return "\n".join([render(headers), *(render(row) for row in rows)])
 
 
 def _run_contract(args: argparse.Namespace) -> None:
