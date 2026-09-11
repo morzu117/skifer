@@ -1273,3 +1273,36 @@ class SkiferEngine:
         warnings = analyzer.detect_warnings(profiles, shared_read_threshold=shared_read_threshold)
         analyzer.print_report(profiles, warnings)
         return profiles, warnings
+
+    def explain_rules_report(self, schema_dict, shared_read_threshold: int = 2) -> dict:
+        """Return rule-analysis results as a JSON-native structure without printing."""
+        rule_names = schema_dict.get("business_rules", [])
+        analyzer = RuleAnalyzer()
+        profiles = analyzer.analyze_rules(rule_names)
+        warnings = analyzer.detect_warnings(
+            profiles, shared_read_threshold=shared_read_threshold
+        )
+        return {
+            "profiles": [
+                {
+                    "name": profile.name,
+                    "writes": list(profile.output_columns),
+                    "reads": list(profile.input_columns),
+                    "source_available": profile.source_available,
+                    "has_python_udf": profile.has_python_udf,
+                    "loc": profile.loc,
+                    "withcolumn_count": profile.withcolumn_count,
+                }
+                for profile in profiles
+            ],
+            "warnings": [
+                {
+                    "level": warning.level,
+                    "code": warning.code,
+                    "message": warning.message,
+                    "rules": list(warning.rules),
+                    "column": warning.column,
+                }
+                for warning in warnings
+            ],
+        }

@@ -135,6 +135,18 @@ def test_build_filter_expression_various(spark, filters, expected_count):
 # TESTS FOR ENGINE METHODS (VIA A MOCKED ENGINE)
 # ==============================================================================
 
+
+def test_explain_rules_report_is_silent(capsys):
+    engine = object.__new__(SkiferEngine)
+
+    report = engine.explain_rules_report({})
+
+    assert report == {"profiles": [], "warnings": []}
+    assert capsys.readouterr().out == ""
+
+    assert engine.explain_rules({}) == ([], [])
+    assert "Rule Analysis Report" in capsys.readouterr().out
+
 @pytest.fixture
 def mock_engine(spark, mocker):
     """Fixture to create a SkiferEngine instance with mocked dependencies."""

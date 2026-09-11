@@ -34,6 +34,12 @@ from skifer.services.context import (
     require_scope,
 )
 from skifer.services.serialization import row_to_json, to_json_value
+from skifer.services.project import (
+    LocalizedError,
+    PipelineView,
+    ProjectService,
+    ProjectView,
+)
 
 
 _DATA_SERVICE_EXPORTS = frozenset(
@@ -93,6 +99,10 @@ __all__ = [
     "ServiceLimits",
     "to_json_value",
     "row_to_json",
+    "LocalizedError",
+    "PipelineView",
+    "ProjectService",
+    "ProjectView",
     "AgentReadyDataService",
     "ModelSummary",
     "GovernedModelView",

@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Plan 31 (1.2)** — `services/project.py` :
+  `ProjectService.open/get_pipeline/json_schema/op_catalog/describe/project_output/lineage/explain_rules/write_pipeline`.
+  Erreurs de schéma localisées `{code, message, path}` (`parse_schema_localized`),
+  `explain_rules` disponible en structure (`SkiferEngine.explain_rules_report`), écriture
+  de pipeline atomique sous scope `pipelines:write`, refus des chemins hors projet. Sans Spark.
 - **Plan 31 (1.1)** — Nouveau package `services/` transport-neutre : `RequestContext`,
   `require_scope`, `ServiceLimits`, hiérarchie d'erreurs et sérialisation JSON-native
   extraites d'`agentic/data_service.py` (re-exports rétrocompatibles). Scopes nommés

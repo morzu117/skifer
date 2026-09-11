@@ -3,6 +3,8 @@ Schema loader — loads and normalizes pipeline schemas from YAML files or inlin
 """
 
 from __future__ import annotations
+from copy import deepcopy
+from dataclasses import dataclass
 import difflib
 import logging
 import re
@@ -42,6 +44,15 @@ _OUTPUT_FIELD_ALLOWED_KEYS = frozenset(
 _SEMANTIC_SEED_ALLOWED_KEYS = frozenset(
     {"model_key", "entity", "default_time_dimension", "dimensions"}
 )
+
+
+@dataclass(frozen=True)
+class LocalizedIssue:
+    """One schema validation issue suitable for transport-neutral clients."""
+
+    code: str
+    message: str
+    path: str
 
 
 def _find_file_upwards(filename, start_dir=None):
@@ -1423,6 +1434,129 @@ def parse_schema(yaml_str, params=None, *, base_dir=None, _seen_paths=None):
         raise ValueError("Schema must be a YAML mapping (dict) at the top level.")
 
     return _normalize_schema(schema, params=params, base_dir=base_dir, seen_paths=_seen_paths)
+
+
+_LOCALIZED_LINE_RE = re.compile(r"^\s*\[([^]]+)]\s*(.*)$")
+_UNKNOWN_FILTER_RE = re.compile(r"unknown filter operator '([^']+)'")
+_UNKNOWN_JOIN_RE = re.compile(
+    r"'(table_from|table_to)' references unknown alias '([^']+)'"
+)
+_UNKNOWN_CONTRACT_OUTPUT_RE = re.compile(
+    r"column '([^']+)' is not produced by the pipeline"
+)
+
+
+def _filter_operator(item) -> str | None:
+    """Return the operator from any supported pre-normalization filter form."""
+    if isinstance(item, str):
+        parts = item.split(":", 2)
+        return parts[1].strip() if len(parts) >= 2 else None
+    if not isinstance(item, dict):
+        return None
+    if isinstance(item.get("operator"), str):
+        return item["operator"]
+    if len(item) == 1:
+        value = next(iter(item.values()))
+        if isinstance(value, dict) and len(value) == 1:
+            return str(next(iter(value)))
+    return None
+
+
+def _localized_path(location: str, detail: str, schema: dict | None) -> tuple[str, str]:
+    """Map existing human validation locations to stable best-effort paths."""
+    schema = schema or {}
+    unknown_filter = _UNKNOWN_FILTER_RE.search(detail)
+    if unknown_filter and "filter" in location:
+        table_name_match = re.match(r"table '([^']+)'", location)
+        table_name = table_name_match.group(1) if table_name_match else None
+        section = "filter_groups" if "filter_groups" in location else "filter"
+        for table_index, table in enumerate(schema.get("tables", [])):
+            if table_name is not None and table_name not in {
+                table.get("alias"),
+                table.get("name"),
+            }:
+                continue
+            if section == "filter":
+                values = table.get("filter", [])
+                values = (
+                    [{key: value} for key, value in values.items()]
+                    if isinstance(values, dict)
+                    else values
+                )
+                for filter_index, item in enumerate(values or []):
+                    if _filter_operator(item) == unknown_filter.group(1):
+                        return "filter.unknown_operator", (
+                            f"tables[{table_index}].filter[{filter_index}]"
+                        )
+                return "filter.unknown_operator", f"tables[{table_index}].filter"
+            for group_index, group in enumerate(table.get("filter_groups", [])):
+                for filter_index, item in enumerate(group or []):
+                    if _filter_operator(item) == unknown_filter.group(1):
+                        return "filter.unknown_operator", (
+                            f"tables[{table_index}].filter_groups[{group_index}]"
+                            f"[{filter_index}]"
+                        )
+            return "filter.unknown_operator", f"tables[{table_index}].filter_groups"
+        return "filter.unknown_operator", "tables[?].filter"
+
+    unknown_join = _UNKNOWN_JOIN_RE.search(detail)
+    if location == "join" and unknown_join:
+        side, alias = unknown_join.groups()
+        for join_index, join in enumerate(schema.get("join", [])):
+            value = join.get(side)
+            ref = value[0] if isinstance(value, list) and value else value
+            if ref == alias:
+                return "join.unknown_alias", f"join[{join_index}].{side}"
+        return "join.unknown_alias", f"join[?].{side}"
+
+    unknown_contract = _UNKNOWN_CONTRACT_OUTPUT_RE.search(detail)
+    if location == "contract.output" and unknown_contract:
+        column = unknown_contract.group(1)
+        return "contract.output.unknown_column", f"contract.output.{column}"
+
+    return "schema.invalid", location if "." in location else ""
+
+
+def _localized_issues(message: str, schema: dict | None) -> list[LocalizedIssue]:
+    """Split the loader's aggregated text into allowlisted structured issues."""
+    entries: list[tuple[str, list[str]]] = []
+    for line in message.splitlines():
+        match = _LOCALIZED_LINE_RE.match(line)
+        if match:
+            entries.append((match.group(1), [match.group(2)]))
+        elif entries and line.strip():
+            entries[-1][1].append(line.strip())
+
+    if not entries:
+        return [LocalizedIssue(code="schema.invalid", message=message, path="")]
+
+    issues = []
+    for location, detail_lines in entries:
+        detail = "\n".join(detail_lines)
+        code, path = _localized_path(location, detail, schema)
+        issues.append(LocalizedIssue(code=code, message=detail, path=path))
+    return issues
+
+
+def parse_schema_localized(
+    yaml_str: str, params=None, *, base_dir: str | None = None
+) -> tuple[dict | None, list[LocalizedIssue]]:
+    """Parse a schema and return localized validation issues instead of raising."""
+    schema = None
+    original = None
+    try:
+        injected = _inject_params(yaml_str, params or {})
+        try:
+            schema = yaml.safe_load(injected)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Malformed YAML schema: {exc}") from exc
+        if not isinstance(schema, dict):
+            raise ValueError("Schema must be a YAML mapping (dict) at the top level.")
+        original = deepcopy(schema)
+        normalized = _normalize_schema(schema, params=params, base_dir=base_dir)
+    except ValueError as exc:
+        return None, _localized_issues(str(exc), original)
+    return normalized, []
 
 
 def load_schema(path, params=None, *, _seen_paths=None):
