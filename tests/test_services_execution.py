@@ -72,8 +72,16 @@ class FakeFrame:
     def __init__(self, rows, dtypes=None):
         self.rows = list(rows)
         self.dtypes = dtypes or []
+        self.cache_calls = 0
+        self.count_calls = 0
+        self.unpersist_calls = 0
+
+    def cache(self):
+        self.cache_calls += 1
+        return self
 
     def count(self):
+        self.count_calls += 1
         return len(self.rows)
 
     def limit(self, limit):
@@ -81,6 +89,9 @@ class FakeFrame:
 
     def collect(self):
         return self.rows
+
+    def unpersist(self):
+        self.unpersist_calls += 1
 
 
 class FakeBackend:
@@ -625,6 +636,9 @@ def test_preview_total_exact_and_rows_bounded(tmp_path):
 
     assert result.total == 5
     assert len(result.rows) == 2
+    assert frame.cache_calls == 1
+    assert frame.count_calls == 1
+    assert frame.unpersist_calls == 1
 
 
 def test_preview_rows_capped_at_hard_max(tmp_path):

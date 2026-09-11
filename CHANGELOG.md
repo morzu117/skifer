@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cached preview DataFrames across exact counting and bounded collection, made
+  service lineage share one lazy memoized metadata-registry graph, and added
+  real local Delta coverage for Spark-backed incident persistence and escaping.
 - Restricted rule writes to Python files under `rules/`, made index/incident and
   malformed contract-import failures return their documented CLI exit codes,
   and made OpenAPI export avoid creating local SQLite store files.

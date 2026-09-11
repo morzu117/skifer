@@ -192,3 +192,23 @@ def test_merge_dedups_shared_edges():
     graph = MetadataRegistryQuery(store).merged_graph()
 
     assert graph.edges == [shared]
+
+
+def test_merged_graph_is_built_once_per_query_instance(monkeypatch):
+    store = _store(_pipeline_record("raw.orders", "silver.orders"))
+    list_all_calls = 0
+    original_list_all = store.list_all
+
+    def counting_list_all():
+        nonlocal list_all_calls
+        list_all_calls += 1
+        return original_list_all()
+
+    monkeypatch.setattr(store, "list_all", counting_list_all)
+    query = MetadataRegistryQuery(store)
+
+    query.upstream("silver.orders", "amount")
+    query.downstream("raw.orders", "amount")
+    query.impact("raw.orders")
+
+    assert list_all_calls == 1

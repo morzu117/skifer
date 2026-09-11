@@ -65,10 +65,10 @@ def build_services(project_dir: str) -> ServiceContainer:
         models_dir=str(root / "semantic_models"),
         certification_store=certification_store,
     )
-    lineage_graph = MetadataRegistryQuery(metadata_store).merged_graph()
+    registry_query = MetadataRegistryQuery(metadata_store)
     data_service = AgentReadyDataService(
         semantic_engine,
-        lineage_graph=lineage_graph,
+        lineage_graph=registry_query,
     )
     hub = AgenticHub(semantic_engine=semantic_engine)
     return ServiceContainer(
@@ -78,6 +78,7 @@ def build_services(project_dir: str) -> ServiceContainer:
         governance=GovernanceService(
             certification_store,
             metadata_store=metadata_store,
+            metadata_registry_query=registry_query,
         ),
         quality=QualityService(
             history_store,

@@ -6,6 +6,7 @@ from datetime import datetime
 import hashlib
 import json
 import sqlite3
+import threading
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from skifer.core.constants import CLASSIFICATION_LEVELS
@@ -101,17 +102,25 @@ class MetadataRegistryQuery:
     def __init__(self, store: MetadataStore, *, max_depth: int = 20):
         self._store = store
         self._max_depth = max_depth
+        self._graph: LineageGraph | None = None
+        self._graph_lock = threading.Lock()
 
     def merged_graph(self) -> "LineageGraph":
         from skifer.lineage.tracker import LineageGraph
 
-        graph = LineageGraph()
-        for record in self._store.list_all():
-            if record.lineage:
-                graph.merge(LineageGraph.from_dict(record.lineage))
-        if graph.has_cycle():
-            raise ValueError("Metadata lineage graph contains a cycle; refusing to traverse.")
-        return graph
+        if self._graph is None:
+            with self._graph_lock:
+                if self._graph is None:
+                    graph = LineageGraph()
+                    for record in self._store.list_all():
+                        if record.lineage:
+                            graph.merge(LineageGraph.from_dict(record.lineage))
+                    if graph.has_cycle():
+                        raise ValueError(
+                            "Metadata lineage graph contains a cycle; refusing to traverse."
+                        )
+                    self._graph = graph
+        return self._graph
 
     def upstream(self, fqn: str, column: str) -> list["LineageEdge"]:
         return self.merged_graph().upstream_closure(

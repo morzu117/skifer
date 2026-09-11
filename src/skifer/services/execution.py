@@ -625,14 +625,18 @@ class ExecutionService:
     def _materialize_rows(
         self, df, limit: int
     ) -> tuple[list[dict], int, list[dict]]:
-        total = df.count()
-        row_limit = min(limit, HARD_MAX_QUERY_ROWS)
-        rows = [
-            row_to_json(row, index)
-            for index, row in enumerate(df.limit(row_limit).collect())
-        ]
-        schema = [{"name": name, "type": dtype} for name, dtype in df.dtypes]
-        return rows, total, schema
+        cached = df.cache()
+        try:
+            total = cached.count()
+            row_limit = min(limit, HARD_MAX_QUERY_ROWS)
+            rows = [
+                row_to_json(row, index)
+                for index, row in enumerate(cached.limit(row_limit).collect())
+            ]
+            schema = [{"name": name, "type": dtype} for name, dtype in cached.dtypes]
+            return rows, total, schema
+        finally:
+            cached.unpersist()
 
     def _row_limit(self, job: _Job) -> int:
         limit = job.params.get("limit", 100)

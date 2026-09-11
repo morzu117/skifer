@@ -118,13 +118,14 @@ class GovernanceService:
         certification_store,
         *,
         metadata_store: MetadataStore | None = None,
+        metadata_registry_query: MetadataRegistryQuery | None = None,
         max_rows: int = HARD_MAX_PAGE_SIZE,
     ):
         if not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows < 1:
             raise ValueError("max_rows must be a positive integer.")
         self._store = certification_store
         self._metadata_store = metadata_store
-        self._registry = (
+        self._registry = metadata_registry_query or (
             MetadataRegistryQuery(metadata_store) if metadata_store is not None else None
         )
         self._max_rows = min(max_rows, HARD_MAX_PAGE_SIZE)
