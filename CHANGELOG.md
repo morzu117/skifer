@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Plan 31 (1.5)** — `services/semantic.py` (`check/write_draft/promote`, mêmes
+  codes que le CLI 0/2/3, refus de promotion si perte de contenu humain ;
+  `list_models/get_model` délégués) et `services/agents.py` (`ask` via
+  `AgenticHub` + `hub_response_to_text`, `build` via `BuilderAgent.ask`).
+  `BuilderAgent.wizard` est pilotable par une liste ordonnée, un dict de réponses
+  ou un fournisseur d'entrées, sans dépendance à stdin.
 - **Plan 31 (1.4)** — `services/governance.py` (contrats/versions, certification,
   data products, lecture bornée de quarantaine) et `services/quality.py` (checks
   dérivés d'un YAML, historique, dernier rapport) sur les stores existants. Vues

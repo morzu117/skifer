@@ -3,11 +3,11 @@ Tests unitaires pour BuilderAgent (wizard + mode LLM).
 """
 from __future__ import annotations
 
+import builtins
 import json
 import os
-import textwrap
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from skifer.agentic.builder_agent import (
     BuilderAgent,
@@ -15,10 +15,6 @@ from skifer.agentic.builder_agent import (
     _extract_json,
     _schema_dict_to_yaml,
 )
-from skifer.agentic.models import BuilderResponse
-from skifer.core.catalog_inspector import CatalogError
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -204,6 +200,49 @@ def test_ask_llm_raises_returns_failure():
     agent = _make_agent(llm=llm)
     result = agent.ask("description")
     assert result.success is False
+
+
+def test_wizard_driven_by_answers_without_stdin(tmp_path, monkeypatch):
+    agent = _make_agent()
+    monkeypatch.setattr(
+        builtins,
+        "input",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("stdin was used")),
+    )
+
+    output_path = agent.wizard(
+        output_dir=str(tmp_path),
+        answers=["silver.orders", "ord", "", "", "", "", "", "", ""],
+    )
+
+    assert output_path == str(tmp_path / "pipeline.yaml")
+    assert os.path.exists(output_path)
+
+
+def test_wizard_default_still_uses_input():
+    agent = _make_agent()
+
+    assert agent._input is builtins.input
+
+
+def test_wizard_accepts_prompt_answer_mapping(tmp_path):
+    agent = _make_agent()
+    output_prompt = f"  Nom du fichier de sortie [{tmp_path / 'pipeline.yaml'}] : "
+    answers = {
+        "  Nom de la table (FQN, ex: catalog.silver.orders) : ": ["silver.orders"],
+        "  Alias : ": ["ord"],
+        "  Ajouter une autre table ? (entrée pour passer) : ": [""],
+        "  Filtre (ex: region:equals:EMEA) ou entrée pour passer : ": [""],
+        "  Règle enregistrée (ex: flag_high_value) ou entrée pour passer : ": [""],
+        "  Colonne source (ou entrée pour keep_all_columns) : ": [""],
+        "  dev_limit (entrée pour aucune limite) : ": [""],
+        output_prompt: [""],
+        "Sauvegarder ? [O/n] : ": [""],
+    }
+
+    output_path = agent.wizard(output_dir=str(tmp_path), answers=answers)
+
+    assert output_path == str(tmp_path / "pipeline.yaml")
 
 
 # ---------------------------------------------------------------------------

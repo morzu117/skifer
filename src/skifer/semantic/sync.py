@@ -74,6 +74,47 @@ class SyncReport:
         return bool(self.changes)
 
 
+def assert_no_curation_loss(curated_path: Path, payload: dict | None) -> None:
+    """Refuse a promotion that would drop human-written curated content."""
+    if payload is None or not curated_path.exists():
+        return
+
+    import yaml
+
+    existing = yaml.safe_load(curated_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(existing, dict) or not existing.get("models"):
+        return
+
+    existing_model = existing["models"][0]
+    new_model = (payload.get("models") or [{}])[0]
+    lost: list[str] = []
+
+    for key, value in existing_model.items():
+        if key in ("dimensions", "metrics", "metadata"):
+            continue
+        if value and key not in new_model:
+            lost.append(key)
+
+    for collection in ("dimensions", "metrics"):
+        new_by_name = {item["name"]: item for item in new_model.get(collection, [])}
+        for item in existing_model.get(collection, []):
+            new_item = new_by_name.get(item["name"])
+            if new_item is None:
+                # A removed field is a legitimate sync outcome, reported as a
+                # change; only silent loss of curated attributes is refused.
+                continue
+            for key, value in item.items():
+                if value and key not in new_item:
+                    lost.append(f"{collection}.{item['name']}.{key}")
+
+    if lost:
+        raise ValueError(
+            f"promoting would drop curated content {sorted(lost)} from "
+            f"'{curated_path.name}'. Re-run 'semantic sync --write-draft' and resolve "
+            "the report, or copy the curated values into the pipeline contract."
+        )
+
+
 class SemanticSynchronizer:
     """Build a fresh managed draft, merge in curation, and optionally write it."""
 
@@ -691,4 +732,3 @@ class SemanticSynchronizer:
     def _generated_names(model: dict[str, Any]) -> set[str]:
         metadata = model.get("metadata") or {}
         return set(metadata.get("generated_fields") or ())
-

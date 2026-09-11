@@ -53,6 +53,14 @@ from skifer.services.quality import (
     QualityReportView,
     QualityService,
 )
+from skifer.services.semantic import (
+    SEMANTIC_CONFLICT,
+    SEMANTIC_DRIFT,
+    SEMANTIC_OK,
+    SemanticService,
+    SyncOutcome,
+)
+from skifer.services.agents import AgentService
 
 
 _DATA_SERVICE_EXPORTS = frozenset(
@@ -128,6 +136,12 @@ __all__ = [
     "CheckRunView",
     "QualityReportView",
     "QualityService",
+    "SEMANTIC_OK",
+    "SEMANTIC_DRIFT",
+    "SEMANTIC_CONFLICT",
+    "SemanticService",
+    "SyncOutcome",
+    "AgentService",
     "AgentReadyDataService",
     "ModelSummary",
     "GovernedModelView",
