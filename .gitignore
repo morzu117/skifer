@@ -68,6 +68,7 @@ derby.log
 *.json
 !schemas/*.json
 !features/**/*.json
+!tests/data/openapi_snapshot.json
 # Example datasets are part of the deliverable: tests/test_examples.py runs every
 # example, and the blanket *.json above silently kept events.json out of the repo.
 !examples/**/*.json

@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Plan 31 (6.2)** — CLI `skifer api serve --project DIR [--port]` (fixed
+  loopback bind and lazy imports) and `skifer api openapi` (deterministic JSON
+  export). Added a Spark-free `/health` check and a normalized OpenAPI contract
+  snapshot with fixed `info.version = "0"`. Finalized packaged availability of
+  `skifer mcp serve` (Plan 29 slice 7.5, `[mcp]` extra).
 - **Plan 31 (6.1)** — New optional `api/` package (`[api]`: FastAPI and
   Uvicorn, strictly lazy imports) providing a thin, scoped local HTTP surface
   over `services/`, uniform `{code, message, path}` errors, and localhost-only

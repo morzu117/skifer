@@ -10,7 +10,9 @@ Usage :
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 from dataclasses import asdict
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -52,6 +54,8 @@ META_EXIT_NOT_FOUND = 3
 AUDIT_EXIT_OK = 0
 AUDIT_EXIT_ERROR = 1
 AUDIT_EXIT_BELOW_THRESHOLD = 2
+
+API_LOOPBACK_HOST = "127.0.0.1"
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
@@ -227,6 +231,38 @@ def main() -> None:
         help="Path to the closed MCP server YAML configuration.",
     )
 
+    api_parser = subparsers.add_parser(
+        "api",
+        help="Run the optional local HTTP API.",
+    )
+    api_subparsers = api_parser.add_subparsers(dest="api_command")
+    api_serve_parser = api_subparsers.add_parser(
+        "serve",
+        help="Serve services/ over a loopback HTTP API.",
+    )
+    api_serve_parser.add_argument(
+        "--project",
+        required=True,
+        metavar="DIR",
+        help="Skifer project directory.",
+    )
+    api_serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Loopback port (default: 8000).",
+    )
+    api_openapi_parser = api_subparsers.add_parser(
+        "openapi",
+        help="Print the OpenAPI schema (JSON) to stdout.",
+    )
+    api_openapi_parser.add_argument(
+        "--project",
+        default=".",
+        metavar="DIR",
+        help="Project directory (default: cwd).",
+    )
+
     adaptive_parser = subparsers.add_parser(
         "adaptive",
         help="Review adaptive Gold proposals; never deploy or invoke Git.",
@@ -373,6 +409,8 @@ def main() -> None:
         _run_semantic(args)
     elif args.command == "mcp":
         _run_mcp(args)
+    elif args.command == "api":
+        _run_api(args)
     elif args.command == "adaptive":
         _run_adaptive(args)
     elif args.command == "incidents":
@@ -927,6 +965,66 @@ def _run_mcp(args: argparse.Namespace) -> None:
             # paths. Only the class name is safe outside the process.
             message = f"MCP startup failed ({type(exc).__name__})."
         print(f"[mcp] {message}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _run_api(args: argparse.Namespace) -> None:
+    """Load and serve the optional API without importing FastAPI eagerly."""
+    command = getattr(args, "api_command", None)
+    if command == "openapi":
+        _run_api_openapi(args)
+        return
+    if command != "serve":
+        print("API command missing. Use 'skifer api --help'.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        from skifer.api.app import create_app
+
+        app = create_app(args.project)
+        import uvicorn
+
+        uvicorn.run(
+            app,
+            host=API_LOOPBACK_HOST,
+            port=args.port,
+            log_config=None,
+        )
+    except Exception as exc:
+        from skifer.api.app import APIDependencyError
+
+        message = (
+            str(exc)
+            if isinstance(exc, APIDependencyError)
+            else f"API startup failed ({type(exc).__name__})."
+        )
+        print(f"[api] {message}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _run_api_openapi(args: argparse.Namespace) -> None:
+    """Print a stable, sorted JSON representation of the OpenAPI document."""
+    try:
+        from skifer.api.app import openapi_document
+
+        with redirect_stdout(StringIO()):
+            document = openapi_document(args.project)
+        print(
+            json.dumps(
+                document,
+                sort_keys=True,
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    except Exception as exc:
+        from skifer.api.app import APIDependencyError
+
+        message = (
+            str(exc)
+            if isinstance(exc, APIDependencyError)
+            else f"OpenAPI export failed ({type(exc).__name__})."
+        )
+        print(f"[api] {message}", file=sys.stderr)
         sys.exit(1)
 
 

@@ -7,16 +7,19 @@ On teste uniquement les chemins de sortie rapide (pas le REPL interactif).
 from __future__ import annotations
 
 import argparse
+import builtins
 import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import yaml
 
 from skifer.cli import (
+    API_LOOPBACK_HOST,
     AUDIT_EXIT_BELOW_THRESHOLD,
     AUDIT_EXIT_OK,
     INDEX_EXIT_OK,
@@ -28,6 +31,7 @@ from skifer.cli import (
     run_audit,
     run_semantic_sync,
     run_semantic_validate,
+    _run_api,
 )
 from skifer.core.ir import parse_to_ir
 from skifer.core.schema_loader import parse_schema
@@ -153,6 +157,90 @@ def test_cli_main_importable():
     )
     assert result.returncode == 0
     assert "ok" in result.stdout
+
+
+def test_api_serve_help_exits_zero():
+    result = _run_cli("api", "serve", "--help")
+    assert result.returncode == 0
+    assert "--project" in result.stdout
+    assert "--port" in result.stdout
+
+
+def test_api_serve_refuses_non_loopback_host_flag(tmp_path):
+    result = _run_cli(
+        "api",
+        "serve",
+        "--project",
+        str(tmp_path),
+        "--host",
+        "0.0.0.0",
+    )
+    assert result.returncode == 2
+    assert "unrecognized arguments: --host 0.0.0.0" in result.stderr
+
+
+def test_api_serve_uses_fixed_loopback_bind(monkeypatch, tmp_path):
+    calls = {}
+    fake_app = object()
+    monkeypatch.setattr("skifer.api.app.create_app", lambda _project: fake_app)
+    monkeypatch.setitem(
+        sys.modules,
+        "uvicorn",
+        SimpleNamespace(run=lambda app, **kwargs: calls.update(app=app, **kwargs)),
+    )
+
+    _run_api(
+        argparse.Namespace(
+            api_command="serve",
+            project=str(tmp_path),
+            port=8123,
+        )
+    )
+
+    assert calls == {
+        "app": fake_app,
+        "host": API_LOOPBACK_HOST,
+        "port": 8123,
+        "log_config": None,
+    }
+    assert API_LOOPBACK_HOST == "127.0.0.1"
+
+
+def test_api_openapi_command_prints_json(tmp_path):
+    pytest.importorskip("fastapi")
+    result = _run_cli("api", "openapi", "--project", str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    document = json.loads(result.stdout)
+    assert document["openapi"].startswith("3.")
+    assert document["info"]["version"] == "0"
+
+
+def test_api_command_without_extra_reports_dependency(monkeypatch, tmp_path, capsys):
+    original_import = builtins.__import__
+
+    def missing_fastapi(name, *args, **kwargs):
+        if name == "fastapi" or name.startswith("fastapi."):
+            raise ImportError
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_fastapi)
+    with pytest.raises(SystemExit) as raised:
+        _run_api(
+            argparse.Namespace(
+                api_command="serve",
+                project=str(tmp_path),
+                port=8000,
+            )
+        )
+    assert raised.value.code == 1
+    assert 'pip install -e ".[api]"' in capsys.readouterr().err
+
+
+def test_mcp_serve_help_still_works():
+    result = _run_cli("mcp", "serve", "--help")
+    assert result.returncode == 0
+    assert "--transport" in result.stdout
+    assert "--config" in result.stdout
 
 
 def test_cli_contract_import_prints_yaml_block(tmp_path, capsys):

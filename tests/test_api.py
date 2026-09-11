@@ -3,12 +3,19 @@ from __future__ import annotations
 import ast
 import builtins
 import importlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from skifer.api.app import APIDependencyError, create_app
+from skifer.api.app import (
+    APIDependencyError,
+    API_SCHEMA_VERSION,
+    API_TITLE,
+    create_app,
+    openapi_document,
+)
 from skifer.api.errors import error_payload
 from skifer.observability.tracing import TraceContext
 from skifer.services import (
@@ -199,6 +206,62 @@ def test_create_app_without_extra_raises_dependency_error(monkeypatch, tmp_path)
     monkeypatch.setattr(builtins, "__import__", missing_fastapi)
     with pytest.raises(APIDependencyError, match=r'pip install -e "\.\[api\]"'):
         create_app(str(tmp_path), services=_services())
+
+
+def test_health_without_spark(monkeypatch, tmp_path):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    def fail_if_spark_is_constructed(*_args, **_kwargs):
+        raise AssertionError("health must not construct a Spark session")
+
+    monkeypatch.setattr(
+        "skifer.spark_factory.get_spark_session",
+        fail_if_spark_is_constructed,
+    )
+    response = TestClient(create_app(str(tmp_path))).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def _normalized_openapi(document: dict) -> dict:
+    methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+    return {
+        "info": {
+            "title": document["info"]["title"],
+            "version": document["info"]["version"],
+        },
+        "operations": sorted(
+            [path, method.upper()]
+            for path, item in document["paths"].items()
+            for method in item
+            if method.lower() in methods
+        ),
+        "paths": sorted(document["paths"]),
+    }
+
+
+def test_openapi_snapshot_matches(tmp_path):
+    pytest.importorskip("fastapi")
+    document = openapi_document(str(tmp_path))
+    actual = json.dumps(
+        _normalized_openapi(document),
+        sort_keys=True,
+        indent=2,
+        ensure_ascii=False,
+    ) + "\n"
+    snapshot = Path(__file__).parent / "data" / "openapi_snapshot.json"
+    assert actual == snapshot.read_text(encoding="utf-8")
+
+
+def test_openapi_info_uses_fixed_contract_version(tmp_path):
+    pytest.importorskip("fastapi")
+    document = openapi_document(str(tmp_path))
+    assert document["info"] == {
+        "title": API_TITLE,
+        "version": API_SCHEMA_VERSION,
+    }
+    assert API_SCHEMA_VERSION == "0"
 
 
 @pytest.mark.parametrize(

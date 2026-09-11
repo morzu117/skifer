@@ -67,6 +67,11 @@ def create_app(
     return app
 
 
+def openapi_document(project_dir: str) -> dict:
+    """Build the deterministic OpenAPI document used by CLI export and tests."""
+    return create_app(project_dir).openapi()
+
+
 __all__ = [
     "APIDependencyError",
     "API_EXTRA",
@@ -76,4 +81,5 @@ __all__ = [
     "HEALTH_BODY",
     "LOOPBACK_HOSTS",
     "create_app",
+    "openapi_document",
 ]
