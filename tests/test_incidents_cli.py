@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from skifer.cli import (
+    INCIDENTS_EXIT_ERROR,
     INCIDENTS_EXIT_INVALID_TRANSITION,
     INCIDENTS_EXIT_NOT_FOUND,
     INCIDENTS_EXIT_OK,
@@ -165,3 +166,14 @@ def test_cli_resolve_requires_root_cause():
 
 def test_cli_incidents_help_exits_zero():
     assert _invoke("incidents", "--help") == 0
+
+
+def test_cli_incidents_bad_db_path_exits_cleanly(tmp_path, capsys):
+    exit_code = run_incidents_command(
+        _args("list", tmp_path / "missing" / "certification.db")
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == INCIDENTS_EXIT_ERROR
+    assert "Traceback" not in captured.out + captured.err
+    assert "Command failed (OperationalError)" in captured.err

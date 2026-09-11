@@ -181,3 +181,16 @@ def test_write_rule_atomic_ok(tmp_path):
     content = Path(written).read_text(encoding="utf-8")
     assert content == code
     ast.parse(content)
+
+
+@pytest.mark.parametrize("file", ("config.yaml", "../x", "rules/foo.yaml"))
+def test_write_rule_rejects_targets_outside_rules_python_files(tmp_path, file):
+    config = tmp_path / "config.yaml"
+    config.write_text("environment: DEV\n", encoding="utf-8")
+
+    with pytest.raises(InvalidRequest):
+        RuleService(str(tmp_path)).write_rule(
+            _context(SCOPE_RULES_WRITE), file, "x = 1\n"
+        )
+
+    assert config.read_text(encoding="utf-8") == "environment: DEV\n"

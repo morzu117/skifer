@@ -461,7 +461,11 @@ def run_index_command(args: argparse.Namespace, *, store=None) -> int:
         print("[index] --target-fqn is only valid with a single path.", file=sys.stderr)
         return INDEX_EXIT_USAGE
 
-    registry = store or SqliteMetadataStore(args.db)
+    try:
+        registry = store or SqliteMetadataStore(args.db)
+    except Exception as exc:
+        print(f"[index] Failed to open metadata registry: {exc}", file=sys.stderr)
+        return INDEX_EXIT_ERROR
     changed = 0
     for path in args.paths:
         try:
@@ -688,7 +692,7 @@ def run_contract_command(args: argparse.Namespace) -> int:
         with open(args.file, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh)
         result = import_odcs_31(doc)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"Import failed: {exc}")
         return 1
     block = {"data_product": result.data_product, "contract": result.contract}
@@ -829,15 +833,15 @@ def run_incidents_command(args: argparse.Namespace, *, service=None) -> int:
             file=sys.stderr,
         )
         return INCIDENTS_EXIT_USAGE
-    if service is None:
-        from skifer.observability.certification_store import SqliteCertificationStore
-        from skifer.services.quality import QualityService
-
-        store = SqliteCertificationStore(args.store)
-        service = QualityService(history_store=None, incident_store=store)
-
     ctx = _local_incidents_context()
     try:
+        if service is None:
+            from skifer.observability.certification_store import SqliteCertificationStore
+            from skifer.services.quality import QualityService
+
+            store = SqliteCertificationStore(args.store)
+            service = QualityService(history_store=None, incident_store=store)
+
         if command == "list":
             views = service.list_incidents(
                 ctx,

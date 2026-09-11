@@ -238,6 +238,11 @@ class RuleService:
     def write_rule(self, ctx: RequestContext, file: str, code: str) -> str:
         require_scope(ctx, SCOPE_RULES_WRITE)
         target = self._resolve_project_path(file)
+        rules_dir = (self._root / "rules").resolve()
+        if target.suffix != ".py" or not target.is_relative_to(rules_dir):
+            raise InvalidRequest(
+                "Rule file must be a .py file under the project's rules/ directory."
+            )
         if not isinstance(code, str):
             raise InvalidRequest("Rule code must be a string.")
         try:

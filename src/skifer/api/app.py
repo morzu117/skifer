@@ -21,6 +21,13 @@ class APIDependencyError(RuntimeError):
     """The optional API dependencies are not installed."""
 
 
+class _SchemaOnlyServices:
+    """Inert service placeholders used while FastAPI derives route schemas."""
+
+    def __getattr__(self, _name: str) -> "_SchemaOnlyServices":
+        return self
+
+
 def create_app(
     project_dir: str,
     *,
@@ -69,7 +76,7 @@ def create_app(
 
 def openapi_document(project_dir: str) -> dict:
     """Build the deterministic OpenAPI document used by CLI export and tests."""
-    return create_app(project_dir).openapi()
+    return create_app(project_dir, services=_SchemaOnlyServices()).openapi()
 
 
 __all__ = [

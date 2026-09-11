@@ -22,6 +22,7 @@ from skifer.cli import (
     API_LOOPBACK_HOST,
     AUDIT_EXIT_BELOW_THRESHOLD,
     AUDIT_EXIT_OK,
+    INDEX_EXIT_ERROR,
     INDEX_EXIT_OK,
     SEMANTIC_EXIT_CONFLICT,
     SEMANTIC_EXIT_DRIFT,
@@ -213,6 +214,7 @@ def test_api_openapi_command_prints_json(tmp_path):
     document = json.loads(result.stdout)
     assert document["openapi"].startswith("3.")
     assert document["info"]["version"] == "0"
+    assert list(tmp_path.glob(".skifer_*.db")) == []
 
 
 def test_api_command_without_extra_reports_dependency(monkeypatch, tmp_path, capsys):
@@ -272,6 +274,18 @@ def test_cli_contract_import_prints_yaml_block(tmp_path, capsys):
 def test_cli_contract_import_missing_file_exit_1(tmp_path, capsys):
     exit_code = run_contract_command(
         argparse.Namespace(contract_command="import", file=str(tmp_path / "missing.yaml"))
+    )
+
+    assert exit_code == 1
+    assert "Import failed:" in capsys.readouterr().out
+
+
+def test_cli_contract_import_malformed_yaml_exit_1(tmp_path, capsys):
+    contract_file = tmp_path / "malformed.yaml"
+    contract_file.write_text("schema: [unterminated\n", encoding="utf-8")
+
+    exit_code = run_contract_command(
+        argparse.Namespace(contract_command="import", file=str(contract_file))
     )
 
     assert exit_code == 1
@@ -389,6 +403,19 @@ select_final:
     assert second.returncode == INDEX_EXIT_OK, second.stdout + second.stderr
     assert "updated" in first.stdout
     assert "unchanged" in second.stdout
+
+
+def test_index_bad_db_path_exits_cleanly(tmp_path):
+    result = _run_cli(
+        "index",
+        str(tmp_path / "schema.yaml"),
+        "--db",
+        str(tmp_path / "missing" / "metadata.db"),
+    )
+
+    assert result.returncode == INDEX_EXIT_ERROR
+    assert "Traceback" not in result.stdout + result.stderr
+    assert "Failed to open metadata registry" in result.stderr
 
 
 def test_audit_cli_exit_zero_without_threshold(tmp_path, capsys):

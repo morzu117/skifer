@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restricted rule writes to Python files under `rules/`, made index/incident and
+  malformed contract-import failures return their documented CLI exit codes,
+  and made OpenAPI export avoid creating local SQLite store files.
 - **Metadata registry** — Crash-recovered certified publications now reconstruct
   and index contract metadata after promotion, while normal promoted publications
   inherit undeclared output classifications from already-indexed upstream columns.
