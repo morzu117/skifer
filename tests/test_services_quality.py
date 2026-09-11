@@ -5,7 +5,13 @@ import json
 
 import pytest
 
+from skifer.observability.certification_store import SqliteCertificationStore
 from skifer.observability.checks import CheckResult, CheckStatus, NullCheck
+from skifer.observability.incidents import (
+    Incident,
+    IncidentStatus,
+    InvalidIncidentTransition,
+)
 from skifer.observability.monitor import MonitorReport
 from skifer.observability.tracing import TraceContext
 from skifer.services import (
@@ -13,6 +19,7 @@ from skifer.services import (
     RequestContext,
     ResourceUnavailable,
     SCOPE_CONTRACTS_READ,
+    SCOPE_INCIDENTS_WRITE,
     ScopeDenied,
 )
 
@@ -39,6 +46,25 @@ def _report(table: str, passed: bool, day: int) -> MonitorReport:
         timestamp=timestamp,
     )
     return MonitorReport(table=table, results=[result], timestamp=timestamp)
+
+
+def _incident(
+    incident_id: str = "run-1:NullCheck:amount",
+    *,
+    status: IncidentStatus = IncidentStatus.NEW,
+) -> Incident:
+    opened_at = datetime(2026, 9, 11, tzinfo=timezone.utc)
+    resolved_at = opened_at if status is IncidentStatus.RESOLVED else None
+    return Incident(
+        id=incident_id,
+        target_fqn="gold.orders",
+        run_id="run-1",
+        check_name="NullCheck:amount",
+        severity="critical",
+        status=status,
+        opened_at=opened_at,
+        resolved_at=resolved_at,
+    )
 
 
 class _HistoryStore:
@@ -109,3 +135,61 @@ def test_history_store_missing_method_unavailable():
         QualityService(object()).history(
             _context(SCOPE_CONTRACTS_READ), "gold.orders"
         )
+
+
+def test_quality_service_ack_requires_scope():
+    store = SqliteCertificationStore(":memory:")
+    store.open_incident(_incident())
+    service = QualityService(None, incident_store=store)
+
+    with pytest.raises(ScopeDenied):
+        service.acknowledge_incident(_context(), "run-1:NullCheck:amount")
+
+
+def test_quality_service_list_requires_read_scope():
+    service = QualityService(None, incident_store=SqliteCertificationStore(":memory:"))
+
+    with pytest.raises(ScopeDenied):
+        service.list_incidents(_context())
+
+
+def test_quality_service_transition_refused():
+    store = SqliteCertificationStore(":memory:")
+    store.open_incident(_incident(status=IncidentStatus.RESOLVED))
+    service = QualityService(None, incident_store=store)
+
+    with pytest.raises(InvalidIncidentTransition):
+        service.acknowledge_incident(
+            _context(SCOPE_INCIDENTS_WRITE), "run-1:NullCheck:amount"
+        )
+
+
+def test_quality_service_incident_store_absent():
+    service = QualityService(history_store=None)
+
+    with pytest.raises(ResourceUnavailable):
+        service.acknowledge_incident(
+            _context(SCOPE_INCIDENTS_WRITE), "run-1:NullCheck:amount"
+        )
+
+
+def test_quality_service_incident_views_are_allowlisted():
+    store = SqliteCertificationStore(":memory:")
+    store.open_incident(_incident())
+    service = QualityService(None, incident_store=store)
+
+    view = service.acknowledge_incident(
+        _context(SCOPE_INCIDENTS_WRITE), "run-1:NullCheck:amount"
+    )
+
+    assert view.to_dict() == {
+        "id": "run-1:NullCheck:amount",
+        "target_fqn": "gold.orders",
+        "check_name": "NullCheck:amount",
+        "severity": "critical",
+        "status": "ACKNOWLEDGED",
+        "assignee": None,
+        "root_cause": None,
+        "opened_at": "2026-09-11T00:00:00+00:00",
+        "resolved_at": None,
+    }

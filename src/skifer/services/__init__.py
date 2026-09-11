@@ -52,6 +52,7 @@ from skifer.services.governance import (
 from skifer.services.quality import (
     CheckDefinitionView,
     CheckRunView,
+    IncidentView,
     QualityReportView,
     QualityService,
 )
@@ -143,6 +144,7 @@ __all__ = [
     "RegistryColumnSearchView",
     "CheckDefinitionView",
     "CheckRunView",
+    "IncidentView",
     "QualityReportView",
     "QualityService",
     "SEMANTIC_OK",

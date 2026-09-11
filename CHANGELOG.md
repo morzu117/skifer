@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warnings. `ContractDiff.breaking` is the only contract-diff alert trigger, and
   incident/breaking alert messages use a separate redacted payload with no data
   values.
+- **Plan 31 (4.3)** — Incident transitions are exposed through
+  `QualityService` and `skifer incidents list|ack|assign|resolve`: writes require
+  `incidents:write`, reads require `contracts:read`, and invalid transitions use
+  stable CLI exit codes (`3` invalid transition, `4` not found).
 - Coverage audit (`skifer.observability.audit`): pure, deterministic
   `audit_project(paths) -> AuditReport` measuring, across a project's pipeline
   YAMLs, the share declaring `data_product`, `contract`, a structured owner, a

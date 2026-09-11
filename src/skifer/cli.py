@@ -34,6 +34,12 @@ ADAPTIVE_EXIT_STALE = 3
 ADAPTIVE_EXIT_CONFLICT = 4
 ADAPTIVE_EXIT_REGRESSED = 5
 
+INCIDENTS_EXIT_OK = 0
+INCIDENTS_EXIT_ERROR = 1
+INCIDENTS_EXIT_USAGE = 2
+INCIDENTS_EXIT_INVALID_TRANSITION = 3
+INCIDENTS_EXIT_NOT_FOUND = 4
+
 INDEX_EXIT_OK = 0
 INDEX_EXIT_ERROR = 1
 INDEX_EXIT_USAGE = 2
@@ -277,6 +283,63 @@ def main() -> None:
         help="Days in each comparison window (default: 30).",
     )
 
+    incidents_parser = subparsers.add_parser(
+        "incidents",
+        help="Manage data-quality incidents.",
+    )
+    incidents_subparsers = incidents_parser.add_subparsers(dest="incidents_command")
+    incidents_list_parser = incidents_subparsers.add_parser(
+        "list",
+        help="List incidents.",
+    )
+    incidents_list_parser.add_argument(
+        "--status",
+        choices=["NEW", "ACKNOWLEDGED", "ASSIGNED", "RESOLVED"],
+    )
+    incidents_list_parser.add_argument("--target", dest="target_fqn", metavar="FQN")
+    incidents_list_parser.add_argument("--limit", type=int, default=50)
+    incidents_list_parser.add_argument(
+        "--store",
+        default=".skifer_certification.db",
+        metavar="PATH",
+    )
+
+    incidents_ack_parser = incidents_subparsers.add_parser(
+        "ack",
+        help="Acknowledge an incident.",
+    )
+    incidents_ack_parser.add_argument("incident_id", metavar="INCIDENT_ID")
+    incidents_ack_parser.add_argument(
+        "--store",
+        default=".skifer_certification.db",
+    )
+
+    incidents_assign_parser = incidents_subparsers.add_parser(
+        "assign",
+        help="Assign an incident.",
+    )
+    incidents_assign_parser.add_argument("incident_id", metavar="INCIDENT_ID")
+    incidents_assign_parser.add_argument("--assignee", required=True)
+    incidents_assign_parser.add_argument(
+        "--store",
+        default=".skifer_certification.db",
+    )
+
+    incidents_resolve_parser = incidents_subparsers.add_parser(
+        "resolve",
+        help="Resolve an incident.",
+    )
+    incidents_resolve_parser.add_argument("incident_id", metavar="INCIDENT_ID")
+    incidents_resolve_parser.add_argument(
+        "--root-cause",
+        dest="root_cause",
+        required=True,
+    )
+    incidents_resolve_parser.add_argument(
+        "--store",
+        default=".skifer_certification.db",
+    )
+
     contract_parser = subparsers.add_parser(
         "contract",
         help="Data-contract utilities (Plan 31).",
@@ -312,6 +375,8 @@ def main() -> None:
         _run_mcp(args)
     elif args.command == "adaptive":
         _run_adaptive(args)
+    elif args.command == "incidents":
+        _run_incidents(args)
     elif args.command == "contract":
         _run_contract(args)
     else:
@@ -322,6 +387,11 @@ def main() -> None:
 def _run_adaptive(args: argparse.Namespace) -> None:
     """Run the human review boundary with stable, category-specific exit codes."""
     sys.exit(run_adaptive_command(args))
+
+
+def _run_incidents(args: argparse.Namespace) -> None:
+    """Run incident management with stable, category-specific exit codes."""
+    sys.exit(run_incidents_command(args))
 
 
 def _run_index(args: argparse.Namespace) -> None:
@@ -701,6 +771,78 @@ def run_adaptive_command(args: argparse.Namespace, *, workflow=None) -> int:
         # class name retains a useful failure category without disclosing them.
         print(f"[adaptive] Command failed ({type(exc).__name__}).", file=sys.stderr)
         return ADAPTIVE_EXIT_ERROR
+
+
+def _local_incidents_context():
+    from skifer.services.identity import LocalIdentity
+
+    return LocalIdentity.resolve().to_request_context()
+
+
+def run_incidents_command(args: argparse.Namespace, *, service=None) -> int:
+    """Execute one incident action through QualityService with stable exit codes."""
+    from skifer.observability.incidents import InvalidIncidentTransition
+    from skifer.services.context import ResourceNotFound
+
+    command = getattr(args, "incidents_command", None)
+    if command is None:
+        print(
+            "Incidents command missing. Use 'skifer incidents --help'.",
+            file=sys.stderr,
+        )
+        return INCIDENTS_EXIT_USAGE
+    if service is None:
+        from skifer.observability.certification_store import SqliteCertificationStore
+        from skifer.services.quality import QualityService
+
+        store = SqliteCertificationStore(args.store)
+        service = QualityService(history_store=None, incident_store=store)
+
+    ctx = _local_incidents_context()
+    try:
+        if command == "list":
+            views = service.list_incidents(
+                ctx,
+                status=getattr(args, "status", None),
+                target_fqn=getattr(args, "target_fqn", None),
+                limit=getattr(args, "limit", 50),
+            )
+            print(
+                json.dumps(
+                    [view.to_dict() for view in views],
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return INCIDENTS_EXIT_OK
+        if command == "ack":
+            view = service.acknowledge_incident(ctx, args.incident_id)
+        elif command == "assign":
+            view = service.assign_incident(ctx, args.incident_id, args.assignee)
+        elif command == "resolve":
+            view = service.resolve_incident(ctx, args.incident_id, args.root_cause)
+        else:
+            print("Unknown incidents command.", file=sys.stderr)
+            return INCIDENTS_EXIT_USAGE
+        print(
+            json.dumps(
+                view.to_dict(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return INCIDENTS_EXIT_OK
+    except InvalidIncidentTransition as exc:
+        print(f"[incidents] {exc}", file=sys.stderr)
+        return INCIDENTS_EXIT_INVALID_TRANSITION
+    except ResourceNotFound as exc:
+        print(f"[incidents] {exc}", file=sys.stderr)
+        return INCIDENTS_EXIT_NOT_FOUND
+    except Exception as exc:
+        print(f"[incidents] Command failed ({type(exc).__name__}).", file=sys.stderr)
+        return INCIDENTS_EXIT_ERROR
 
 
 def _run_validate(args: argparse.Namespace) -> None:

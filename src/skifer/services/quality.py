@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
 from skifer.observability.checks import CheckResult, DataContract
 from skifer.observability.contracts import ContractExtractor
+from skifer.observability.incidents import IncidentStatus
 from skifer.observability.monitor import MonitorReport
 from skifer.services.context import (
+    InvalidRequest,
     RequestContext,
+    ResourceNotFound,
     ResourceUnavailable,
     SCOPE_CONTRACTS_READ,
+    SCOPE_INCIDENTS_WRITE,
     require_scope,
 )
 from skifer.services.serialization import to_json_value
@@ -74,12 +79,39 @@ class QualityReportView:
         }
 
 
-class QualityService:
-    """Read-only service over contract extraction and monitor history."""
+@dataclass(frozen=True)
+class IncidentView:
+    id: str
+    target_fqn: str
+    check_name: str
+    severity: str
+    status: str
+    assignee: str | None
+    root_cause: str | None
+    opened_at: str
+    resolved_at: str | None
 
-    def __init__(self, history_store, *, contract_extractor=None):
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "target_fqn": self.target_fqn,
+            "check_name": self.check_name,
+            "severity": self.severity,
+            "status": self.status,
+            "assignee": self.assignee,
+            "root_cause": self.root_cause,
+            "opened_at": self.opened_at,
+            "resolved_at": self.resolved_at,
+        }
+
+
+class QualityService:
+    """Service over quality definitions, report history, and incident transitions."""
+
+    def __init__(self, history_store, *, contract_extractor=None, incident_store=None):
         self._history = history_store
         self._extractor = contract_extractor or ContractExtractor()
+        self._incidents = incident_store
 
     def checks_from_schema(
         self, ctx: RequestContext, schema_dict: dict
@@ -118,6 +150,74 @@ class QualityService:
         if not isinstance(report, MonitorReport):
             raise ResourceUnavailable("The history store returned an invalid report.")
         return _report_view(report)
+
+    def list_incidents(
+        self,
+        ctx: RequestContext,
+        *,
+        status: str | None = None,
+        target_fqn: str | None = None,
+        limit: int = 50,
+    ) -> tuple[IncidentView, ...]:
+        require_scope(ctx, SCOPE_CONTRACTS_READ)
+        return tuple(
+            _incident_view(incident)
+            for incident in self._require_incidents().list_incidents(
+                status=status,
+                target_fqn=target_fqn,
+                limit=limit,
+            )
+        )
+
+    def acknowledge_incident(self, ctx: RequestContext, incident_id: str) -> IncidentView:
+        require_scope(ctx, SCOPE_INCIDENTS_WRITE)
+        return self._transition(incident_id, IncidentStatus.ACKNOWLEDGED)
+
+    def assign_incident(
+        self, ctx: RequestContext, incident_id: str, assignee: str
+    ) -> IncidentView:
+        require_scope(ctx, SCOPE_INCIDENTS_WRITE)
+        if not assignee:
+            raise InvalidRequest("assignee is required.")
+        return self._transition(
+            incident_id, IncidentStatus.ASSIGNED, assignee=assignee
+        )
+
+    def resolve_incident(
+        self, ctx: RequestContext, incident_id: str, root_cause: str
+    ) -> IncidentView:
+        require_scope(ctx, SCOPE_INCIDENTS_WRITE)
+        if not root_cause:
+            raise InvalidRequest("root_cause is required.")
+        return self._transition(
+            incident_id, IncidentStatus.RESOLVED, root_cause=root_cause
+        )
+
+    def _transition(
+        self,
+        incident_id: str,
+        new_status: IncidentStatus,
+        *,
+        assignee: str | None = None,
+        root_cause: str | None = None,
+    ) -> IncidentView:
+        store = self._require_incidents()
+        try:
+            updated = store.update_incident(
+                incident_id,
+                new_status,
+                at=datetime.now(timezone.utc),
+                assignee=assignee,
+                root_cause=root_cause,
+            )
+        except KeyError as exc:
+            raise ResourceNotFound(f"Incident '{incident_id}' not found.") from exc
+        return _incident_view(updated)
+
+    def _require_incidents(self):
+        if self._incidents is None:
+            raise ResourceUnavailable("Incident store not configured.")
+        return self._incidents
 
     def _history_reader(self, name: str):
         if self._history is None:
@@ -184,9 +284,35 @@ def _check_run_view(result: CheckResult) -> CheckRunView:
     )
 
 
+def _incident_view(incident) -> IncidentView:
+    status = (
+        incident.status.value
+        if isinstance(incident.status, IncidentStatus)
+        else str(incident.status)
+    )
+    opened_at = incident.opened_at.isoformat()
+    resolved_at = (
+        incident.resolved_at.isoformat()
+        if incident.resolved_at is not None
+        else None
+    )
+    return IncidentView(
+        id=incident.id,
+        target_fqn=incident.target_fqn,
+        check_name=incident.check_name,
+        severity=incident.severity,
+        status=status,
+        assignee=incident.assignee,
+        root_cause=incident.root_cause,
+        opened_at=opened_at,
+        resolved_at=resolved_at,
+    )
+
+
 __all__ = [
     "CheckDefinitionView",
     "CheckRunView",
+    "IncidentView",
     "QualityReportView",
     "QualityService",
 ]
