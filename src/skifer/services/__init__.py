@@ -61,6 +61,11 @@ from skifer.services.semantic import (
     SyncOutcome,
 )
 from skifer.services.agents import AgentService
+from skifer.services.identity import (
+    LOCAL_DEFAULT_SCOPES,
+    LocalIdentity,
+    local_request_context,
+)
 
 
 _DATA_SERVICE_EXPORTS = frozenset(
@@ -142,6 +147,9 @@ __all__ = [
     "SemanticService",
     "SyncOutcome",
     "AgentService",
+    "LOCAL_DEFAULT_SCOPES",
+    "LocalIdentity",
+    "local_request_context",
     "AgentReadyDataService",
     "ModelSummary",
     "GovernedModelView",

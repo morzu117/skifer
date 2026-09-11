@@ -6,13 +6,21 @@ import importlib
 import json
 from typing import Any, Callable
 
-from skifer.services import AgentReadyDataService, RequestContext
+from skifer.services import (
+    LOCAL_DEFAULT_SCOPES,
+    AgentReadyDataService,
+    RequestContext,
+)
 from skifer.mcp.capability_tools import MCPCapabilityTools
 from skifer.mcp.resources import MCPResourceError, MCPResources
 from skifer.mcp.tools import MCPTools, QUERY_TOOL_NAME
 
 
 MCP_EXTRA = 'pip install -e ".[mcp]"'
+
+# Publicly expose the one local authority set used by stdio assembly. The MCP
+# layer must not restate this list or derive it from a client request.
+__all__ = ["LOCAL_DEFAULT_SCOPES", "MCPDependencyError", "create_server"]
 
 
 class MCPDependencyError(RuntimeError):

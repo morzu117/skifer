@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Plan 31 (1.6)** — `services/identity.py` :
+  `LocalIdentity`/`LOCAL_DEFAULT_SCOPES`/`local_request_context` pour le MCP stdio
+  et tout client local. Tous les scopes nommés sauf `certification_override`
+  (arbitrage §7.4) ; escalade impossible, sujet toujours non vide, aucun scope
+  venu du client.
 - **Plan 31 (1.5)** — `services/semantic.py` (`check/write_draft/promote`, mêmes
   codes que le CLI 0/2/3, refus de promotion si perte de contenu humain ;
   `list_models/get_model` délégués) et `services/agents.py` (`ask` via
