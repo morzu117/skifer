@@ -161,7 +161,7 @@ def test_evidence_includes_only_requested_sql_and_filter_values():
     }
 
 
-def test_evidence_keeps_sensitive_filter_values():
+def test_evidence_redacts_sensitive_filter_values_even_when_requested():
     evidence = _evidence(
         normalized_filters=(
             {"column": "ssn", "operator": "eq", "value": "123-45-6789"},
@@ -169,10 +169,14 @@ def test_evidence_keeps_sensitive_filter_values():
         )
     )
 
-    payload = evidence.to_dict(sensitive_columns=frozenset({"ssn"}))
+    # Even with include_filter_values=True, a pii/restricted column value must
+    # never be exposed in evidence; an ordinary column value is shown as asked.
+    payload = evidence.to_dict(
+        include_filter_values=True, sensitive_columns=frozenset({"ssn"})
+    )
 
-    assert payload["normalized_filters"][0]["value"] == "123-45-6789"
-    assert payload["normalized_filters"][1]["value"] == "<redacted>"
+    assert payload["normalized_filters"][0]["value"] == "<redacted>"
+    assert payload["normalized_filters"][1]["value"] == "EMEA"
     assert EvidencePolicy(sensitive_columns=frozenset({"ssn"})).sensitive_columns == {
         "ssn"
     }

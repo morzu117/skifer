@@ -649,7 +649,7 @@ class SemanticEngine:
                     item["value"]
                     if (
                         evidence_policy.include_filter_values
-                        or item.get("column") in evidence_policy.sensitive_columns
+                        and item.get("column") not in evidence_policy.sensitive_columns
                     )
                     else "<redacted>"
                 )

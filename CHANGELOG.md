@@ -28,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the contract hash, so a string and an equivalent mapping produce the same definition hash.
 - Field-level data classification (`public|internal|confidential|restricted|pii`) is now validated
   at load and in the JSON Schema, propagated along column lineage (a derived column inherits the
-  highest source level; inferred elevation warns, explicit lowering is logged), and sensitive
-  (`pii`/`restricted`) columns retain their filter values in query evidence.
+  highest source level; inferred elevation warns, explicit lowering is logged). Filter values on
+  sensitive (`pii`/`restricted`) columns are ALWAYS redacted in query evidence, even when
+  `include_filter_values` is set — sensitivity overrides disclosure, never grants it.
 
 ### Changed
 

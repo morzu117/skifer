@@ -55,6 +55,8 @@ class EvidencePolicy:
 
     include_sql: bool = False
     include_filter_values: bool = False
+    # pii/restricted columns: their filter values are ALWAYS redacted, even when
+    # include_filter_values is True. Sensitivity overrides disclosure, never grants it.
     sensitive_columns: frozenset[str] = frozenset()
 
     @classmethod
@@ -310,7 +312,7 @@ class SemanticEvidence:
         if "value" in filter_def:
             include_value = (
                 include_filter_values
-                or filter_def.get("column") in sensitive_columns
+                and filter_def.get("column") not in sensitive_columns
             )
             payload["value"] = (
                 _serialize_value(

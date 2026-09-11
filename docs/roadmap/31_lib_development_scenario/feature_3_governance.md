@@ -247,8 +247,9 @@ requis **que** pour les tests construisant un `F.col(...)`. `tests/test_certific
    élévation inférée non déclarée émet un WARNING (ne bloque pas). Un **abaissement explicite** (niveau
    déclaré < niveau inféré) est autorisé mais **journalisé**.
 3. Exposer la classification effective dans `SourceEvidence`, dans `EvidencePolicy` (une colonne
-   `pii`/`restricted` **conserve** ses filter values au lieu d'être rédigée), et dans l'export ODCS
-   (déjà présent au niveau field ; garantir la cohérence).
+   `pii`/`restricted` a ses filter values **toujours rédigées**, même sous `include_filter_values`
+   — la sensibilité prime sur la divulgation, décision de revue 2026-09-11 inversant le brouillon
+   initial), et dans l'export ODCS (déjà présent au niveau field ; garantir la cohérence).
 4. **Forward-coupling 31.2** : la classification effective doit être atteignable pour peupler
    `ColumnRecord` (31.2). Exposer une fonction pure réutilisable (`resolve_field_classifications`).
 
@@ -260,7 +261,7 @@ requis **que** pour les tests construisant un `F.col(...)`. `tests/test_certific
       "public", "internal", "confidential", "restricted", "pii",
   )
   CLASSIFICATION_RANK: dict[str, int] = {name: i for i, name in enumerate(CLASSIFICATION_LEVELS)}
-  # pii et restricted conservent leurs valeurs de filtre dans l'evidence.
+  # pii et restricted : leurs valeurs de filtre sont TOUJOURS rédigées dans l'evidence.
   SENSITIVE_CLASSIFICATIONS: frozenset[str] = frozenset({"restricted", "pii"})
   ```
 - `src/skifer/core/schema_loader.py` — **modification** : dans `_normalize_agent_ready_metadata`, valider
@@ -334,12 +335,12 @@ class EvidencePolicy:
     include_filter_values: bool = False
     sensitive_columns: frozenset[str] = frozenset()   # colonnes pii/restricted : valeurs conservées
 ```
-> **Note de sémantique à respecter** : "conserver les filter values d'une colonne pii/restricted" veut
-> dire que, pour ces colonnes, la valeur est **incluse** (elle appartient au périmètre gouverné et doit
-> figurer dans la preuve d'audit), là où une colonne ordinaire reste rédigée sauf `include_filter_values`.
-> `SemanticEvidence._serialize_filter` reçoit donc le set de colonnes sensibles et inclut la valeur si
-> `include_filter_values` **ou** `filter_def["column"] in sensitive_columns`. Threader `sensitive_columns`
-> depuis l'appelant (`to_dict`) sans changer la signature publique par défaut :
+> **Note de sémantique (corrigée en revue 2026-09-11)** : pour une colonne pii/restricted, la valeur
+> de filtre est **toujours rédigée**, même quand `include_filter_values` est vrai — la sensibilité
+> **prime** sur la divulgation et ne l'accorde jamais. Une colonne ordinaire suit `include_filter_values`.
+> `SemanticEvidence._serialize_filter` reçoit le set de colonnes sensibles et inclut la valeur si
+> `include_filter_values` **et** `filter_def["column"] not in sensitive_columns`. Threader
+> `sensitive_columns` depuis l'appelant (`to_dict`) sans changer la signature publique par défaut :
 ```python
 # dans SemanticEvidence.to_dict(...), passer self._sensitive au _serialize_filter — mais SemanticEvidence
 # ne porte pas de policy. Pattern retenu : ajouter un paramètre kw-only à to_dict :
@@ -391,12 +392,12 @@ def to_dict(self, *, include_sql=False, include_filter_values=False,
 ### Commit
 `feat(plan31-3.1): classification taxonomy, lineage propagation (warn) and evidence exposure`
 CHANGELOG (créer `## [Unreleased]` → `### Added`) :
-- `Field-level data classification (\`public|internal|confidential|restricted|pii\`) is now validated at load and in the JSON Schema, propagated along column lineage (a derived column inherits the highest source level; inferred elevation warns, explicit lowering is logged), and sensitive (\`pii\`/\`restricted\`) columns retain their filter values in query evidence.`
+- `Field-level data classification (\`public|internal|confidential|restricted|pii\`) is now validated at load and in the JSON Schema, propagated along column lineage (a derived column inherits the highest source level; inferred elevation warns, explicit lowering is logged); filter values on sensitive (\`pii\`/\`restricted\`) columns are always redacted in query evidence, even when include_filter_values is set.`
 
 ### DoD
 Load refuse une valeur hors taxonomie ; les 5 niveaux passent ; propagation testée (join + règle) ;
 abaissement explicite loggé sans échec ; mode strict prêt mais non activé ; JSON Schema = enum ;
-evidence conserve les valeurs sensibles ; suite verte ; `CANONICALIZATION_VERSION` **inchangé**.
+evidence rédige toujours les valeurs sensibles ; suite verte ; `CANONICALIZATION_VERSION` **inchangé**.
 
 ---
 
