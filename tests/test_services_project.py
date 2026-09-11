@@ -218,6 +218,24 @@ def test_explain_rules_returns_structure_without_stdout(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_project_service_audit_requires_scope(tmp_path):
+    service = _project(tmp_path)
+
+    with pytest.raises(ScopeDenied):
+        service.audit(_context())
+
+
+def test_project_service_audit_lists_pipelines(tmp_path):
+    service = _project(tmp_path)
+    _write_pipeline(tmp_path, VALID_PIPELINE)
+
+    report = service.audit(_context(SCOPE_PROJECT_READ), min_coverage=100.0)
+
+    assert report.total == 1
+    assert report.parsed == 1
+    assert report.errored == 0
+
+
 def test_op_catalog_lists_operators(tmp_path):
     service = _project(tmp_path)
     catalog = service.op_catalog(_context(SCOPE_PROJECT_READ))

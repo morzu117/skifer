@@ -43,6 +43,10 @@ META_EXIT_ERROR = 1
 META_EXIT_USAGE = 2
 META_EXIT_NOT_FOUND = 3
 
+AUDIT_EXIT_OK = 0
+AUDIT_EXIT_ERROR = 1
+AUDIT_EXIT_BELOW_THRESHOLD = 2
+
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
@@ -63,6 +67,29 @@ def main() -> None:
         nargs="+",
         metavar="PATH",
         help="Schema file path(s) or glob patterns (e.g. schemas/**/*.yaml).",
+    )
+
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="Audit governance coverage for pipeline YAML files (no Spark required).",
+    )
+    audit_parser.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATHS",
+        help="Schema file path(s) or glob patterns (e.g. schemas/**/*.yaml).",
+    )
+    audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a stable sorted-key JSON report.",
+    )
+    audit_parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Exit 2 when overall coverage is below this percentage.",
     )
 
     index_parser = subparsers.add_parser(
@@ -269,6 +296,8 @@ def main() -> None:
 
     if args.command == "validate":
         _run_validate(args)
+    elif args.command == "audit":
+        _run_audit(args)
     elif args.command == "index":
         _run_index(args)
     elif args.command == "lineage":
@@ -298,6 +327,11 @@ def _run_adaptive(args: argparse.Namespace) -> None:
 def _run_index(args: argparse.Namespace) -> None:
     """Run Spark-free metadata indexing with stable exit codes."""
     sys.exit(run_index_command(args))
+
+
+def _run_audit(args: argparse.Namespace) -> None:
+    """Run governance coverage audit with stable exit codes."""
+    sys.exit(run_audit(args.paths, as_json=args.json, min_coverage=args.min_coverage))
 
 
 def _run_lineage(args: argparse.Namespace) -> None:
@@ -414,6 +448,50 @@ def run_dictionary_command(args: argparse.Namespace, *, store=None) -> int:
         return META_EXIT_ERROR
 
 
+def run_audit(
+    paths: list[str], *, as_json: bool, min_coverage: float | None
+) -> int:
+    """Expand globs, audit files, print a stable report, and return the exit code."""
+    import glob as glob_mod
+
+    from skifer.observability.audit import METRIC_KEYS, audit_project
+
+    try:
+        expanded_paths: list[str] = []
+        for pattern in paths:
+            expanded = sorted(glob_mod.glob(pattern, recursive=True))
+            if expanded:
+                expanded_paths.extend(expanded)
+            elif glob_mod.has_magic(pattern):
+                continue
+            else:
+                expanded_paths.append(pattern)
+
+        report = audit_project(expanded_paths)
+        if as_json:
+            print(
+                json.dumps(
+                    report.to_dict(),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif not report.total:
+            print("No schema files found.")
+            print(_format_audit_text(report, METRIC_KEYS))
+        else:
+            print(_format_audit_text(report, METRIC_KEYS))
+
+        if report.total and min_coverage is not None:
+            if report.overall_coverage_pct < min_coverage:
+                return AUDIT_EXIT_BELOW_THRESHOLD
+        return AUDIT_EXIT_OK
+    except Exception as exc:
+        print(f"[audit] Command failed ({type(exc).__name__}).", file=sys.stderr)
+        return AUDIT_EXIT_ERROR
+
+
 def _resolve_registry_target(store, target: str) -> tuple[str, list[str]] | None:
     records = store.list_all()
     known_fqns = {record.target_fqn for record in records}
@@ -458,6 +536,30 @@ def _format_dictionary_text(columns) -> str:
         ).rstrip()
 
     return "\n".join([render(headers), *(render(row) for row in rows)])
+
+
+def _format_audit_text(report, metric_keys: tuple[str, ...]) -> str:
+    lines = [
+        (
+            f"Audited {report.total} pipeline(s) — "
+            f"{report.parsed} parsed, {report.errored} errored."
+        ),
+        "",
+    ]
+    for key in metric_keys:
+        satisfying = sum(1 for pipeline in report.pipelines if pipeline.metric(key))
+        lines.append(
+            f"  {key:<21}{report.coverage[key]:>7.2f}%   ({satisfying}/{report.total})"
+        )
+    lines.extend(["", f"  {'overall':<21}{report.overall_coverage_pct:>7.2f}%"])
+    failures = [pipeline for pipeline in report.pipelines if not pipeline.parsed]
+    if failures:
+        lines.append("")
+        for pipeline in failures:
+            lines.append(f"FAIL {pipeline.path}")
+            if pipeline.error:
+                lines.append(f"     {pipeline.error}")
+    return "\n".join(lines)
 
 
 def _run_contract(args: argparse.Namespace) -> None:

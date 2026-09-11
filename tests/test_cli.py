@@ -7,6 +7,7 @@ On teste uniquement les chemins de sortie rapide (pas le REPL interactif).
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -16,12 +17,15 @@ import pytest
 import yaml
 
 from skifer.cli import (
+    AUDIT_EXIT_BELOW_THRESHOLD,
+    AUDIT_EXIT_OK,
     INDEX_EXIT_OK,
     SEMANTIC_EXIT_CONFLICT,
     SEMANTIC_EXIT_DRIFT,
     SEMANTIC_EXIT_ERROR,
     SEMANTIC_EXIT_OK,
     run_contract_command,
+    run_audit,
     run_semantic_sync,
     run_semantic_validate,
 )
@@ -60,6 +64,33 @@ def _write_yaml(path: Path, payload: dict) -> None:
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, default_flow_style=False),
         encoding="utf-8",
     )
+
+
+AUDIT_FULLY_COVERED = """\
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  owner: sales-data
+contract:
+  output:
+    order_id: {description: Order identifier, classification: internal}
+    amount: {description: Order amount, classification: confidential}
+tables:
+  - name: silver.orders
+    alias: ord
+select_final:
+  - [id, order_id]
+  - [amount, amount]
+"""
+
+
+AUDIT_BARE_PIPELINE = """\
+tables:
+  - name: silver.orders
+    alias: ord
+select_final:
+  - [amount, amount]
+"""
 
 
 def _seed_base_and_curated(
@@ -270,6 +301,78 @@ select_final:
     assert second.returncode == INDEX_EXIT_OK, second.stdout + second.stderr
     assert "updated" in first.stdout
     assert "unchanged" in second.stdout
+
+
+def test_audit_cli_exit_zero_without_threshold(tmp_path, capsys):
+    pipeline = tmp_path / "covered.yaml"
+    pipeline.write_text(AUDIT_FULLY_COVERED, encoding="utf-8")
+
+    exit_code = run_audit([str(pipeline)], as_json=False, min_coverage=None)
+
+    assert exit_code == AUDIT_EXIT_OK
+    assert "overall" in capsys.readouterr().out
+
+
+def test_audit_cli_exit_two_below_threshold(tmp_path, capsys):
+    pipeline = tmp_path / "bare.yaml"
+    pipeline.write_text(AUDIT_BARE_PIPELINE, encoding="utf-8")
+
+    exit_code = run_audit([str(pipeline)], as_json=False, min_coverage=50.0)
+
+    assert exit_code == AUDIT_EXIT_BELOW_THRESHOLD
+    assert "0.00%" in capsys.readouterr().out
+
+
+def test_audit_cli_exit_zero_at_or_above_threshold(tmp_path, capsys):
+    pipeline = tmp_path / "covered.yaml"
+    pipeline.write_text(AUDIT_FULLY_COVERED, encoding="utf-8")
+
+    exit_code = run_audit([str(pipeline)], as_json=False, min_coverage=80.0)
+
+    assert exit_code == AUDIT_EXIT_OK
+    assert "80.00%" in capsys.readouterr().out
+
+
+def test_audit_cli_json_stable(tmp_path, capsys):
+    first = tmp_path / "a.yaml"
+    second = tmp_path / "b.yaml"
+    first.write_text(AUDIT_FULLY_COVERED, encoding="utf-8")
+    second.write_text(AUDIT_BARE_PIPELINE, encoding="utf-8")
+
+    exit_code = run_audit([str(second), str(first)], as_json=True, min_coverage=None)
+
+    assert exit_code == AUDIT_EXIT_OK
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert output.strip() == json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    assert payload["pipelines"][0]["path"] == str(first)
+
+
+def test_audit_cli_no_files_exits_zero(tmp_path, capsys):
+    exit_code = run_audit(
+        [str(tmp_path / "none*.yaml")],
+        as_json=False,
+        min_coverage=90.0,
+    )
+
+    assert exit_code == AUDIT_EXIT_OK
+    assert "No schema files found." in capsys.readouterr().out
+
+
+def test_audit_cli_end_to_end(tmp_path):
+    pipeline = tmp_path / "covered.yaml"
+    pipeline.write_text(AUDIT_FULLY_COVERED, encoding="utf-8")
+
+    result = _run_cli("audit", str(pipeline), "--min-coverage", "100")
+
+    assert result.returncode == AUDIT_EXIT_BELOW_THRESHOLD
+    assert "Audited 1 pipeline(s)" in result.stdout
+    assert "overall" in result.stdout
 
 
 BASE_SYNC_YAML = """

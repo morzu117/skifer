@@ -15,6 +15,7 @@ from skifer.core.json_schema import generate_json_schema
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, COLUMN_OPS, FILTER_OPERATORS
 from skifer.core.schema_loader import parse_schema_localized
 from skifer.lineage.tracker import LineageTracker
+from skifer.observability.audit import AuditReport, audit_project
 from skifer.semantic.output_projection import OutputProjector
 from skifer.services.context import (
     InvalidRequest,
@@ -276,6 +277,15 @@ class ProjectService:
 
         engine = object.__new__(SkiferEngine)
         return engine.explain_rules_report(pipeline.normalized)
+
+    def audit(
+        self, ctx: RequestContext, *, min_coverage: float | None = None
+    ) -> AuditReport:
+        """Audit project pipeline governance coverage under project:read."""
+        require_scope(ctx, SCOPE_PROJECT_READ)
+        view = self.open(ctx)
+        abs_paths = [str(self._root / relative) for relative in view.pipelines]
+        return audit_project(abs_paths)
 
     def write_pipeline(self, ctx: RequestContext, path: str, text: str) -> str:
         require_scope(ctx, SCOPE_PIPELINES_WRITE)

@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Coverage audit (`skifer.observability.audit`): pure, deterministic
+  `audit_project(paths) -> AuditReport` measuring, across a project's pipeline
+  YAMLs, the share declaring `data_product`, `contract`, a structured owner, a
+  per-output-field description, and a declared classification. New CLI
+  `skifer audit PATHS [--json] [--min-coverage N]` exits 2 when
+  `overall_coverage_pct` is below the threshold and emits stable sorted-key JSON
+  for CI diffing. Exposed transport-neutrally via `ProjectService.audit()`;
+  this is the measurement gate before hardening classification propagation
+  (31.3.1) from `warn` to `strict`.
 - `skifer lineage FQN[.column] --direction up|down --format mermaid|json`
   and `skifer dictionary FQN` now read the persistent metadata registry
   without Spark or pipeline re-parsing. Mermaid uses the existing

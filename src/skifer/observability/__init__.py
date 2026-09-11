@@ -12,6 +12,7 @@ from skifer.observability.monitor import DataMonitor, MonitorReport
 from skifer.observability.history import SqliteHistoryStore, DeltaHistoryStore
 from skifer.observability.reporter import MonitorReporter
 from skifer.observability.alerts import AlertDispatcher
+from skifer.observability.audit import AuditReport, MetricKey, PipelineAudit, audit_project
 from skifer.observability.certification import ContractDefinition, canonicalize_contract
 from skifer.observability.odcs import OdcsExport, export_odcs_31
 from skifer.observability.certification_store import (
@@ -27,6 +28,7 @@ __all__ = [
     "SchemaDriftCheck", "CustomSqlCheck", "CheckStatus", "ContractScope", "DataQualityError",
     "ContractExtractor", "DataMonitor", "MonitorReport",
     "SqliteHistoryStore", "DeltaHistoryStore", "MonitorReporter", "AlertDispatcher",
+    "AuditReport", "MetricKey", "PipelineAudit", "audit_project",
     "ContractDefinition", "canonicalize_contract", "OdcsExport", "export_odcs_31",
     "CertificationStore", "DeltaCertificationStore", "RunEvent", "SqliteCertificationStore", "StoredCheckResult", "UcSyncResult", "mirror_certification",
     "PublicationRun", "RunState", "start_publication_run",
