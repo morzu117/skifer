@@ -1,6 +1,21 @@
 """Shared constants for the Skifer core."""
 from __future__ import annotations
 
+# Ordered from least to most sensitive — index = severity rank (Plan 31.3.1).
+CLASSIFICATION_LEVELS: tuple[str, ...] = (
+    "public",
+    "internal",
+    "confidential",
+    "restricted",
+    "pii",
+)
+CLASSIFICATION_RANK: dict[str, int] = {
+    name: index for index, name in enumerate(CLASSIFICATION_LEVELS)
+}
+
+# Restricted and PII filter values remain visible in governed audit evidence.
+SENSITIVE_CLASSIFICATIONS: frozenset[str] = frozenset({"restricted", "pii"})
+
 #: Spark file formats supported by the declarative ``source:`` block (Plan 14).
 VALID_SOURCE_TYPES: frozenset[str] = frozenset(
     {"csv", "parquet", "json", "avro", "orc", "delta", "text"}

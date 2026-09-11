@@ -10,12 +10,12 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 
 import pytest
 
 from skifer.core.json_schema import generate_json_schema
+from skifer.core.constants import CLASSIFICATION_LEVELS
 from skifer.core.op_catalog import FILTER_OPERATORS, COLUMN_OPS
 
 
@@ -91,6 +91,13 @@ class TestGenerateJsonSchema:
         assert contract["required"] == ["output"]
         assert semantic["required"] == ["model_key"]
         assert semantic["additionalProperties"] is False
+
+    def test_classification_is_closed_enum(self):
+        classification = generate_json_schema()["$defs"]["OutputFieldDef"][
+            "properties"
+        ]["classification"]
+
+        assert classification["enum"] == list(CLASSIFICATION_LEVELS)
 
     def test_table_def_has_streaming_flag(self):
         s = generate_json_schema()

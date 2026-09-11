@@ -42,6 +42,15 @@ def test_contract_identity_is_canonical_and_stable():
     assert json.loads(first.canonical_json)["contract"]["grain"] == ["order_id"]
 
 
+def test_classification_slice_does_not_change_existing_fixture_hash():
+    contract = _contract(BASE_YAML)
+
+    assert contract.definition_hash == (
+        "efa969f1983f633dd62c31656e7953556aae0f8b5f41f6a189f1622c7e4e68cb"
+    )
+    assert contract.canonicalization_version == 1
+
+
 @pytest.mark.parametrize(
     "replacement",
     [

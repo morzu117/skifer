@@ -10,8 +10,10 @@ from skifer.core.schema_loader import (
     _normalize_filters,
     _normalize_join,
     _normalize_select_final,
+    _normalize_filter_mapping,
+    _normalize_select_entry_mapping,
 )
-from skifer.core.constants import VALID_SOURCE_TYPES
+from skifer.core.constants import CLASSIFICATION_LEVELS, VALID_SOURCE_TYPES
 from skifer import load_schema as top_level_load_schema, parse_schema as top_level_parse_schema
 
 
@@ -92,6 +94,37 @@ select_final:
     assert "data_product" not in schema
     assert "contract" not in schema
     assert "semantic" not in schema
+
+
+def _classification_schema(classification_line: str = "") -> str:
+    return f"""
+data_product: {{id: sales.orders, version: 1.0.0}}
+contract:
+  output:
+    order_id: {{{classification_line}}}
+tables: [{{name: silver.orders}}]
+select_final: [[order_id, order_id]]
+"""
+
+
+def test_classification_unknown_value_refused():
+    with pytest.raises(ValueError, match=r"classification 'secret'.*Allowed:"):
+        parse_schema(_classification_schema("classification: secret"))
+
+
+@pytest.mark.parametrize("classification", CLASSIFICATION_LEVELS)
+def test_classification_all_valid_levels_accepted(classification):
+    schema = parse_schema(
+        _classification_schema(f"classification: {classification}")
+    )
+
+    assert schema["contract"]["output"]["order_id"]["classification"] == classification
+
+
+def test_classification_absent_still_loads():
+    schema = parse_schema(_classification_schema())
+
+    assert "classification" not in schema["contract"]["output"]["order_id"]
 
 
 def test_parse_schema_normalizes_agent_ready_metadata():
@@ -989,9 +1022,6 @@ select_final:
 # ==============================================================================
 # Plan 18-3.5 — YAML mapping forms for filter and select_final
 # ==============================================================================
-
-from skifer.core.schema_loader import _normalize_filter_mapping, _normalize_select_entry_mapping
-
 
 class TestFilterMappingForm:
     def test_equals_implicit(self):

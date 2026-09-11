@@ -12,6 +12,7 @@ import os
 import yaml
 
 from skifer.core.constants import (
+    CLASSIFICATION_LEVELS,
     DEFAULT_STREAMING_TRIGGER,
     MATERIALIZATION_ALLOWED_KEYS,
     VALID_MATERIALIZATION_TYPES,
@@ -546,7 +547,18 @@ def _normalize_agent_ready_metadata(schema_dict: dict) -> None:
                                     "must be a non-empty string when provided."
                                 )
                             else:
-                                normalized_field[key] = value.strip()
+                                normalized_value = value.strip()
+                                if (
+                                    key == "classification"
+                                    and normalized_value not in CLASSIFICATION_LEVELS
+                                ):
+                                    errors.append(
+                                        f"  [contract.output] field '{field_name}' "
+                                        f"classification '{normalized_value}' is invalid. "
+                                        f"Allowed: {list(CLASSIFICATION_LEVELS)}"
+                                    )
+                                else:
+                                    normalized_field[key] = normalized_value
                     for key in ("required", "unique"):
                         if key in metadata:
                             if not isinstance(metadata[key], bool):

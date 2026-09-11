@@ -161,6 +161,23 @@ def test_evidence_includes_only_requested_sql_and_filter_values():
     }
 
 
+def test_evidence_keeps_sensitive_filter_values():
+    evidence = _evidence(
+        normalized_filters=(
+            {"column": "ssn", "operator": "eq", "value": "123-45-6789"},
+            {"column": "region", "operator": "eq", "value": "EMEA"},
+        )
+    )
+
+    payload = evidence.to_dict(sensitive_columns=frozenset({"ssn"}))
+
+    assert payload["normalized_filters"][0]["value"] == "123-45-6789"
+    assert payload["normalized_filters"][1]["value"] == "<redacted>"
+    assert EvidencePolicy(sensitive_columns=frozenset({"ssn"})).sensitive_columns == {
+        "ssn"
+    }
+
+
 def test_evidence_refuses_naive_datetime():
     with pytest.raises(ValueError, match="compiled_at.*timezone-aware"):
         _evidence(compiled_at=datetime(2026, 9, 4, 12, 30)).to_dict()

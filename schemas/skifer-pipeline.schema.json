@@ -127,7 +127,13 @@
         },
         "classification": {
           "type": "string",
-          "minLength": 1
+          "enum": [
+            "public",
+            "internal",
+            "confidential",
+            "restricted",
+            "pii"
+          ]
         },
         "entity": {
           "type": "string",

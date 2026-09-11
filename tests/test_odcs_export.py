@@ -28,3 +28,18 @@ select_final: [[id, order_id]]
     assert {entry["type"] for entry in exported.document["quality"]} == {"required", "unique"}
     assert exported.document["roles"] == [{"role": "reader", "access": "read"}]
     assert any("entity" in warning for warning in exported.warnings)
+
+
+def test_odcs_exports_field_classification():
+    schema = parse_to_ir(parse_schema("""
+data_product: {id: customers, version: 1.0.0}
+contract:
+  output:
+    ssn: {logical_type: string, classification: pii}
+tables: [{name: silver.customers}]
+select_final: [[ssn, ssn]]
+"""))
+
+    exported = export_odcs_31(schema, canonicalize_contract(schema))
+
+    assert exported.document["schema"]["properties"][0]["classification"] == "pii"

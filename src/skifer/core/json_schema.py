@@ -18,6 +18,7 @@ Usage::
 from __future__ import annotations
 
 from skifer.core.constants import (
+    CLASSIFICATION_LEVELS,
     VALID_MATERIALIZATION_TYPES,
     VALID_MV_REFRESH_MODES,
     VALID_SOURCE_TYPES,
@@ -154,7 +155,10 @@ def generate_json_schema() -> dict:
                     "logical_type": {"type": "string", "minLength": 1},
                     "required": {"type": "boolean"},
                     "unique": {"type": "boolean"},
-                    "classification": {"type": "string", "minLength": 1},
+                    "classification": {
+                        "type": "string",
+                        "enum": list(CLASSIFICATION_LEVELS),
+                    },
                     "entity": {"type": "string", "minLength": 1},
                     "description": {"type": "string", "minLength": 1},
                 },

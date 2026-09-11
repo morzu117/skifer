@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Field-level data classification (`public|internal|confidential|restricted|pii`) is now validated
+  at load and in the JSON Schema, propagated along column lineage (a derived column inherits the
+  highest source level; inferred elevation warns, explicit lowering is logged), and sensitive
+  (`pii`/`restricted`) columns retain their filter values in query evidence.
+
 ### Changed
 
 - **Plan 31 (1.6)** — `services/identity.py` :
