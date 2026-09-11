@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Plan 31 (5.1)** — `services/execution.py` :
+  `ExecutionService.connect/session/close` and `SessionView(session_id, mode, env,
+  catalog, user, sandbox_suffix, is_production, state, cause)`. A single session
+  is kept per active config and recreated when `config_path`/`force_env` changes;
+  TTL is lazy with an injected clock, and close only stops Spark in local mode.
+  Session construction failures are exposed as `state="failed"` plus `cause`,
+  never raised, under scope `execute:run`.
 - **Plan 31 (4.1)** — Incidents in the certification store (SQLite + Delta):
   automatically open one incident per failed critical check on quarantine,
   deduplicate while open, stay idempotent under `resume()`, and auto-resolve

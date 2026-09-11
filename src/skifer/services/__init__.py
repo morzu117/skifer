@@ -64,6 +64,7 @@ from skifer.services.semantic import (
     SyncOutcome,
 )
 from skifer.services.agents import AgentService
+from skifer.services.execution import ExecutionService, SessionView
 from skifer.services.identity import (
     LOCAL_DEFAULT_SCOPES,
     LocalIdentity,
@@ -153,6 +154,8 @@ __all__ = [
     "SemanticService",
     "SyncOutcome",
     "AgentService",
+    "ExecutionService",
+    "SessionView",
     "LOCAL_DEFAULT_SCOPES",
     "LocalIdentity",
     "local_request_context",
