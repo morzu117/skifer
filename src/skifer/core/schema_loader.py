@@ -37,7 +37,8 @@ logger = logging.getLogger(__name__)
 VALID_SINK_TYPES: frozenset[str] = frozenset({"delta", "postgres", "jdbc"})
 
 _AGENT_READY_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-_DATA_PRODUCT_ALLOWED_KEYS = frozenset({"id", "version", "owner", "description"})
+_DATA_PRODUCT_ALLOWED_KEYS = frozenset({"id", "version", "owner", "description", "domain"})
+_OWNER_ALLOWED_KEYS = frozenset({"team", "steward", "domain", "contact"})
 _CONTRACT_ALLOWED_KEYS = frozenset({"grain", "output"})
 _OUTPUT_FIELD_ALLOWED_KEYS = frozenset(
     {"logical_type", "required", "unique", "classification", "entity", "description"}
@@ -67,6 +68,38 @@ def _find_file_upwards(filename, start_dir=None):
         if parent == current_dir:
             return None
         current_dir = parent
+
+
+def _normalize_data_product_owner(owner: object, errors: list[str]) -> str | dict[str, str] | None:
+    if isinstance(owner, str):
+        if owner.strip():
+            return owner.strip()
+        errors.append("  [data_product.owner] must be a non-empty string when provided.")
+        return None
+    if not isinstance(owner, dict):
+        errors.append(
+            "  [data_product.owner] must be a non-empty string or an ownership mapping when provided."
+        )
+        return None
+
+    unknown = set(owner) - _OWNER_ALLOWED_KEYS
+    if unknown:
+        errors.append(
+            f"  [data_product.owner] unknown keys: {sorted(unknown)}. "
+            f"Allowed keys: {sorted(_OWNER_ALLOWED_KEYS)}"
+        )
+
+    normalized: dict[str, str] = {}
+    for key, value in owner.items():
+        if key not in _OWNER_ALLOWED_KEYS:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            errors.append(
+                f"  [data_product.owner.{key}] must be a non-empty string when provided."
+            )
+            continue
+        normalized[key] = value.strip()
+    return normalized
 
 
 def _inject_params(yaml_str, params):
@@ -489,7 +522,10 @@ def _normalize_agent_ready_metadata(schema_dict: dict) -> None:
                 errors.append(
                     f"  [data_product.version] '{version}' is not a valid semantic version (expected X.Y.Z)."
                 )
-            for key in ("owner", "description"):
+            normalized_owner: str | dict[str, str] | None = None
+            if "owner" in product:
+                normalized_owner = _normalize_data_product_owner(product["owner"], errors)
+            for key in ("description", "domain"):
                 if key in product and (
                     not isinstance(product[key], str) or not product[key].strip()
                 ):
@@ -497,7 +533,9 @@ def _normalize_agent_ready_metadata(schema_dict: dict) -> None:
 
             if not errors:
                 normalized_product = {"id": product_id, "version": version.strip()}
-                for key in ("owner", "description"):
+                if "owner" in product:
+                    normalized_product["owner"] = normalized_owner
+                for key in ("description", "domain"):
                     if key in product:
                         normalized_product[key] = product[key].strip()
                 schema_dict["data_product"] = normalized_product

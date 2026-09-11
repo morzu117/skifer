@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from skifer.core.ir import ParsedSchema
+from skifer.core.ir import ParsedOwner, ParsedSchema
 from skifer.observability.certification import ContractDefinition
 
 
@@ -53,6 +53,26 @@ def export_odcs_31(schema: ParsedSchema, definition: ContractDefinition) -> Odcs
         warnings.append("semantic seed metadata has no ODCS 3.1 mapping and was not exported.")
 
     product = schema.data_product
+    team = []
+    if product and product.owner is not None:
+        if isinstance(product.owner, str):
+            team = [{"name": product.owner}]
+        elif isinstance(product.owner, ParsedOwner):
+            member_name = product.owner.team or product.owner.steward or product.owner.contact
+            if member_name:
+                member = {"name": member_name}
+                if product.owner.steward:
+                    member["role"] = "steward"
+                team = [member]
+
+    custom_properties = {
+        "skifer.definition_hash": definition.definition_hash,
+        "skifer.hash_algorithm": definition.hash_algorithm,
+        "skifer.canonicalization_version": definition.canonicalization_version,
+    }
+    if product and product.owner_domain:
+        custom_properties["skifer.domain"] = product.owner_domain
+
     document = {
         "apiVersion": "v3.1.0",
         "kind": "DataContract",
@@ -62,13 +82,9 @@ def export_odcs_31(schema: ParsedSchema, definition: ContractDefinition) -> Odcs
         "description": product.description if product else None,
         "schema": {"properties": fields},
         "quality": quality,
-        "team": [{"name": definition.owner}] if definition.owner else [],
+        "team": team,
         "roles": [{"role": "reader", "access": "read"}],
         "slaProperties": [],
-        "customProperties": {
-            "skifer.definition_hash": definition.definition_hash,
-            "skifer.hash_algorithm": definition.hash_algorithm,
-            "skifer.canonicalization_version": definition.canonicalization_version,
-        },
+        "customProperties": custom_properties,
     }
     return OdcsExport(document=document, warnings=tuple(warnings))

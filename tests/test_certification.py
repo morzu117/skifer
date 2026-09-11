@@ -78,6 +78,24 @@ def test_documentation_and_owner_do_not_change_definition_hash():
     assert changed.owner == "platform-team"
 
 
+def test_owner_string_and_mapping_same_definition_hash():
+    string_owner = _contract(BASE_YAML)
+    mapping_owner = _contract(
+        BASE_YAML.replace(
+            "owner: sales-data",
+            "owner:\n    team: sales-data\n    steward: jane@example.com\n    domain: commerce",
+        )
+    )
+
+    assert mapping_owner.definition_hash == string_owner.definition_hash
+    assert mapping_owner.canonical_json == string_owner.canonical_json
+    assert mapping_owner.owner == string_owner.owner == "sales-data"
+
+    payload = json.loads(mapping_owner.canonical_json)
+    assert "owner" not in payload["data_product"]
+    assert "domain" not in payload["data_product"]
+
+
 def test_contract_identity_requires_product_and_output_contract():
     with pytest.raises(ValueError, match="data_product"):
         _contract("tables: [{name: silver.orders}]")

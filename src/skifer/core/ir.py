@@ -180,13 +180,50 @@ class ParsedPartial:
 
 
 @dataclass(frozen=True)
+class ParsedOwner:
+    """Structured ownership metadata for one data product (Plan 31.3.2)."""
+
+    team: str | None = None
+    steward: str | None = None
+    domain: str | None = None
+    contact: str | None = None
+
+
+@dataclass(frozen=True)
 class ParsedDataProduct:
     """Versioned ownership metadata for one declarative data product (Plan 29)."""
 
     id: str
     version: str
-    owner: str | None = None
+    owner: str | ParsedOwner | None = None
     description: str | None = None
+    domain: str | None = None
+
+    @property
+    def owner_label(self) -> str | None:
+        """Stable string representation for legacy owner consumers."""
+        if self.owner is None:
+            return None
+        if isinstance(self.owner, str):
+            return self.owner
+        return self.owner.team or self.owner.steward or self.owner.contact
+
+    @property
+    def owner_domain(self) -> str | None:
+        """Effective owner domain: product-level domain first, then owner mapping."""
+        if self.domain:
+            return self.domain
+        return self.owner.domain if isinstance(self.owner, ParsedOwner) else None
+
+
+def _parse_data_product_owner(raw_owner: object) -> str | ParsedOwner | None:
+    if isinstance(raw_owner, str):
+        return raw_owner
+    if isinstance(raw_owner, dict):
+        return ParsedOwner(
+            **{key: raw_owner.get(key) for key in ("team", "steward", "domain", "contact")}
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -357,8 +394,9 @@ def parse_to_ir(schema_dict: dict) -> ParsedSchema:
         data_product = ParsedDataProduct(
             id=raw_product["id"],
             version=raw_product["version"],
-            owner=raw_product.get("owner"),
+            owner=_parse_data_product_owner(raw_product.get("owner")),
             description=raw_product.get("description"),
+            domain=raw_product.get("domain"),
         )
 
     raw_contract = schema_dict.get("contract") or {}

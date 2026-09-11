@@ -102,10 +102,40 @@
           "description": "Semantic version of the product contract."
         },
         "owner": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "team": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "steward": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "domain": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contact": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "description": {
           "type": "string",
           "minLength": 1
         },
-        "description": {
+        "domain": {
           "type": "string",
           "minLength": 1
         }

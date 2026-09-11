@@ -87,6 +87,6 @@ def canonicalize_contract(schema: ParsedSchema) -> ContractDefinition:
         definition_hash=definition_hash,
         canonical_json=canonical_json,
         data_product_id=schema.data_product.id,
-        owner=schema.data_product.owner,
+        owner=schema.data_product.owner_label,
         created_at=datetime.now(timezone.utc),
     )

@@ -30,6 +30,46 @@ select_final: [[id, order_id]]
     assert any("entity" in warning for warning in exported.warnings)
 
 
+def test_odcs_team_backcompat_string_owner():
+    schema = parse_to_ir(parse_schema("""
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  owner: sales-data
+contract:
+  output:
+    order_id: {}
+tables: [{name: silver.orders}]
+select_final: [[id, order_id]]
+"""))
+
+    exported = export_odcs_31(schema, canonicalize_contract(schema))
+
+    assert exported.document["team"] == [{"name": "sales-data"}]
+
+
+def test_odcs_team_filled_from_mapping():
+    schema = parse_to_ir(parse_schema("""
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  owner:
+    team: sales-data
+    steward: jane@example.com
+    domain: commerce
+contract:
+  output:
+    order_id: {}
+tables: [{name: silver.orders}]
+select_final: [[id, order_id]]
+"""))
+
+    exported = export_odcs_31(schema, canonicalize_contract(schema))
+
+    assert exported.document["team"] == [{"name": "sales-data", "role": "steward"}]
+    assert exported.document["customProperties"]["skifer.domain"] == "commerce"
+
+
 def test_odcs_exports_field_classification():
     schema = parse_to_ir(parse_schema("""
 data_product: {id: customers, version: 1.0.0}

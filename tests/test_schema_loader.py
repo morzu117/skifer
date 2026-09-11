@@ -199,6 +199,70 @@ select_final:
     assert schema["data_product"]["description"] == "Orders for EMEA"
 
 
+def test_owner_mapping_is_normalized_in_place():
+    schema = parse_schema(
+        """
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  owner:
+    team: " sales-data "
+    steward: " jane@example.com "
+    domain: " commerce "
+    contact: " #sales-data "
+contract:
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+    )
+
+    assert schema["data_product"]["owner"] == {
+        "team": "sales-data",
+        "steward": "jane@example.com",
+        "domain": "commerce",
+        "contact": "#sales-data",
+    }
+
+
+def test_owner_unknown_key_refused():
+    with pytest.raises(ValueError, match=r"data_product.owner.*unknown keys.*teem"):
+        parse_schema(
+            """
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  owner:
+    teem: sales-data
+tables:
+  - name: silver.orders
+"""
+        )
+
+
+def test_data_product_domain_is_normalized():
+    schema = parse_schema(
+        """
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  domain: " commerce "
+contract:
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+    )
+
+    assert schema["data_product"]["domain"] == "commerce"
+
+
 @pytest.mark.parametrize(
     ("fragment", "match"),
     [

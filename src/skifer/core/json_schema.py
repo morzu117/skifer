@@ -144,8 +144,23 @@ def generate_json_schema() -> dict:
                         "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
                         "description": "Semantic version of the product contract.",
                     },
-                    "owner": {"type": "string", "minLength": 1},
+                    "owner": {
+                        "oneOf": [
+                            {"type": "string", "minLength": 1},
+                            {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "team": {"type": "string", "minLength": 1},
+                                    "steward": {"type": "string", "minLength": 1},
+                                    "domain": {"type": "string", "minLength": 1},
+                                    "contact": {"type": "string", "minLength": 1},
+                                },
+                            },
+                        ]
+                    },
                     "description": {"type": "string", "minLength": 1},
+                    "domain": {"type": "string", "minLength": 1},
                 },
             },
             "OutputFieldDef": {

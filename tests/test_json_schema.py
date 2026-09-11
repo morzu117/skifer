@@ -92,6 +92,19 @@ class TestGenerateJsonSchema:
         assert semantic["required"] == ["model_key"]
         assert semantic["additionalProperties"] is False
 
+    def test_json_schema_owner_oneof(self):
+        owner = generate_json_schema()["$defs"]["DataProductDef"]["properties"]["owner"]
+
+        assert [shape["type"] for shape in owner["oneOf"]] == ["string", "object"]
+        owner_mapping = owner["oneOf"][1]
+        assert owner_mapping["additionalProperties"] is False
+        assert set(owner_mapping["properties"]) == {"team", "steward", "domain", "contact"}
+
+    def test_json_schema_data_product_domain(self):
+        domain = generate_json_schema()["$defs"]["DataProductDef"]["properties"]["domain"]
+
+        assert domain == {"type": "string", "minLength": 1}
+
     def test_classification_is_closed_enum(self):
         classification = generate_json_schema()["$defs"]["OutputFieldDef"][
             "properties"

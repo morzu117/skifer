@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `data_product.owner` now accepts a structured mapping (`team`/`steward`/`domain`/`contact`) in
+  addition to a plain string, plus a top-level `data_product.domain`. Ownership flows into the ODCS
+  `team[]` block and the Unity Catalog `skifer_owner`/`skifer_domain` tags. Ownership stays excluded
+  from the contract hash, so a string and an equivalent mapping produce the same definition hash.
 - Field-level data classification (`public|internal|confidential|restricted|pii`) is now validated
   at load and in the JSON Schema, propagated along column lineage (a derived column inherits the
   highest source level; inferred elevation warns, explicit lowering is logged), and sensitive
