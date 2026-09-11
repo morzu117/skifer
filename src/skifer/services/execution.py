@@ -14,6 +14,7 @@ from skifer.services.context import (
     RequestContext,
     ResourceNotFound,
     ResourceUnavailable,
+    SCOPE_CONTRACTS_READ,
     SCOPE_EXECUTE_RUN,
     require_scope,
 )
@@ -74,7 +75,7 @@ class _Job:
     finished_at: float | None = None
     error: str | None = None
     logs: list[tuple[float, str, str]] = field(default_factory=list)
-    result: Any | None = None
+    result: ResultView | None = None
     cancel_requested: bool = False
     _thread: threading.Thread | None = None
 
@@ -115,6 +116,47 @@ class LogsView:
             "entries": list(self.entries),
             "next_offset": self.next_offset,
         }
+
+
+@dataclass(frozen=True)
+class ResultView:
+    job_id: str
+    run_id: str
+    kind: str
+    state: str
+    rows: tuple[dict[str, Any], ...]
+    total: int
+    schema: tuple[dict[str, str], ...]
+    monitor_report: dict | None
+    publication_decision: str | None
+    quarantine: dict | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "run_id": self.run_id,
+            "kind": self.kind,
+            "state": self.state,
+            "rows": [dict(row) for row in self.rows],
+            "total": self.total,
+            "schema": [dict(field) for field in self.schema],
+            "monitor_report": self.monitor_report,
+            "publication_decision": self.publication_decision,
+            "quarantine": self.quarantine,
+            "error": self.error,
+        }
+
+
+class _BackendQuarantineReader:
+    """Expose one bounded quarantine snapshot through GovernanceService."""
+
+    def __init__(self, backend, quarantine_fqn: str):
+        self._backend = backend
+        self._quarantine_fqn = quarantine_fqn
+
+    def read_quarantine(self, _dataset: str, limit: int):
+        return self._backend.read_table(self._quarantine_fqn).limit(limit)
 
 
 def _default_engine_factory(config_path: str | None, force_env: str | None):
@@ -326,6 +368,18 @@ class ExecutionService:
             self._last_access = self._clock() if self._session is not None else self._last_access
             return LogsView(job_id=job.job_id, entries=entries, next_offset=len(job.logs))
 
+    def result(self, ctx: RequestContext, job_id: str) -> ResultView:
+        require_scope(ctx, SCOPE_EXECUTE_RUN)
+        with self._lock:
+            self._sweep_ttl_locked()
+            job = self._get_job_locked(job_id)
+            if job.state == "running":
+                raise InvalidRequest("job still running")
+            self._last_access = self._clock() if self._session is not None else self._last_access
+            if not isinstance(job.result, ResultView):
+                raise ResourceUnavailable("The job result is unavailable.")
+            return job.result
+
     def _view_from_engine(
         self,
         engine,
@@ -434,19 +488,29 @@ class ExecutionService:
             current.result = result
             current.state = "succeeded"
             current.finished_at = self._clock()
-            self._append_log_locked(current, "info", "succeeded")
+            if result.publication_decision == "QUARANTINED":
+                self._append_log_locked(current, "warning", "quarantined")
+            else:
+                self._append_log_locked(current, "info", "succeeded")
 
     def _execute_job(self, engine, job: _Job) -> Any:
         if job.kind == "run":
-            returned = engine.run_from_yaml(
-                job.path,
-                job.params["target_layer"],
-                job.params.get("target_table"),
-                job.params.get("run_params"),
-                run_id=job.job_id,
-            )
+            try:
+                returned = engine.run_from_yaml(
+                    job.path,
+                    job.params["target_layer"],
+                    job.params.get("target_table"),
+                    job.params.get("run_params"),
+                    run_id=job.job_id,
+                )
+            except Exception as exc:
+                from skifer.observability.checks import DataQualityError
+
+                if not isinstance(exc, DataQualityError):
+                    raise
+                return self._run_result(engine, job, monitor_report=exc.report.summary())
             self._assert_returned_run_id(job, returned)
-            return {"run_id": returned}
+            return self._run_result(engine, job)
         if job.kind == "full_refresh":
             returned = engine.full_refresh(
                 job.params["target_layer"],
@@ -454,7 +518,7 @@ class ExecutionService:
                 run_id=job.job_id,
             )
             self._assert_returned_run_id(job, returned)
-            return {"run_id": returned}
+            return self._empty_result(job, "succeeded")
         if job.kind == "preview":
             from skifer.core.schema_loader import load_schema
 
@@ -463,11 +527,18 @@ class ExecutionService:
                 params={**engine.default_params, **job.params.get("run_params", {})},
             )
             df = engine.process_schema(schema_dict)
-            limit = job.params.get("limit", 100)
-            if type(limit) is not int or limit < 1:
-                raise InvalidRequest("params['limit'] must be a positive integer.")
-            rows = df.limit(min(limit, HARD_MAX_QUERY_ROWS)).collect()
-            return {"rows": [row_to_json(row, index) for index, row in enumerate(rows)]}
+            rows, total, schema = self._materialize_rows(df, self._row_limit(job))
+            return ResultView(
+                job_id=job.job_id,
+                run_id=job.job_id,
+                kind=job.kind,
+                state="succeeded",
+                rows=tuple(rows),
+                total=total,
+                schema=tuple(schema),
+                monitor_report=None,
+                publication_decision=None,
+            )
         if job.kind == "check":
             from skifer.core.schema_loader import load_schema
 
@@ -481,8 +552,126 @@ class ExecutionService:
             target_schema = engine.get_target_schema(job.params["target_layer"])
             fqn = engine._build_fqn(target_schema, job.params["target_table"])
             report = monitor.check_from_schema(fqn, schema_dict, raise_on_critical=False)
-            return {"monitor_report": report.summary()}
+            return ResultView(
+                job_id=job.job_id,
+                run_id=job.job_id,
+                kind=job.kind,
+                state="succeeded",
+                rows=(),
+                total=0,
+                schema=(),
+                monitor_report=report.summary(),
+                publication_decision=None,
+            )
         raise InvalidRequest(f"Invalid job kind {job.kind!r}.")
+
+    def _run_result(
+        self,
+        engine,
+        job: _Job,
+        *,
+        monitor_report: dict | None = None,
+    ) -> ResultView:
+        from skifer.services.governance import GovernanceService
+
+        target_schema = engine.get_target_schema(job.params["target_layer"])
+        target_fqn = engine._build_fqn(target_schema, job.params["target_table"])
+        rows: list[dict] = []
+        total = 0
+        schema: list[dict] = []
+        decision = None
+        quarantine = None
+        store = getattr(engine, "certification_store", None)
+        if store is not None:
+            governance = GovernanceService(store)
+            outcome = governance.get_run(self._governance_context(), job.job_id)
+            if outcome is not None:
+                decision = outcome.state
+                if decision == "QUARANTINED":
+                    quarantine_service = governance
+                    if not callable(getattr(store, "read_quarantine", None)):
+                        if not outcome.quarantine_fqn:
+                            raise ResourceUnavailable(
+                                "The quarantined run has no quarantine dataset."
+                            )
+                        quarantine_service = GovernanceService(
+                            _BackendQuarantineReader(
+                                engine.backend, outcome.quarantine_fqn
+                            )
+                        )
+                    quarantine = quarantine_service.read_quarantine(
+                        self._governance_context(),
+                        outcome.target_fqn or target_fqn,
+                        limit=self._row_limit(job),
+                    ).to_dict()
+        if decision != "QUARANTINED":
+            df = engine.backend.sql(f"SELECT * FROM {target_fqn}")
+            rows, total, schema = self._materialize_rows(df, self._row_limit(job))
+        if monitor_report is None:
+            monitor_report = self._latest_monitor_summary(engine, target_fqn)
+        return ResultView(
+            job_id=job.job_id,
+            run_id=job.job_id,
+            kind=job.kind,
+            state="succeeded",
+            rows=tuple(rows),
+            total=total,
+            schema=tuple(schema),
+            monitor_report=monitor_report,
+            publication_decision=decision,
+            quarantine=quarantine,
+        )
+
+    def _materialize_rows(
+        self, df, limit: int
+    ) -> tuple[list[dict], int, list[dict]]:
+        total = df.count()
+        row_limit = min(limit, HARD_MAX_QUERY_ROWS)
+        rows = [
+            row_to_json(row, index)
+            for index, row in enumerate(df.limit(row_limit).collect())
+        ]
+        schema = [{"name": name, "type": dtype} for name, dtype in df.dtypes]
+        return rows, total, schema
+
+    def _row_limit(self, job: _Job) -> int:
+        limit = job.params.get("limit", 100)
+        if type(limit) is not int or limit < 1:
+            raise InvalidRequest("params['limit'] must be a positive integer.")
+        return min(limit, HARD_MAX_QUERY_ROWS)
+
+    def _governance_context(self) -> RequestContext:
+        from skifer.observability.tracing import TraceContext
+
+        return RequestContext(
+            subject="execution-service",
+            scopes=frozenset({SCOPE_CONTRACTS_READ}),
+            consumer_class="execution",
+            trace_context=TraceContext(),
+        )
+
+    def _latest_monitor_summary(self, engine, target_fqn: str) -> dict | None:
+        monitor = getattr(engine, "monitor", None)
+        history = getattr(monitor, "history", None)
+        get_latest = getattr(history, "get_latest", None)
+        if not callable(get_latest):
+            return None
+        report = get_latest(target_fqn)
+        return report.summary() if report is not None else None
+
+    def _empty_result(self, job: _Job, state: str, error: str | None = None) -> ResultView:
+        return ResultView(
+            job_id=job.job_id,
+            run_id=job.job_id,
+            kind=job.kind,
+            state=state,
+            rows=(),
+            total=0,
+            schema=(),
+            monitor_report=None,
+            publication_decision=None,
+            error=error,
+        )
 
     def _assert_returned_run_id(self, job: _Job, returned: Any) -> None:
         if returned != job.job_id:
@@ -500,22 +689,10 @@ class ExecutionService:
                 if job.finished_at is None:
                     job.finished_at = self._clock()
                 return
-            try:
-                from skifer.observability.checks import DataQualityError
-            except Exception:
-                DataQualityError = ()  # type: ignore[assignment]
-            if isinstance(exc, DataQualityError):
-                job.result = {
-                    "publication_decision": "QUARANTINED",
-                    "monitor_report": exc.report.summary(),
-                }
-                job.state = "succeeded"
-                job.finished_at = self._clock()
-                self._append_log_locked(job, "warning", "quarantined")
-                return
             job.state = "failed"
             job.finished_at = self._clock()
             job.error = f"{type(exc).__name__}: {exc}"[:500]
+            job.result = self._empty_result(job, "failed", job.error)
             self._append_log_locked(job, "error", job.error)
 
     def _set_spark_job_group(self, engine, job: _Job) -> None:
@@ -532,6 +709,7 @@ class ExecutionService:
         job.cancel_requested = True
         job.state = "cancelled"
         job.finished_at = now
+        job.result = self._empty_result(job, "cancelled")
         self._append_log_locked(job, "warning", message)
         engine = self._engine
         if engine is None:
@@ -585,6 +763,7 @@ __all__ = [
     "JobStatusView",
     "LogsView",
     "NoActiveSession",
+    "ResultView",
     "SessionView",
     "_default_engine_factory",
 ]

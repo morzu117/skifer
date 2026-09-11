@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Plan 31 (5.3)** — `ExecutionService.result` returns a bounded, JSON-native
+  `ResultView` with exact totals, schema, monitor summary, publication decision,
+  and bounded quarantine rows. Publication outcomes are resolved by `run_id`
+  through `GovernanceService.get_run`; no Spark object crosses `services/`.
 - **Plan 31 (5.2)** — `ExecutionService.submit/status/cancel/logs` :
   background pipeline jobs (`preview|run|full_refresh|check`) with a single
   active job per project; concurrent submit is refused with `JobConflict`.

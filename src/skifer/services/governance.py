@@ -15,6 +15,7 @@ from skifer.observability.certification import (
     diff_contracts,
 )
 from skifer.observability.certification_store import Certification, RunEvent
+from skifer.observability.checks import CheckStatus
 from skifer.observability.metadata_store import (
     ColumnRecord,
     ImpactReport,
@@ -70,6 +71,24 @@ class QuarantineView:
             "dataset": self.dataset,
             "rows": [dict(row) for row in self.rows],
             "truncated": self.truncated,
+        }
+
+
+@dataclass(frozen=True)
+class RunOutcomeView:
+    run_id: str
+    state: str
+    target_fqn: str | None
+    quarantine_fqn: str | None
+    checks_passed: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "state": self.state,
+            "target_fqn": self.target_fqn,
+            "quarantine_fqn": self.quarantine_fqn,
+            "checks_passed": self.checks_passed,
         }
 
 
@@ -173,6 +192,32 @@ class GovernanceService:
             dataset=dataset,
             rows=tuple(row_to_json(row, index) for index, row in enumerate(rows[:row_limit])),
             truncated=len(rows) > row_limit,
+        )
+
+    def get_run(self, ctx: RequestContext, run_id: str) -> RunOutcomeView | None:
+        require_scope(ctx, SCOPE_CONTRACTS_READ)
+        run_reader = self._reader("get_run", "certification run reads")
+        run = run_reader(run_id)
+        if run is None:
+            return None
+        if not isinstance(run, RunEvent):
+            raise ResourceUnavailable("The certification store returned an invalid run.")
+        results_reader = self._reader("get_check_results", "certification check reads")
+        results = results_reader(run_id)
+        if not isinstance(results, (list, tuple)):
+            raise ResourceUnavailable(
+                "The certification store returned invalid check results."
+            )
+        checks_passed = not any(
+            result.severity == "critical" and result.status is CheckStatus.FAIL
+            for result in results
+        )
+        return RunOutcomeView(
+            run_id=run.run_id,
+            state=run.state,
+            target_fqn=run.target_fqn,
+            quarantine_fqn=getattr(run, "quarantine_fqn", None),
+            checks_passed=checks_passed,
         )
 
     def diff_contracts(
@@ -373,4 +418,5 @@ __all__ = [
     "ImpactReport",
     "QuarantineView",
     "RegistryColumnSearchView",
+    "RunOutcomeView",
 ]

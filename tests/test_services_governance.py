@@ -10,7 +10,12 @@ import yaml
 from skifer.core.ir import parse_to_ir
 from skifer.core.schema_loader import parse_schema
 from skifer.observability.certification import ContractDefinition, diff_contracts
-from skifer.observability.certification_store import Certification, RunEvent
+from skifer.observability.certification_store import (
+    Certification,
+    RunEvent,
+    StoredCheckResult,
+)
+from skifer.observability.checks import CheckStatus, ContractScope
 from skifer.lineage.tracker import LineageEdge, LineageGraph
 from skifer.observability.metadata_store import (
     ColumnRecord,
@@ -87,6 +92,37 @@ class _Store:
 
     def read_quarantine(self, dataset):
         return _FakeFrame(self.quarantine_rows)
+
+    def get_run(self, run_id):
+        if run_id == "missing":
+            return None
+        return RunEvent(
+            event_id=f"{run_id}:QUARANTINED",
+            run_id=run_id,
+            dataset="cat.silver.t",
+            state="QUARANTINED",
+            contract_id="orders",
+            contract_version="1.0.0",
+            definition_hash="hash",
+            occurred_at=datetime(2026, 9, 11, tzinfo=timezone.utc),
+            target_fqn="cat.silver.t",
+            quarantine_fqn="cat._skifer_quarantine.t_snapshot",
+        )
+
+    def get_check_results(self, run_id):
+        return [
+            StoredCheckResult(
+                event_id=f"{run_id}:NullCheck:0",
+                run_id=run_id,
+                check_type="NullCheck",
+                scope=ContractScope.ROW,
+                severity="critical",
+                status=CheckStatus.FAIL,
+                actual_value="1",
+                expected_value="0",
+                message="null id",
+            )
+        ]
 
 
 def _metadata_record(
@@ -203,6 +239,30 @@ def test_read_quarantine_no_dataframe():
 
     assert all(isinstance(row, dict) for row in view.rows)
     assert not hasattr(view, "collect")
+
+
+def test_governance_get_run_by_run_id():
+    outcome = GovernanceService(_Store()).get_run(
+        _context(SCOPE_CONTRACTS_READ), "run-1"
+    )
+
+    assert outcome is not None
+    assert outcome.to_dict() == {
+        "run_id": "run-1",
+        "state": "QUARANTINED",
+        "target_fqn": "cat.silver.t",
+        "quarantine_fqn": "cat._skifer_quarantine.t_snapshot",
+        "checks_passed": False,
+    }
+
+
+def test_governance_get_run_missing_returns_none():
+    assert (
+        GovernanceService(_Store()).get_run(
+            _context(SCOPE_CONTRACTS_READ), "missing"
+        )
+        is None
+    )
 
 
 def test_diff_contracts_requires_scope():

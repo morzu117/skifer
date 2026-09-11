@@ -48,6 +48,7 @@ from skifer.services.governance import (
     ImpactReport,
     QuarantineView,
     RegistryColumnSearchView,
+    RunOutcomeView,
 )
 from skifer.services.quality import (
     CheckDefinitionView,
@@ -70,6 +71,7 @@ from skifer.services.execution import (
     JobStatusView,
     LogsView,
     NoActiveSession,
+    ResultView,
     SessionView,
 )
 from skifer.services.identity import (
@@ -150,6 +152,7 @@ __all__ = [
     "ImpactReport",
     "QuarantineView",
     "RegistryColumnSearchView",
+    "RunOutcomeView",
     "CheckDefinitionView",
     "CheckRunView",
     "IncidentView",
@@ -166,6 +169,7 @@ __all__ = [
     "JobStatusView",
     "LogsView",
     "NoActiveSession",
+    "ResultView",
     "SessionView",
     "LOCAL_DEFAULT_SCOPES",
     "LocalIdentity",
