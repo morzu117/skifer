@@ -14,7 +14,7 @@ import re
 from typing import Any, Generic, TypeVar
 from urllib.parse import parse_qs, unquote_to_bytes, urlsplit
 
-from skifer.agentic.data_service import (
+from skifer.services import (
     AgentReadyDataService,
     InvalidCursor,
     InvalidRequest,

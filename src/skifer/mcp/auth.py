@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Protocol
 
-from skifer.agentic.data_service import RequestContext
+from skifer.services import RequestContext
 from skifer.mcp.resources import MCPResourceError
 from skifer.observability.tracing import (
     TRACE_FORMAT_VERSION,

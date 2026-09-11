@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from skifer.agentic.data_service import LimitExceeded, ServiceLimits
+from skifer.services import LimitExceeded, ServiceLimits
 
 
 MCP_SCOPES = frozenset(

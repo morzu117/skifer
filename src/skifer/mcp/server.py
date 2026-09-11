@@ -6,7 +6,7 @@ import importlib
 import json
 from typing import Any, Callable
 
-from skifer.agentic.data_service import AgentReadyDataService, RequestContext
+from skifer.services import AgentReadyDataService, RequestContext
 from skifer.mcp.capability_tools import MCPCapabilityTools
 from skifer.mcp.resources import MCPResourceError, MCPResources
 from skifer.mcp.tools import MCPTools, QUERY_TOOL_NAME

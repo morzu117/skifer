@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Changed
+
+- **Plan 31 (1.1)** — Nouveau package `services/` transport-neutre : `RequestContext`,
+  `require_scope`, `ServiceLimits`, hiérarchie d'erreurs et sérialisation JSON-native
+  extraites d'`agentic/data_service.py` (re-exports rétrocompatibles). Scopes nommés
+  (`NAMED_SCOPES`, sans `certification_override`). `mcp/` n'importe plus
+  `agentic.data_service`.
+
+
 ## [2.1.0] - 2026-09-10
 
 ### Added

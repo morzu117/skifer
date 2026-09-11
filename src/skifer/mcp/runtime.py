@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from skifer.agentic.data_service import AgentReadyDataService
+from skifer.services import AgentReadyDataService
 from skifer.mcp.auth import (
     create_http_context_provider,
     create_stdio_context_provider,

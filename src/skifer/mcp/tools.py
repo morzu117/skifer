@@ -13,7 +13,7 @@ import json
 import re
 from typing import Any
 
-from skifer.agentic.data_service import (
+from skifer.services import (
     AgentReadyDataService,
     HARD_MAX_FILTERS,
     HARD_MAX_FILTER_VALUE_LENGTH,
