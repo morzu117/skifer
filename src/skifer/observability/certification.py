@@ -7,7 +7,9 @@ from hashlib import sha256
 import json
 import re
 
+from skifer.core.constants import CLASSIFICATION_RANK
 from skifer.core.ir import ParsedSchema
+from skifer.observability.checks import FreshnessCheck
 
 
 CANONICALIZATION_VERSION = 2
@@ -29,6 +31,19 @@ class ContractDefinition:
     canonicalization_version: int = CANONICALIZATION_VERSION
     status: str = "DRAFT"
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ContractDiff:
+    """Governance-facing delta between two parsed contract definitions."""
+
+    added: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()
+    retyped: tuple[tuple[str, str, str], ...] = ()
+    required_changed: tuple[tuple[str, bool, bool], ...] = ()
+    classification_changed: tuple[tuple[str, str, str], ...] = ()
+    sla_changed: bool = False
+    breaking: bool = False
 
 
 def canonicalize_contract(schema: ParsedSchema) -> ContractDefinition:
@@ -106,3 +121,91 @@ def canonicalize_contract(schema: ParsedSchema) -> ContractDefinition:
         owner=schema.data_product.owner_label,
         created_at=datetime.now(timezone.utc),
     )
+
+
+def diff_contracts(a: ParsedSchema, b: ParsedSchema) -> ContractDiff:
+    """Compare two contracts at ``contract.output`` and SLA level.
+
+    ``a`` is the old contract and ``b`` is the new one. Breaking changes are
+    removals, retypes, required hardening, classification downgrades, SLA
+    relaxation, and any changed SLA that cannot be compared safely.
+    """
+    fields_a = {field.name: field for field in a.contract_output}
+    fields_b = {field.name: field for field in b.contract_output}
+
+    added = tuple(field.name for field in b.contract_output if field.name not in fields_a)
+    removed = tuple(field.name for field in a.contract_output if field.name not in fields_b)
+
+    retyped: list[tuple[str, str, str]] = []
+    required_changed: list[tuple[str, bool, bool]] = []
+    classification_changed: list[tuple[str, str, str]] = []
+    required_hardened = False
+    classification_downgraded = False
+
+    for field in a.contract_output:
+        next_field = fields_b.get(field.name)
+        if next_field is None:
+            continue
+
+        type_a = field.logical_type or ""
+        type_b = next_field.logical_type or ""
+        if type_a != type_b:
+            retyped.append((field.name, type_a, type_b))
+
+        required_a = bool(field.required)
+        required_b = bool(next_field.required)
+        if required_a != required_b:
+            required_changed.append((field.name, required_a, required_b))
+            required_hardened = required_hardened or (not required_a and required_b)
+
+        class_a = field.classification or "public"
+        class_b = next_field.classification or "public"
+        if class_a != class_b:
+            classification_changed.append((field.name, class_a, class_b))
+            classification_downgraded = classification_downgraded or (
+                CLASSIFICATION_RANK.get(class_b, 0) < CLASSIFICATION_RANK.get(class_a, 0)
+            )
+
+    sla_changed, sla_breaking = _diff_sla_breaking(a, b)
+    breaking = bool(
+        removed
+        or retyped
+        or required_hardened
+        or classification_downgraded
+        or sla_breaking
+    )
+    return ContractDiff(
+        added=added,
+        removed=removed,
+        retyped=tuple(retyped),
+        required_changed=tuple(required_changed),
+        classification_changed=tuple(classification_changed),
+        sla_changed=sla_changed,
+        breaking=breaking,
+    )
+
+
+def _diff_sla_breaking(a: ParsedSchema, b: ParsedSchema) -> tuple[bool, bool]:
+    old_sla = _sla_tuple(a)
+    new_sla = _sla_tuple(b)
+    if old_sla == new_sla:
+        return False, False
+
+    old_refresh, old_latency = old_sla
+    new_refresh, new_latency = new_sla
+    if old_refresh != new_refresh:
+        return True, True
+    if old_latency is None or new_latency is None:
+        return True, True
+    try:
+        old_delay = FreshnessCheck._parse_delay(old_latency)
+        new_delay = FreshnessCheck._parse_delay(new_latency)
+    except (TypeError, ValueError):
+        return True, True
+    return True, new_delay > old_delay
+
+
+def _sla_tuple(schema: ParsedSchema) -> tuple[str | None, str | None]:
+    if schema.contract_sla is None:
+        return None, None
+    return schema.contract_sla.refresh_frequency, schema.contract_sla.max_latency

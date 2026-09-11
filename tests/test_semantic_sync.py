@@ -534,3 +534,40 @@ sink: {type: delta, schema: gold, table: fact_orders_sync}
     assert merged_model["synonyms"] == ["commandes", "ventes"]
     assert merged_model["tags"] == ["revenue"]
     assert [metric["name"] for metric in merged_model["metrics"]] == ["orders", "total_amount"]
+
+
+def test_semantic_sync_reports_contract_diff_without_changing_safe_to_apply(tmp_path):
+    base_yaml = """
+data_product: {id: sales.orders, version: 1.0.0}
+contract:
+  grain: [order_id]
+  output:
+    order_id: {logical_type: identifier}
+    amount: {logical_type: currency, classification: restricted}
+semantic:
+  model_key: orders_sync
+  dimensions: [order_id]
+tables: [{name: silver.orders}]
+select_final:
+  - [id, order_id]
+  - [amount, amount]
+sink: {type: delta, schema: gold, table: fact_orders_sync}
+"""
+    next_yaml = base_yaml.replace("classification: restricted", "classification: internal")
+
+    first = _sync(tmp_path, base_yaml, write=True)
+    assert first.safe_to_apply is True
+    assert first.contract_diff is None
+
+    report = _sync(tmp_path, next_yaml)
+
+    assert report.safe_to_apply is True
+    assert report.has_changes is False
+    assert report.changes == ()
+    assert report.conflicts == ()
+    assert report.suggestions == ()
+    assert report.contract_diff is not None
+    assert report.contract_diff.classification_changed == (
+        ("amount", "restricted", "internal"),
+    )
+    assert report.contract_diff.breaking is True

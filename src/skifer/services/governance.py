@@ -8,7 +8,12 @@ import inspect
 import json
 from typing import TYPE_CHECKING, Any
 
-from skifer.observability.certification import ContractDefinition
+from skifer.core.ir import ParsedSchema
+from skifer.observability.certification import (
+    ContractDefinition,
+    ContractDiff,
+    diff_contracts,
+)
 from skifer.observability.certification_store import Certification, RunEvent
 from skifer.services.context import (
     HARD_MAX_PAGE_SIZE,
@@ -135,6 +140,12 @@ class GovernanceService:
             rows=tuple(row_to_json(row, index) for index, row in enumerate(rows[:row_limit])),
             truncated=len(rows) > row_limit,
         )
+
+    def diff_contracts(
+        self, ctx: RequestContext, a: ParsedSchema, b: ParsedSchema
+    ) -> ContractDiff:
+        require_scope(ctx, SCOPE_CONTRACTS_READ)
+        return diff_contracts(a, b)
 
     def _reader(self, name: str, operation: str):
         if self._store is None:

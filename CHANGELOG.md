@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `diff_contracts(a, b)` reports contract deltas (added/removed/retyped/required/classification/SLA)
+  and flags breaking changes (column removal, retype, `required` hardening, classification downgrade,
+  SLA relaxation or any non-comparable SLA change). It is surfaced in `semantic sync` reporting and
+  exposed by `GovernanceService`.
 - `import_odcs_31(doc)` reconstructs the Skifer `data_product:`/`contract:` YAML blocks from an ODCS
   3.1 DataContract (symmetric to the export, loss-aware: unmapped fields are reported, never
   dropped), exposed through the new `skifer contract import FILE` command.

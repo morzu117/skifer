@@ -5,8 +5,11 @@ from decimal import Decimal
 import json
 
 import pytest
+import yaml
 
-from skifer.observability.certification import ContractDefinition
+from skifer.core.ir import parse_to_ir
+from skifer.core.schema_loader import parse_schema
+from skifer.observability.certification import ContractDefinition, diff_contracts
 from skifer.observability.certification_store import Certification, RunEvent
 from skifer.observability.tracing import TraceContext
 from skifer.services import (
@@ -79,6 +82,16 @@ class _Store:
         return _FakeFrame(self.quarantine_rows)
 
 
+def _schema(fields: dict):
+    payload = {
+        "data_product": {"id": "sales.orders", "version": "1.0.0"},
+        "contract": {"output": fields},
+        "tables": [{"name": "silver.orders"}],
+        "select_final": [[name, name] for name in fields],
+    }
+    return parse_to_ir(parse_schema(yaml.safe_dump(payload, sort_keys=False)))
+
+
 def test_get_contract_requires_scope():
     with pytest.raises(ScopeDenied):
         GovernanceService(_Store()).get_contract(_context(), "orders", "1.0.0")
@@ -140,6 +153,25 @@ def test_read_quarantine_no_dataframe():
 
     assert all(isinstance(row, dict) for row in view.rows)
     assert not hasattr(view, "collect")
+
+
+def test_diff_contracts_requires_scope():
+    with pytest.raises(ScopeDenied):
+        GovernanceService(_Store()).diff_contracts(
+            _context(), _schema({"id": {}}), _schema({"id": {}, "amount": {}})
+        )
+
+
+def test_governance_service_exposes_diff():
+    old = _schema({"id": {}})
+    new = _schema({"id": {}, "amount": {}})
+
+    diff = GovernanceService(_Store()).diff_contracts(
+        _context(SCOPE_CONTRACTS_READ), old, new
+    )
+
+    assert diff == diff_contracts(old, new)
+    assert diff.added == ("amount",)
 
 
 def test_store_missing_method_unavailable():

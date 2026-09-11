@@ -9,7 +9,8 @@ from typing import Any
 
 import yaml
 
-from skifer.core.ir import ParsedSchema
+from skifer.core.ir import ParsedOutputField, ParsedSchema, ParsedSla
+from skifer.observability.certification import ContractDiff, diff_contracts
 
 from .draft_builder import SemanticDraftBuilder
 from .persistence import write_yaml_atomic
@@ -25,6 +26,7 @@ _RENAME_SIMILARITY_THRESHOLD = 0.82
 _FIELD_COLLECTIONS = ("dimensions", "metrics")
 # Handled by their own merge passes, so never merged as plain model-level values.
 _MODEL_LEVEL_EXCLUDED_KEYS = frozenset({"dimensions", "metrics", "metadata"})
+_CONTRACT_SNAPSHOT_METADATA_KEY = "source_contract_snapshot"
 _TYPE_WIDENING = {
     ("integer", "float"),
     ("date", "datetime"),
@@ -61,6 +63,7 @@ class SyncReport:
     changes: tuple[SemanticChange, ...] = field(default_factory=tuple)
     conflicts: tuple[SemanticConflict, ...] = field(default_factory=tuple)
     suggestions: tuple[SemanticChange, ...] = field(default_factory=tuple)
+    contract_diff: ContractDiff | None = None
     payload: dict[str, Any] | None = None
     wrote: bool = False
     output_path: str | None = None
@@ -134,12 +137,14 @@ class SemanticSynchronizer:
         write: bool = False,
     ) -> SyncReport:
         candidate_payload = self.draft_builder.build_draft(projected, schema)
+        self._attach_contract_snapshot(candidate_payload, schema)
         model_key = self._model(candidate_payload)["key"]
         draft_path = Path(self.output_dir) / ".drafts" / f"{model_key}.yaml"
         curated_path = Path(self.output_dir) / f"{model_key}.yaml"
 
         base_payload = self._load_yaml(draft_path) if draft_path.exists() else None
         curated_payload = self._load_yaml(curated_path) if curated_path.exists() else None
+        contract_diff = self._contract_diff_from_payload(base_payload, schema)
 
         merged_payload, changes, conflicts, suggestions = self._plan_merge(
             candidate_payload=candidate_payload,
@@ -159,6 +164,7 @@ class SemanticSynchronizer:
                 changes=tuple(changes),
                 conflicts=tuple(conflicts),
                 suggestions=tuple(suggestions),
+                contract_diff=contract_diff,
                 payload=merged_payload,
                 wrote=True,
                 output_path=written_path,
@@ -168,6 +174,7 @@ class SemanticSynchronizer:
             changes=tuple(changes),
             conflicts=tuple(conflicts),
             suggestions=tuple(suggestions),
+            contract_diff=contract_diff,
             payload=merged_payload,
             wrote=False,
             output_path=str(draft_path),
@@ -720,6 +727,112 @@ class SemanticSynchronizer:
         if not isinstance(payload, dict):
             raise ValueError(f"Expected a YAML mapping in '{path}'.")
         return payload
+
+    @classmethod
+    def _attach_contract_snapshot(cls, payload: dict[str, Any], schema: ParsedSchema) -> None:
+        if not schema.contract_output:
+            return
+        model = cls._model(payload)
+        metadata = model.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            return
+        metadata[_CONTRACT_SNAPSHOT_METADATA_KEY] = {
+            "output": [
+                {
+                    "name": field.name,
+                    "logical_type": field.logical_type,
+                    "required": bool(field.required),
+                    "classification": field.classification,
+                }
+                for field in schema.contract_output
+            ],
+            "sla": (
+                {
+                    "refresh_frequency": schema.contract_sla.refresh_frequency,
+                    "max_latency": schema.contract_sla.max_latency,
+                }
+                if schema.contract_sla
+                else None
+            ),
+        }
+
+    @classmethod
+    def _contract_diff_from_payload(
+        cls, base_payload: dict[str, Any] | None, schema: ParsedSchema
+    ) -> ContractDiff | None:
+        if base_payload is None or not schema.contract_output:
+            return None
+        previous = cls._schema_from_contract_snapshot(base_payload)
+        if previous is None:
+            return None
+        contract_diff = diff_contracts(previous, schema)
+        if (
+            contract_diff.added
+            or contract_diff.removed
+            or contract_diff.retyped
+            or contract_diff.required_changed
+            or contract_diff.classification_changed
+            or contract_diff.sla_changed
+        ):
+            return contract_diff
+        return None
+
+    @classmethod
+    def _schema_from_contract_snapshot(
+        cls, payload: dict[str, Any]
+    ) -> ParsedSchema | None:
+        metadata = cls._model(payload).get("metadata") or {}
+        if not isinstance(metadata, dict):
+            return None
+        snapshot = metadata.get(_CONTRACT_SNAPSHOT_METADATA_KEY)
+        if not isinstance(snapshot, dict):
+            return None
+        output = snapshot.get("output")
+        if not isinstance(output, list):
+            return None
+
+        fields: list[ParsedOutputField] = []
+        for raw_field in output:
+            if not isinstance(raw_field, dict):
+                return None
+            name = raw_field.get("name")
+            if not isinstance(name, str) or not name:
+                return None
+            logical_type = raw_field.get("logical_type")
+            classification = raw_field.get("classification")
+            if logical_type is not None and not isinstance(logical_type, str):
+                return None
+            if classification is not None and not isinstance(classification, str):
+                return None
+            required = raw_field.get("required")
+            if required is not None and not isinstance(required, bool):
+                return None
+            fields.append(
+                ParsedOutputField(
+                    name=name,
+                    logical_type=logical_type,
+                    required=required,
+                    classification=classification,
+                )
+            )
+
+        sla = snapshot.get("sla")
+        contract_sla = None
+        if sla is not None:
+            if not isinstance(sla, dict):
+                return None
+            refresh_frequency = sla.get("refresh_frequency")
+            max_latency = sla.get("max_latency")
+            if refresh_frequency is not None and not isinstance(refresh_frequency, str):
+                return None
+            if max_latency is not None and not isinstance(max_latency, str):
+                return None
+            contract_sla = ParsedSla(
+                refresh_frequency=refresh_frequency,
+                max_latency=max_latency,
+            )
+
+        return ParsedSchema(contract_output=fields, contract_sla=contract_sla)
 
     @staticmethod
     def _model(payload: dict[str, Any]) -> dict[str, Any]:
