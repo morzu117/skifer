@@ -6,9 +6,12 @@ from datetime import datetime
 import hashlib
 import json
 import sqlite3
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from skifer.core.constants import CLASSIFICATION_LEVELS
+
+if TYPE_CHECKING:
+    from skifer.lineage.tracker import LineageEdge, LineageGraph
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,100 @@ class MetadataStore(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class ImpactReport:
+    root_fqn: str
+    impacted_datasets: tuple[str, ...]
+    impacted_columns: tuple[tuple[str, str], ...]
+    edges: tuple[dict, ...]
+    truncated: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "root_fqn": self.root_fqn,
+            "impacted_datasets": list(self.impacted_datasets),
+            "impacted_columns": [
+                {"target_fqn": fqn, "column": column}
+                for fqn, column in self.impacted_columns
+            ],
+            "edges": [dict(edge) for edge in self.edges],
+            "truncated": self.truncated,
+        }
+
+
+class MetadataRegistryQuery:
+    """Merged lineage queries across every record in the metadata registry."""
+
+    def __init__(self, store: MetadataStore, *, max_depth: int = 20):
+        self._store = store
+        self._max_depth = max_depth
+
+    def merged_graph(self) -> "LineageGraph":
+        from skifer.lineage.tracker import LineageGraph
+
+        graph = LineageGraph()
+        for record in self._store.list_all():
+            if record.lineage:
+                graph.merge(LineageGraph.from_dict(record.lineage))
+        if graph.has_cycle():
+            raise ValueError("Metadata lineage graph contains a cycle; refusing to traverse.")
+        return graph
+
+    def upstream(self, fqn: str, column: str) -> list["LineageEdge"]:
+        return self.merged_graph().upstream_closure(
+            fqn, column, max_depth=self._max_depth
+        )
+
+    def downstream(self, fqn: str, column: str) -> list["LineageEdge"]:
+        return self.merged_graph().downstream_closure(
+            fqn, column, max_depth=self._max_depth
+        )
+
+    def impact(self, fqn: str) -> ImpactReport:
+        graph = self.merged_graph()
+        record = self._store.get(fqn)
+        if record is None:
+            return ImpactReport(
+                root_fqn=fqn,
+                impacted_datasets=(),
+                impacted_columns=(),
+                edges=(),
+                truncated=False,
+            )
+
+        edges: list["LineageEdge"] = []
+        seen_edges: set["LineageEdge"] = set()
+        impacted_columns: set[tuple[str, str]] = set()
+        truncated = False
+        for column in record.columns:
+            column_edges, column_truncated = graph._closure(
+                fqn,
+                column.name,
+                direction="downstream",
+                max_depth=self._max_depth,
+            )
+            truncated = truncated or column_truncated
+            for edge in column_edges:
+                if edge not in seen_edges:
+                    seen_edges.add(edge)
+                    edges.append(edge)
+                impacted_columns.add((edge.target_table, edge.target_column))
+
+        impacted_datasets = tuple(
+            sorted({table for table, _ in impacted_columns if table != fqn})
+        )
+        return ImpactReport(
+            root_fqn=fqn,
+            impacted_datasets=impacted_datasets,
+            impacted_columns=tuple(sorted(impacted_columns)),
+            edges=tuple(_edge_to_dict(edge) for edge in edges),
+            truncated=truncated,
+        )
+
+    def search_columns(self, text: str) -> list[tuple[str, "ColumnRecord"]]:
+        return self._store.search_columns(text)
+
+
 def _record_to_json(record: DatasetRecord) -> str:
     """Serialize a DatasetRecord as deterministic JSON."""
     return json.dumps(asdict(record), default=_json_default, sort_keys=True)
@@ -129,6 +226,17 @@ def _search_records(
             if needle in haystack:
                 matches.append((record.target_fqn, column))
     return matches
+
+
+def _edge_to_dict(edge: "LineageEdge") -> dict:
+    return {
+        "source_table": edge.source_table,
+        "source_column": edge.source_column,
+        "target_table": edge.target_table,
+        "target_column": edge.target_column,
+        "transformations": list(edge.transformations),
+        "edge_type": edge.edge_type,
+    }
 
 
 def _sql_literal(value: str) -> str:

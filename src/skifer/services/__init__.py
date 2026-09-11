@@ -45,7 +45,9 @@ from skifer.services.governance import (
     ContractVersionView,
     DataProductView,
     GovernanceService,
+    ImpactReport,
     QuarantineView,
+    RegistryColumnSearchView,
 )
 from skifer.services.quality import (
     CheckDefinitionView,
@@ -136,7 +138,9 @@ __all__ = [
     "ContractVersionView",
     "DataProductView",
     "GovernanceService",
+    "ImpactReport",
     "QuarantineView",
+    "RegistryColumnSearchView",
     "CheckDefinitionView",
     "CheckRunView",
     "QualityReportView",

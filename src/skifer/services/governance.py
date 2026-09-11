@@ -15,12 +15,19 @@ from skifer.observability.certification import (
     diff_contracts,
 )
 from skifer.observability.certification_store import Certification, RunEvent
+from skifer.observability.metadata_store import (
+    ColumnRecord,
+    ImpactReport,
+    MetadataStore,
+    MetadataRegistryQuery,
+)
 from skifer.services.context import (
     HARD_MAX_PAGE_SIZE,
     RequestContext,
     ResourceNotFound,
     ResourceUnavailable,
     SCOPE_CONTRACTS_READ,
+    SCOPE_LINEAGE_READ,
     require_scope,
 )
 from skifer.services.serialization import row_to_json, to_json_value
@@ -66,13 +73,40 @@ class QuarantineView:
         }
 
 
+@dataclass(frozen=True)
+class RegistryColumnSearchView:
+    target_fqn: str
+    column: ColumnRecord
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_fqn": self.target_fqn,
+            "column": {
+                "name": self.column.name,
+                "logical_type": self.column.logical_type,
+                "classification": self.column.classification,
+                "description": self.column.description,
+                "sources": list(self.column.sources),
+            },
+        }
+
+
 class GovernanceService:
     """Governed, allowlisted access to certification data."""
 
-    def __init__(self, certification_store, *, max_rows: int = HARD_MAX_PAGE_SIZE):
+    def __init__(
+        self,
+        certification_store,
+        *,
+        metadata_store: MetadataStore | None = None,
+        max_rows: int = HARD_MAX_PAGE_SIZE,
+    ):
         if not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows < 1:
             raise ValueError("max_rows must be a positive integer.")
         self._store = certification_store
+        self._registry = (
+            MetadataRegistryQuery(metadata_store) if metadata_store is not None else None
+        )
         self._max_rows = min(max_rows, HARD_MAX_PAGE_SIZE)
 
     def get_contract(
@@ -147,6 +181,32 @@ class GovernanceService:
         require_scope(ctx, SCOPE_CONTRACTS_READ)
         return diff_contracts(a, b)
 
+    def registry_upstream(
+        self, ctx: RequestContext, fqn: str, column: str
+    ) -> list[dict]:
+        require_scope(ctx, SCOPE_LINEAGE_READ)
+        return [_lineage_edge_dict(edge) for edge in self._registry_query().upstream(fqn, column)]
+
+    def registry_downstream(
+        self, ctx: RequestContext, fqn: str, column: str
+    ) -> list[dict]:
+        require_scope(ctx, SCOPE_LINEAGE_READ)
+        return [
+            _lineage_edge_dict(edge)
+            for edge in self._registry_query().downstream(fqn, column)
+        ]
+
+    def registry_impact(self, ctx: RequestContext, fqn: str) -> ImpactReport:
+        require_scope(ctx, SCOPE_LINEAGE_READ)
+        return self._registry_query().impact(fqn)
+
+    def registry_search_columns(self, ctx: RequestContext, text: str) -> list[dict]:
+        require_scope(ctx, SCOPE_LINEAGE_READ)
+        return [
+            RegistryColumnSearchView(target_fqn, column).to_dict()
+            for target_fqn, column in self._registry_query().search_columns(text)
+        ]
+
     def _reader(self, name: str, operation: str):
         if self._store is None:
             raise ResourceUnavailable("The certification store is unavailable.")
@@ -156,6 +216,11 @@ class GovernanceService:
                 f"The certification store does not support {operation}."
             )
         return reader
+
+    def _registry_query(self) -> MetadataRegistryQuery:
+        if self._registry is None:
+            raise ResourceUnavailable("The metadata registry is unavailable.")
+        return self._registry
 
 
 def _read_with_optional_limit(reader, dataset: str, limit: int):
@@ -264,6 +329,17 @@ def _run_event_dict(event: RunEvent) -> dict[str, Any]:
     }
 
 
+def _lineage_edge_dict(edge) -> dict:
+    return {
+        "source_table": edge.source_table,
+        "source_column": edge.source_column,
+        "target_table": edge.target_table,
+        "target_column": edge.target_column,
+        "transformations": list(edge.transformations),
+        "edge_type": edge.edge_type,
+    }
+
+
 def _required_text(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ResourceUnavailable(f"Field '{field_name}' must be non-empty text.")
@@ -294,5 +370,7 @@ __all__ = [
     "ContractVersionView",
     "DataProductView",
     "GovernanceService",
+    "ImpactReport",
     "QuarantineView",
+    "RegistryColumnSearchView",
 ]

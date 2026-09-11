@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `observability/metadata_index.py`: pure `index_schema(schema_dict, path)`
   builds a `DatasetRecord` from `OutputProjector`, `LineageTracker.from_schema`
   and contract output, with the Spark-free `skifer index PATHS` CLI.
+- `LineageGraph.from_dict` and bounded, cycle-safe transitive traversal
+  (`upstream_closure`/`downstream_closure`/`has_cycle`); `MetadataRegistryQuery`
+  merges every record's lineage into one graph and exposes
+  `upstream`/`downstream`/`impact`/`search_columns` through `GovernanceService`.
+  Cyclic lineage is refused and traversal depth is bounded.
 - `observability/metadata_store.py`: `DatasetRecord`/`ColumnRecord`, the `MetadataStore`
   Protocol and its `SqliteMetadataStore` (`.skifer_metadata.db`) /
   `DeltaMetadataStore` (`_skifer_metadata`) backends. Upsert is idempotent by

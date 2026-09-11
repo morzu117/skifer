@@ -147,6 +147,21 @@ class LineageGraph:
         for edge in other._edges:
             self.add_edge(edge)
 
+    @classmethod
+    def from_dict(cls, payload: dict) -> "LineageGraph":
+        """Deserialize a graph previously produced by ``to_dict``."""
+        graph = cls()
+        for edge in payload.get("edges", []):
+            graph.add_edge(LineageEdge(
+                source_table=edge["source_table"],
+                source_column=edge["source_column"],
+                target_table=edge["target_table"],
+                target_column=edge["target_column"],
+                transformations=list(edge.get("transformations", [])),
+                edge_type=edge.get("edge_type", "select"),
+            ))
+        return graph
+
     # ------------------------------------------------------------------
     # Traversal
     # ------------------------------------------------------------------
@@ -164,6 +179,88 @@ class LineageGraph:
             e for e in self._edges
             if e.source_table == table and e.source_column == column
         ]
+
+    def upstream_closure(
+        self, table: str, column: str, *, max_depth: int = 20
+    ) -> list[LineageEdge]:
+        """Return bounded transitive provenance edges for ``(table, column)``."""
+        return self._closure(table, column, direction="upstream", max_depth=max_depth)[0]
+
+    def downstream_closure(
+        self, table: str, column: str, *, max_depth: int = 20
+    ) -> list[LineageEdge]:
+        """Return bounded transitive impact edges for ``(table, column)``."""
+        return self._closure(table, column, direction="downstream", max_depth=max_depth)[0]
+
+    def has_cycle(self) -> bool:
+        """Return True when the directed column graph contains a cycle."""
+        visiting = "visiting"
+        visited = "visited"
+        colors: dict[tuple[str, str], str] = {}
+        nodes: set[tuple[str, str]] = set()
+        for edge in self._edges:
+            nodes.add((edge.source_table, edge.source_column))
+            nodes.add((edge.target_table, edge.target_column))
+
+        def visit(node: tuple[str, str]) -> bool:
+            color = colors.get(node)
+            if color == visiting:
+                return True
+            if color == visited:
+                return False
+            colors[node] = visiting
+            for edge in self.downstream(node[0], node[1]):
+                if visit((edge.target_table, edge.target_column)):
+                    return True
+            colors[node] = visited
+            return False
+
+        return any(visit(node) for node in nodes)
+
+    def _closure(
+        self,
+        table: str,
+        column: str,
+        *,
+        direction: Literal["upstream", "downstream"],
+        max_depth: int,
+    ) -> tuple[list[LineageEdge], bool]:
+        edges: list[LineageEdge] = []
+        seen_edges: set[LineageEdge] = set()
+        visited_nodes: set[tuple[str, str]] = {(table, column)}
+        truncated = False
+
+        def adjacent(node_table: str, node_column: str) -> list[LineageEdge]:
+            if direction == "upstream":
+                return self.upstream(node_table, node_column)
+            return self.downstream(node_table, node_column)
+
+        def next_node(edge: LineageEdge) -> tuple[str, str]:
+            if direction == "upstream":
+                return edge.source_table, edge.source_column
+            return edge.target_table, edge.target_column
+
+        def walk(node_table: str, node_column: str, depth: int) -> None:
+            nonlocal truncated
+            next_edges = adjacent(node_table, node_column)
+            if depth >= max_depth:
+                truncated = truncated or bool(next_edges)
+                return
+            for edge in next_edges:
+                if edge not in seen_edges:
+                    seen_edges.add(edge)
+                    edges.append(edge)
+                child = next_node(edge)
+                if child in visited_nodes:
+                    continue
+                visited_nodes.add(child)
+                walk(child[0], child[1], depth + 1)
+
+        if max_depth > 0:
+            walk(table, column, 0)
+        elif adjacent(table, column):
+            truncated = True
+        return edges, truncated
 
     # ------------------------------------------------------------------
     # Introspection

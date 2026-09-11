@@ -11,12 +11,19 @@ from skifer.core.ir import parse_to_ir
 from skifer.core.schema_loader import parse_schema
 from skifer.observability.certification import ContractDefinition, diff_contracts
 from skifer.observability.certification_store import Certification, RunEvent
+from skifer.lineage.tracker import LineageEdge, LineageGraph
+from skifer.observability.metadata_store import (
+    ColumnRecord,
+    DatasetRecord,
+    SqliteMetadataStore,
+)
 from skifer.observability.tracing import TraceContext
 from skifer.services import (
     GovernanceService,
     RequestContext,
     ResourceUnavailable,
     SCOPE_CONTRACTS_READ,
+    SCOPE_LINEAGE_READ,
     ScopeDenied,
 )
 
@@ -80,6 +87,49 @@ class _Store:
 
     def read_quarantine(self, dataset):
         return _FakeFrame(self.quarantine_rows)
+
+
+def _metadata_record(
+    target_fqn: str,
+    *,
+    columns: tuple[str, ...] = ("amount",),
+    edges: tuple[LineageEdge, ...] = (),
+) -> DatasetRecord:
+    graph = LineageGraph()
+    for edge in edges:
+        graph.add_edge(edge)
+    return DatasetRecord(
+        target_fqn=target_fqn,
+        pipeline_path=f"schemas/{target_fqn}.yaml",
+        data_product_id=target_fqn,
+        contract_version="1.0.0",
+        definition_hash=f"sha256:{target_fqn}",
+        owner="data-team",
+        columns=tuple(ColumnRecord(name=column) for column in columns),
+        indexed_at=datetime(2026, 9, 11, tzinfo=timezone.utc),
+        lineage=graph.to_dict() if edges else {},
+    )
+
+
+def _metadata_store() -> SqliteMetadataStore:
+    store = SqliteMetadataStore(":memory:")
+    store.upsert(_metadata_record("silver.orders"))
+    store.upsert(
+        _metadata_record(
+            "gold.kpi",
+            columns=("amount_eur",),
+            edges=(
+                LineageEdge(
+                    "silver.orders",
+                    "amount",
+                    "gold.kpi",
+                    "amount_eur",
+                    ["cast:double"],
+                ),
+            ),
+        )
+    )
+    return store
 
 
 def _schema(fields: dict):
@@ -172,6 +222,67 @@ def test_governance_service_exposes_diff():
 
     assert diff == diff_contracts(old, new)
     assert diff.added == ("amount",)
+
+
+def test_governance_registry_impact_delegates():
+    service = GovernanceService(_Store(), metadata_store=_metadata_store())
+
+    report = service.registry_impact(
+        _context(SCOPE_LINEAGE_READ),
+        "silver.orders",
+    )
+
+    assert report.to_dict()["impacted_datasets"] == ["gold.kpi"]
+    assert report.impacted_columns == (("gold.kpi", "amount_eur"),)
+
+
+def test_governance_registry_methods_require_lineage_scope():
+    service = GovernanceService(_Store(), metadata_store=_metadata_store())
+
+    with pytest.raises(ScopeDenied):
+        service.registry_downstream(
+            _context(SCOPE_CONTRACTS_READ),
+            "silver.orders",
+            "amount",
+        )
+
+
+def test_governance_registry_search_columns_is_allowlisted():
+    service = GovernanceService(_Store(), metadata_store=_metadata_store())
+
+    results = service.registry_search_columns(_context(SCOPE_LINEAGE_READ), "amount")
+
+    assert results == [
+        {
+            "target_fqn": "gold.kpi",
+            "column": {
+                "name": "amount_eur",
+                "logical_type": None,
+                "classification": None,
+                "description": None,
+                "sources": [],
+            },
+        },
+        {
+            "target_fqn": "silver.orders",
+            "column": {
+                "name": "amount",
+                "logical_type": None,
+                "classification": None,
+                "description": None,
+                "sources": [],
+            },
+        },
+    ]
+    json.dumps(results)
+
+
+def test_governance_registry_without_store_is_unavailable():
+    with pytest.raises(ResourceUnavailable):
+        GovernanceService(_Store()).registry_impact(
+            _context(SCOPE_LINEAGE_READ),
+            "silver.orders",
+        )
 
 
 def test_store_missing_method_unavailable():
