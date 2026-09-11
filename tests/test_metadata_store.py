@@ -217,3 +217,32 @@ def test_delta_store_uses_backend_spark():
     assert len(backend.spark.statements) == 1
     assert "CREATE TABLE IF NOT EXISTS _skifer_metadata.datasets" in backend.spark.statements[0]
     assert not hasattr(backend, "append_certification_contract")
+
+
+def test_delta_store_escapes_backslashes_in_keys_and_record_json():
+    class FakeResult:
+        def collect(self):
+            return []
+
+    class FakeSpark:
+        def __init__(self):
+            self.statements: list[str] = []
+
+        def sql(self, statement: str):
+            self.statements.append(statement)
+            return FakeResult()
+
+    class FakeBackend:
+        def __init__(self):
+            self.spark = FakeSpark()
+
+    backend = FakeBackend()
+    store = DeltaMetadataStore(backend)
+    record = replace(_record(), target_fqn="silver.orders\\", owner="café")
+
+    assert store.upsert(record) is True
+
+    lookup_sql, merge_sql = backend.spark.statements[1:]
+    assert "target_fqn = 'silver.orders\\\\'" in lookup_sql
+    assert "'silver.orders\\\\' AS target_fqn" in merge_sql
+    assert r'"owner": "caf\\u00e9"' in merge_sql

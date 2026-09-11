@@ -142,6 +142,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`NAMED_SCOPES`, sans `certification_override`). `mcp/` n'importe plus
   `agentic.data_service`.
 
+### Fixed
+
+- Delta metadata SQL literals now reuse the shared Spark SQL escaper so
+  backslashes in dataset keys and serialized JSON cannot corrupt statements.
+- Bounded lineage closure re-expands nodes reached at a shallower depth, keeping
+  in-budget descendants complete regardless of edge insertion order.
+
 
 ## [2.1.0] - 2026-09-10
 

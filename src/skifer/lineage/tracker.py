@@ -227,7 +227,7 @@ class LineageGraph:
     ) -> tuple[list[LineageEdge], bool]:
         edges: list[LineageEdge] = []
         seen_edges: set[LineageEdge] = set()
-        visited_nodes: set[tuple[str, str]] = {(table, column)}
+        best_depth: dict[tuple[str, str], int] = {}
         truncated = False
 
         def adjacent(node_table: str, node_column: str) -> list[LineageEdge]:
@@ -246,14 +246,16 @@ class LineageGraph:
             if depth >= max_depth:
                 truncated = truncated or bool(next_edges)
                 return
+            node = (node_table, node_column)
+            previous_depth = best_depth.get(node)
+            if previous_depth is not None and depth >= previous_depth:
+                return
+            best_depth[node] = depth
             for edge in next_edges:
                 if edge not in seen_edges:
                     seen_edges.add(edge)
                     edges.append(edge)
                 child = next_node(edge)
-                if child in visited_nodes:
-                    continue
-                visited_nodes.add(child)
                 walk(child[0], child[1], depth + 1)
 
         if max_depth > 0:

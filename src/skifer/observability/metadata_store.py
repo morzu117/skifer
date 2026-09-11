@@ -9,6 +9,7 @@ import sqlite3
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from skifer.core.constants import CLASSIFICATION_LEVELS
+from skifer.core.sql_compiler import sql_literal
 
 if TYPE_CHECKING:
     from skifer.lineage.tracker import LineageEdge, LineageGraph
@@ -239,10 +240,6 @@ def _edge_to_dict(edge: "LineageEdge") -> dict:
     }
 
 
-def _sql_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
 def _row_value(row: object, key: str, index: int = 0):
     if isinstance(row, dict):
         return row[key]
@@ -380,8 +377,8 @@ class DeltaMetadataStore:
             f"""
             SELECT content_hash
             FROM {self._table_fqn}
-            WHERE target_fqn = {_sql_literal(record.target_fqn)}
-              AND definition_hash = {_sql_literal(record.definition_hash)}
+            WHERE target_fqn = {sql_literal(record.target_fqn)}
+              AND definition_hash = {sql_literal(record.definition_hash)}
             LIMIT 1
             """
         ).collect()
@@ -394,11 +391,11 @@ class DeltaMetadataStore:
             MERGE INTO {self._table_fqn} AS target
             USING (
                 SELECT
-                    {_sql_literal(record.target_fqn)} AS target_fqn,
-                    {_sql_literal(record.definition_hash)} AS definition_hash,
-                    {_sql_literal(content_hash)} AS content_hash,
-                    {_sql_literal(record_json)} AS `record`,
-                    CAST({_sql_literal(record.indexed_at.isoformat())} AS TIMESTAMP) AS indexed_at
+                    {sql_literal(record.target_fqn)} AS target_fqn,
+                    {sql_literal(record.definition_hash)} AS definition_hash,
+                    {sql_literal(content_hash)} AS content_hash,
+                    {sql_literal(record_json)} AS `record`,
+                    CAST({sql_literal(record.indexed_at.isoformat())} AS TIMESTAMP) AS indexed_at
             ) AS source
             ON target.target_fqn = source.target_fqn
                AND target.definition_hash = source.definition_hash
@@ -431,8 +428,8 @@ class DeltaMetadataStore:
             f"""
             SELECT `record`
             FROM {self._table_fqn}
-            WHERE target_fqn = {_sql_literal(target_fqn)}
-              AND definition_hash = {_sql_literal(definition_hash)}
+            WHERE target_fqn = {sql_literal(target_fqn)}
+              AND definition_hash = {sql_literal(definition_hash)}
             LIMIT 1
             """
         ).collect()
@@ -445,9 +442,9 @@ class DeltaMetadataStore:
         spark.sql(
             f"""
             UPDATE {self._table_fqn}
-            SET `record` = {_sql_literal(_record_to_json(updated))}
-            WHERE target_fqn = {_sql_literal(target_fqn)}
-              AND definition_hash = {_sql_literal(definition_hash)}
+            SET `record` = {sql_literal(_record_to_json(updated))}
+            WHERE target_fqn = {sql_literal(target_fqn)}
+              AND definition_hash = {sql_literal(definition_hash)}
             """
         )
         return True
@@ -458,7 +455,7 @@ class DeltaMetadataStore:
             f"""
             SELECT `record`
             FROM {self._table_fqn}
-            WHERE target_fqn = {_sql_literal(target_fqn)}
+            WHERE target_fqn = {sql_literal(target_fqn)}
             ORDER BY indexed_at DESC
             LIMIT 1
             """

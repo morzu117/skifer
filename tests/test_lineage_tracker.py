@@ -166,6 +166,34 @@ class TestLineageGraph:
         assert d["summary"]["total_edges"] == 1
         assert d["summary"]["edge_types"]["select"] == 1
 
+    def test_closure_reexpands_node_reached_later_at_shallower_depth(self):
+        deep_path = [
+            LineageEdge("root", "c", "deep_1", "c"),
+            LineageEdge("deep_1", "c", "deep_2", "c"),
+            LineageEdge("deep_2", "c", "shared", "c"),
+        ]
+        short_path = [LineageEdge("root", "c", "shared", "c")]
+        descendants = [
+            LineageEdge("shared", "c", "child", "c"),
+            LineageEdge("child", "c", "leaf", "c"),
+        ]
+        expected = set(deep_path + short_path + descendants)
+
+        for ordered_edges in (
+            deep_path + short_path + descendants,
+            short_path + deep_path + descendants,
+        ):
+            graph = LineageGraph()
+            for edge in ordered_edges:
+                graph.add_edge(edge)
+
+            edges, truncated = graph._closure(
+                "root", "c", direction="downstream", max_depth=3
+            )
+
+            assert set(edges) == expected
+            assert truncated is True
+
 
 # ---------------------------------------------------------------------------
 # Helpers
