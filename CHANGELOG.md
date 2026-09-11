@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Plan 31 (1.4)** — `services/governance.py` (contrats/versions, certification,
+  data products, lecture bornée de quarantaine) et `services/quality.py` (checks
+  dérivés d'un YAML, historique, dernier rapport) sur les stores existants. Vues
+  allowlistées JSON-native ; aucun DataFrame ne franchit `services/` ; lecture sous
+  scope `contracts:read`.
 - **Plan 31 (1.3)** — `services/rules.py` :
   `RuleService.scan/list/dependency_graph/generate_snippet/write_rule`. Découverte par
   `importlib` (jamais `exec`), module invalide isolé, snippets déterministes byte-for-byte
