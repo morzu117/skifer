@@ -40,6 +40,7 @@ from skifer.services.project import (
     ProjectService,
     ProjectView,
 )
+from skifer.services.rules import RuleService, RuleView, ScanReport, SnippetSpec
 
 
 _DATA_SERVICE_EXPORTS = frozenset(
@@ -103,6 +104,10 @@ __all__ = [
     "PipelineView",
     "ProjectService",
     "ProjectView",
+    "RuleService",
+    "RuleView",
+    "ScanReport",
+    "SnippetSpec",
     "AgentReadyDataService",
     "ModelSummary",
     "GovernedModelView",

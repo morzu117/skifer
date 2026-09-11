@@ -301,6 +301,38 @@ class RuleAnalyzer:
             withcolumn_count=perf_visitor.withcolumn_count,
         )
 
+    def analyze_source(self, source: str, name: str) -> RuleProfile:
+        """Analyze raw rule source without requiring a registered callable."""
+        try:
+            dedented_source = textwrap.dedent(source)
+            tree = ast.parse(dedented_source)
+        except (SyntaxError, IndentationError):
+            return RuleProfile(name=name, source_available=False)
+
+        visitor = _ColumnVisitor()
+        visitor.visit(tree)
+        visitor.resolve_returned_dicts()
+
+        perf_visitor = _PerformanceVisitor()
+        perf_visitor.visit(tree)
+
+        loc = sum(
+            1
+            for line in dedented_source.splitlines()
+            if (stripped := line.strip()) and not stripped.startswith("@")
+        )
+        inputs = [column for column in visitor.inputs if column not in visitor.outputs]
+        return RuleProfile(
+            name=name,
+            output_columns=visitor.outputs,
+            input_columns=inputs,
+            raw_expressions=visitor.expressions,
+            source_available=True,
+            has_python_udf=perf_visitor.has_python_udf,
+            loc=loc,
+            withcolumn_count=perf_visitor.withcolumn_count,
+        )
+
     def analyze_rules(self, rule_names: list[str]) -> list[RuleProfile]:
         """
         Analyze a list of registered rule names.

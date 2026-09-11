@@ -108,6 +108,24 @@ class TestAnalyzeRule:
         profile = self.analyzer.analyze_rule(broken_rule, name="broken")
         assert profile.source_available is False
 
+    def test_analyze_source_reads_raw_source(self):
+        profile = self.analyzer.analyze_source(
+            """\
+def raw_rule(df):
+    return {"result": F.col("amount") + 1}
+""",
+            name="raw_rule",
+        )
+
+        assert profile.source_available is True
+        assert profile.output_columns == ["result"]
+        assert profile.input_columns == ["amount"]
+
+    def test_analyze_source_is_unavailable_on_syntax_error(self):
+        profile = self.analyzer.analyze_source("def broken(:", name="broken")
+
+        assert profile == RuleProfile(name="broken", source_available=False)
+
 
 # ---------------------------------------------------------------------------
 # analyze_rules (via RuleRegistry)

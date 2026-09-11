@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Plan 31 (1.3)** — `services/rules.py` :
+  `RuleService.scan/list/dependency_graph/generate_snippet/write_rule`. Découverte par
+  `importlib` (jamais `exec`), module invalide isolé, snippets déterministes byte-for-byte
+  (constant/cast/when-otherwise/withColumn), écriture sous `rules:write` après `ast.parse`.
+  Ajout `RuleAnalyzer.analyze_source`.
 - **Plan 31 (1.2)** — `services/project.py` :
   `ProjectService.open/get_pipeline/json_schema/op_catalog/describe/project_output/lineage/explain_rules/write_pipeline`.
   Erreurs de schéma localisées `{code, message, path}` (`parse_schema_localized`),
