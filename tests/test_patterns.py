@@ -486,3 +486,79 @@ def test_run_process_to_table_certified_schema_raises_when_quarantined():
             patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
 
     engine._write_dataframe.assert_not_called()
+
+
+def test_certified_publication_wires_configured_alert_router():
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    config = {
+        "slack_webhook": "https://alerts.example.test/hook",
+        "max_depth": 2,
+    }
+    engine.context.alerts_config.return_value = config
+    run = PublicationRun(
+        "run-1", "gold_schema.fact_orders", "staging.fact_orders", RunState.PROMOTED
+    )
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    router = coordinator.call_args.kwargs["alert_router"]
+    assert router is not None
+    assert router._max_depth == 2
+    assert coordinator.call_args.kwargs["alert_config"] == config
+
+
+@pytest.mark.parametrize("max_depth", [None, True, -1])
+def test_build_alert_router_invalid_max_depth_defaults_to_three(max_depth):
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.metadata_store = None
+    engine.context.alerts_config.return_value = {
+        "slack_webhook": "https://alerts.example.test/hook",
+        "max_depth": max_depth,
+    }
+
+    router, _ = _build_alert_router(engine)
+
+    assert router is not None
+    assert router._max_depth == 3
+
+
+def test_alert_router_without_metadata_store_still_dispatches_to_channel():
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.metadata_store = None
+    config = {"slack_webhook": "https://alerts.example.test/hook"}
+    engine.context.alerts_config.return_value = config
+    dispatcher = MagicMock()
+    dispatcher.dispatch_incident.return_value = ["slack"]
+
+    with patch(
+        "skifer.observability.alerts.AlertDispatcher", return_value=dispatcher
+    ):
+        router, alert_config = _build_alert_router(engine)
+
+    incidents = [object()]
+    result = router.alert_incident(
+        None,
+        target_fqn="gold.orders",
+        incidents=incidents,
+        config=alert_config,
+    )
+
+    assert result == ["slack"]
+    dispatcher.dispatch_incident.assert_called_once_with(
+        target_fqn="gold.orders",
+        incidents=incidents,
+        recipients=[],
+        config=config,
+    )

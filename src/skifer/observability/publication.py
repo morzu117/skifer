@@ -175,15 +175,18 @@ class PublicationCoordinator:
                     )
             promoted = promote_staging(self.backend, run, definition, self.store)
             self._resolve_recovered(promoted)
-            if (
-                self.alert_router is not None
-                and previous is not None
-                and previous.definition_hash != definition.definition_hash
-            ):
+            if self.alert_router is not None:
                 try:
-                    previous_definition = self.store.get_contract_by_hash(
-                        previous.contract_id,
-                        previous.definition_hash,
+                    previous_definition = (
+                        self.store.get_contract_by_hash(
+                            previous.contract_id,
+                            previous.definition_hash,
+                        )
+                        if (
+                            previous is not None
+                            and previous.definition_hash != definition.definition_hash
+                        )
+                        else None
                     )
                     if previous_definition is not None:
                         diff = diff_contracts(
@@ -272,13 +275,15 @@ class PublicationCoordinator:
             for incident in incidents_from_report(
                 report, run_id=run.run_id, target_fqn=run.target_fqn, at=now
             ):
-                opened.append(self.store.open_incident(incident))
+                opened_incident = self.store.open_incident(incident)
+                if opened_incident is not None:
+                    opened.append(opened_incident)
         except Exception as exc:
             warnings.warn(
                 f"[Incidents] failed to open incident(s): {type(exc).__name__}",
                 RuntimeWarning,
             )
-            return []
+            return opened
         return opened
 
     def _resolve_recovered(self, run) -> None:

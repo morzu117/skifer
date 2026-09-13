@@ -41,11 +41,18 @@ def _build_alert_router(e):
             if metadata_store is not None
             else object()
         )
+        max_depth = config.get("max_depth", 3)
+        if (
+            not isinstance(max_depth, int)
+            or isinstance(max_depth, bool)
+            or max_depth < 0
+        ):
+            max_depth = 3
         return (
             AlertRouter(
                 governance,
                 AlertDispatcher(),
-                max_depth=config.get("max_depth", 3),
+                max_depth=max_depth,
             ),
             config,
         )

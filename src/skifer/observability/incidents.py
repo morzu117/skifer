@@ -7,7 +7,6 @@ from enum import Enum
 import inspect
 from typing import TYPE_CHECKING
 
-from skifer.observability.metadata_store import MetadataRegistryQuery
 
 if TYPE_CHECKING:
     from skifer.observability.alerts import AlertDispatcher
@@ -138,6 +137,8 @@ class MetadataStoreGovernance:
         return self._metadata_store.get(target_fqn)
 
     def registry_downstream(self, ctx, fqn, column, max_depth: int = 3):
+        from skifer.observability.metadata_store import MetadataRegistryQuery
+
         return MetadataRegistryQuery(
             self._metadata_store,
             max_depth=max_depth,

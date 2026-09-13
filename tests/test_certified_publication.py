@@ -860,3 +860,126 @@ def test_frozen_clock_quarantine_write_error_ends_check_error(monkeypatch):
     assert result.state == "CHECK_ERROR"
     assert store.get_run(result.run.run_id).state == "CHECK_ERROR"
     _assert_strict_run_event_times(store, "gold.orders")
+
+
+def test_malformed_previous_promotion_is_non_blocking_after_promotion(monkeypatch):
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=router,
+    )
+    monkeypatch.setattr(store, "get_latest_promoted", lambda target_fqn: object())
+
+    with pytest.warns(RuntimeWarning) as caught:
+        result = coordinator.publish(
+            FakeDataFrame([{"id": 1}]), "gold.orders", {}, _definition()
+        )
+
+    assert result.state == "PROMOTED"
+    assert [str(item.message) for item in caught] == [
+        "[Alerts] failed to alert breaking change: AttributeError"
+    ]
+
+
+def test_partial_incident_failure_alerts_incidents_opened_before_failure():
+    class PartialIncidentStore(SqliteCertificationStore):
+        def __init__(self):
+            super().__init__(":memory:")
+            self.open_calls = 0
+
+        def open_incident(self, incident):
+            self.open_calls += 1
+            if self.open_calls == 3:
+                raise RuntimeError("secret incident store failure")
+            return super().open_incident(incident)
+
+    class ThreeFailureMonitor:
+        def check_from_schema(self, fqn, schema_dict, raise_on_critical=False):
+            return MonitorReport(
+                fqn,
+                [
+                    CheckResult(
+                        NullCheck(table=fqn, column=column, severity="critical"),
+                        status=CheckStatus.FAIL,
+                        message=f"null {column}",
+                        severity="critical",
+                    )
+                    for column in ("id", "amount", "status")
+                ],
+            )
+
+    store, backend = PartialIncidentStore(), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        ThreeFailureMonitor(),
+        store,
+        alert_router=router,
+    )
+
+    with pytest.warns(RuntimeWarning) as caught:
+        result = coordinator.publish(
+            FakeDataFrame([{"id": None, "amount": None, "status": None}]),
+            "gold.orders",
+            {},
+            _definition(),
+        )
+
+    assert result.state == "QUARANTINED"
+    assert [str(item.message) for item in caught] == [
+        "[Incidents] failed to open incident(s): RuntimeError"
+    ]
+    assert len(router.calls) == 1
+    alerted_incidents = router.calls[0][2]["incidents"]
+    assert len(alerted_incidents) == 2
+    assert {incident.id for incident in alerted_incidents} == {
+        incident.id for incident in store.list_open_incidents("gold.orders")
+    }
+
+
+def test_none_incident_results_do_not_trigger_alert_or_warning():
+    class NoneIncidentStore(SqliteCertificationStore):
+        def open_incident(self, incident):
+            return None
+
+    store, backend = NoneIncidentStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_fail_result),
+        store,
+        alert_router=router,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = coordinator.publish(
+            FakeDataFrame([{"id": None}]), "gold.orders", {}, _definition()
+        )
+
+    assert result.state == "QUARANTINED"
+    assert router.calls == []
+    assert caught == []
+
+
+@pytest.mark.parametrize("alert_kwargs", [{}, {"alert_config": "not-a-mapping"}])
+def test_missing_or_invalid_alert_config_defaults_to_empty_mapping(alert_kwargs):
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_fail_result),
+        store,
+        alert_router=router,
+        **alert_kwargs,
+    )
+
+    result = coordinator.publish(
+        FakeDataFrame([{"id": None}]), "gold.orders", {}, _definition()
+    )
+
+    assert result.state == "QUARANTINED"
+    assert router.calls[0][2]["config"] == {}
