@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import http.server
 import json
+import socket
+import threading
+from contextlib import closing
 from datetime import datetime, timezone
 
 import pytest
 
+from skifer.core.config import LineageConfig
 from skifer.core.schema_loader import parse_schema
 from skifer.lineage.tracker import LineageEdge, LineageGraph
 from skifer.observability.checks import CheckResult, CheckStatus, NullCheck, UniqueCheck
@@ -17,7 +22,11 @@ from skifer.observability.openlineage import (
     RUN_EVENT_SCHEMA_URL,
     SCHEMA_FACET_URL,
     SKIFER_FACET_URL,
+    HttpEmitter,
+    InMemoryEmitter,
+    NoOpEmitter,
     build_run_event,
+    create_lineage_emitter,
 )
 
 JOB_NAMESPACE = "skifer"
@@ -818,3 +827,211 @@ select_final:
 
         lineage_fields = event["outputs"][0]["facets"]["columnLineage"]["fields"]
         assert "city" not in lineage_fields
+
+
+class _CapturingHandler(http.server.BaseHTTPRequestHandler):
+    """Records the last POST it received; body/path/headers are read back in tests."""
+
+    captured = None
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        type(self).captured = {"path": self.path, "headers": self.headers, "body": body}
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+        pass
+
+
+class _FailingHandler(http.server.BaseHTTPRequestHandler):
+    """Always answers with a server error, to exercise the emitter's failure path."""
+
+    def do_POST(self):
+        self.send_response(500)
+        self.end_headers()
+
+    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+        pass
+
+
+def _run_server(handler_class):
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_class)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _closed_port() -> int:
+    """A local TCP port nothing listens on, for an unreachable-url test."""
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.fixture
+def http_server():
+    _CapturingHandler.captured = None
+    server, thread = _run_server(_CapturingHandler)
+    yield server
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+
+
+@pytest.fixture
+def failing_http_server():
+    server, thread = _run_server(_FailingHandler)
+    yield server
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+
+
+class TestNoOpEmitter:
+    def test_emit_returns_none_and_keeps_no_reference(self):
+        emitter = NoOpEmitter()
+        event = {"eventType": "COMPLETE"}
+
+        assert emitter.emit(event) is None
+        with pytest.raises(AttributeError):
+            emitter.__dict__
+
+    def test_holds_no_state_via_slots(self):
+        assert NoOpEmitter.__slots__ == ()
+
+
+class TestInMemoryEmitter:
+    def test_stores_independent_deep_copies(self):
+        emitter = InMemoryEmitter()
+        event = {"outputs": [{"name": "gold.t"}]}
+
+        emitter.emit(event)
+        event["outputs"][0]["name"] = "mutated-after-emit"
+
+        assert emitter.events == [{"outputs": [{"name": "gold.t"}]}]
+        assert emitter.events[0] is not event
+        assert emitter.events[0]["outputs"] is not event["outputs"]
+
+
+class TestHttpEmitterSuccess:
+    def test_posts_event_body_path_and_content_type(self, http_server):
+        host, port = http_server.server_address
+        emitter = HttpEmitter(f"http://{host}:{port}", endpoint="/api/v1/lineage")
+        event = {"eventType": "COMPLETE", "run": {"runId": "abc-123"}}
+
+        emitter.emit(event)
+
+        captured = _CapturingHandler.captured
+        assert captured is not None
+        assert captured["path"] == "/api/v1/lineage"
+        assert json.loads(captured["body"]) == event
+        assert captured["headers"].get("Content-Type") == "application/json"
+        assert "Authorization" not in captured["headers"]
+
+    def test_bearer_header_present_when_api_key_set(self, http_server):
+        host, port = http_server.server_address
+        emitter = HttpEmitter(
+            f"http://{host}:{port}", environ={"OPENLINEAGE_API_KEY": "k"}
+        )
+
+        emitter.emit({"eventType": "COMPLETE"})
+
+        assert _CapturingHandler.captured["headers"].get("Authorization") == "Bearer k"
+
+    def test_bearer_header_absent_when_api_key_missing(self, http_server):
+        host, port = http_server.server_address
+        emitter = HttpEmitter(f"http://{host}:{port}", environ={})
+
+        emitter.emit({"eventType": "COMPLETE"})
+
+        assert "Authorization" not in _CapturingHandler.captured["headers"]
+
+    def test_bearer_header_absent_when_api_key_empty(self, http_server):
+        host, port = http_server.server_address
+        emitter = HttpEmitter(
+            f"http://{host}:{port}", environ={"OPENLINEAGE_API_KEY": ""}
+        )
+
+        emitter.emit({"eventType": "COMPLETE"})
+
+        assert "Authorization" not in _CapturingHandler.captured["headers"]
+
+
+class TestHttpEmitterFailure:
+    def test_server_error_never_raises_and_warns_once_per_kind(
+        self, failing_http_server, recwarn
+    ):
+        host, port = failing_http_server.server_address
+        emitter = HttpEmitter(f"http://{host}:{port}", timeout_seconds=2.0)
+
+        for _ in range(3):
+            emitter.emit({"eventType": "COMPLETE"})
+
+        runtime_warnings = [w for w in recwarn.list if issubclass(w.category, RuntimeWarning)]
+        assert len(runtime_warnings) == 1
+        message = str(runtime_warnings[0].message)
+        assert "HTTPError" in message
+        assert host not in message
+        assert str(port) not in message
+
+    def test_unreachable_url_never_raises_and_warns_once_per_kind(self, recwarn):
+        port = _closed_port()
+        emitter = HttpEmitter(f"http://127.0.0.1:{port}", timeout_seconds=1.0)
+
+        for _ in range(3):
+            emitter.emit({"eventType": "COMPLETE"})
+
+        runtime_warnings = [w for w in recwarn.list if issubclass(w.category, RuntimeWarning)]
+        assert len(runtime_warnings) == 1
+        message = str(runtime_warnings[0].message)
+        assert str(port) not in message
+
+
+class TestHttpEmitterRepr:
+    def test_repr_never_discloses_url_or_credentials(self):
+        emitter = HttpEmitter("https://user:s3cret@host")
+
+        text = repr(emitter)
+
+        assert text == "HttpEmitter(url=<configured>, endpoint='/api/v1/lineage')"
+        assert "s3cret" not in text
+        assert "user" not in text
+        assert "host" not in text
+
+
+class TestCreateLineageEmitter:
+    def test_none_config_returns_noop(self):
+        assert isinstance(create_lineage_emitter(LineageConfig()), NoOpEmitter)
+
+    def test_http_config_returns_http_emitter_with_endpoint_and_timeout(self):
+        config = LineageConfig(
+            emitter="http",
+            url="https://catalog.example.com",
+            endpoint="/custom/endpoint",
+            timeout_seconds=2.5,
+        )
+
+        emitter = create_lineage_emitter(config)
+
+        assert isinstance(emitter, HttpEmitter)
+        assert repr(emitter) == "HttpEmitter(url=<configured>, endpoint='/custom/endpoint')"
+        assert emitter._timeout_seconds == 2.5
+
+    def test_construction_error_warns_with_class_name_only_and_returns_noop(self, recwarn):
+        class _BrokenConfig:
+            emitter = "http"
+
+            @property
+            def url(self):
+                raise RuntimeError("boom")
+
+        emitter = create_lineage_emitter(_BrokenConfig())
+
+        assert isinstance(emitter, NoOpEmitter)
+        runtime_warnings = [w for w in recwarn.list if issubclass(w.category, RuntimeWarning)]
+        assert len(runtime_warnings) == 1
+        assert "RuntimeError" in str(runtime_warnings[0].message)

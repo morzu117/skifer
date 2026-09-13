@@ -1,9 +1,19 @@
-"""Pure OpenLineage RunEvent builder — no I/O, no Spark, no network (Plan 36.1)."""
+"""Pure OpenLineage RunEvent builder — no I/O, no Spark, no network (Plan 36.1).
+
+Emitters (Plan 36.2) live in the same module: `NoOpEmitter`, `InMemoryEmitter` and
+`HttpEmitter`. Importing this module never imports `urllib.request` — the only
+non-stdlib-safe-to-import-eagerly dependency — which stays confined to `HttpEmitter`
+methods, mirroring the lazy-SDK-import discipline of `observability/tracing_exporters.py`.
+"""
 from __future__ import annotations
 
+import copy
+import json
+import os
 import re
+import warnings
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence
 
 from skifer.lineage.tracker import LineageGraph, RULE_ORIGIN
 from skifer.observability.checks import CheckStatus
@@ -256,3 +266,125 @@ def _build_skifer_facet(record: "DatasetRecord", certification_status: str | Non
     if classifications:
         facet["classifications"] = classifications
     return facet
+
+
+OPENLINEAGE_API_KEY_ENV = "OPENLINEAGE_API_KEY"
+
+
+class LineageEmitter(Protocol):
+    """Anything that can send a built RunEvent somewhere. Never raises."""
+
+    def emit(self, event: dict) -> None: ...
+
+
+class NoOpEmitter:
+    """Default emitter: `observability.lineage.emitter: none`. Holds no state."""
+
+    __slots__ = ()
+
+    def emit(self, event: dict) -> None:
+        return None
+
+
+class InMemoryEmitter:
+    """Collects emitted events for tests and examples.
+
+    Stores independent deep copies so later in-place mutation of a `record`/`event`
+    by the caller can never retroactively alter what was already "emitted".
+    """
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def emit(self, event: dict) -> None:
+        self.events.append(copy.deepcopy(event))
+
+
+class _NonSuccessResponse(Exception):
+    """Internal: an HTTP response outside the 2xx range."""
+
+
+class HttpEmitter:
+    """POST OpenLineage RunEvents over HTTP using only the standard library.
+
+    `emit` never raises: a catalog being unreachable or erroring must never affect
+    the pipeline it observes (Plan 36 §1, mirroring `observability/uc_mirror.py`).
+    Failures are rate-limited per instance and per failure kind — like
+    `_warning_once` in `observability/tracing_exporters.py` — and the warning,
+    `repr()` and any log line never disclose the url, endpoint query, event body,
+    or API key.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        endpoint: str = "/api/v1/lineage",
+        timeout_seconds: float = 5.0,
+        environ: Mapping[str, str] | None = None,
+        opener: Any = None,
+    ) -> None:
+        self._url = url
+        self._endpoint = endpoint
+        self._timeout_seconds = timeout_seconds
+        self._environ = environ
+        self._opener = opener
+        self._warned_kinds: set[str] = set()
+
+    def __repr__(self) -> str:
+        return f"HttpEmitter(url=<configured>, endpoint={self._endpoint!r})"
+
+    def emit(self, event: dict) -> None:
+        try:
+            self._post(event)
+        except Exception as exc:
+            self._warn_once(type(exc).__name__)
+
+    def _post(self, event: dict) -> None:
+        import urllib.request
+
+        body = json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        environ = self._environ if self._environ is not None else os.environ
+        api_key = environ.get(OPENLINEAGE_API_KEY_ENV)
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        target = self._url.rstrip("/") + self._endpoint
+        request = urllib.request.Request(target, data=body, headers=headers, method="POST")
+        opener = self._opener if self._opener is not None else urllib.request.urlopen
+        with opener(request, timeout=self._timeout_seconds) as response:
+            status = getattr(response, "status", None)
+            if status is None:
+                status = response.getcode()
+            if not 200 <= status < 300:
+                raise _NonSuccessResponse(f"HTTP {status}")
+
+    def _warn_once(self, kind: str) -> None:
+        if kind in self._warned_kinds:
+            return
+        self._warned_kinds.add(kind)
+        warnings.warn(
+            f"[OpenLineage] emission failed: {kind}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
+def create_lineage_emitter(config: Any, *, environ: Mapping[str, str] | None = None) -> LineageEmitter:
+    """Build the configured emitter without ever raising (Plan 36 §1: non-blocking)."""
+    if config.emitter == "none":
+        return NoOpEmitter()
+    try:
+        return HttpEmitter(
+            config.url,
+            endpoint=config.endpoint,
+            timeout_seconds=config.timeout_seconds,
+            environ=environ,
+        )
+    except Exception as exc:
+        warnings.warn(
+            f"[OpenLineage] emitter construction failed: {type(exc).__name__}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return NoOpEmitter()

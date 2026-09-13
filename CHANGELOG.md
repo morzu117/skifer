@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added OpenLineage emitters (`observability/openlineage.py`): `NoOpEmitter` (default),
+  `InMemoryEmitter` (tests/examples) and a standard-library-only `HttpEmitter` that POSTs
+  `RunEvent`s, adds `Authorization: Bearer` only when `OPENLINEAGE_API_KEY` is set, and
+  never raises out of `emit` — a failure logs one rate-limited `RuntimeWarning` per
+  instance and failure kind, naming only the exception class, never the url, endpoint,
+  event body or API key. `create_lineage_emitter()` builds the configured emitter from
+  `LineageConfig`, itself falling back to `NoOpEmitter` on any construction error. (Plan 36.2)
 - Added a pure, deterministic OpenLineage `RunEvent` builder (`observability/openlineage.py`):
   schema/columnLineage/dataQualityAssertions facets and an allowlisted `skifer`
   custom facet, redacted so no SQL, filter value, or check message ever leaves
