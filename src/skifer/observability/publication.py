@@ -13,6 +13,7 @@ from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification import diff_contracts, schema_from_definition
 from skifer.observability.certification_store import RunEvent, StoredCheckResult, next_run_event_time
 from skifer.observability.checks import CheckStatus
+from skifer.observability.openlineage import emit_run_event_best_effort
 from skifer.observability.quarantine import quarantine_staging
 from skifer.observability.tracing import (
     NoOpTracer,
@@ -63,13 +64,16 @@ class _BreakingChangeView:
 class PublicationCoordinator:
     """Stage, validate, persist check results, then promote or quarantine."""
 
-    def __init__(self, backend, monitor, store, metadata_store=None, alert_router=None, alert_config=None):
+    def __init__(self, backend, monitor, store, metadata_store=None, alert_router=None, alert_config=None,
+                 lineage_emitter=None, lineage_context=None):
         self.backend = backend
         self.monitor = monitor
         self.store = store
         self.metadata_store = metadata_store
         self.alert_router = alert_router
         self.alert_config = alert_config if isinstance(alert_config, dict) else {}
+        self.lineage_emitter = lineage_emitter
+        self.lineage_context = lineage_context
         # Plain getattr, not monitor.__dict__: a monitor exposing `tracer` as a
         # property was silently downgraded to NoOpTracer, i.e. tracing quietly
         # off with no way to notice.
@@ -90,6 +94,8 @@ class PublicationCoordinator:
         # changed the run_id persisted in the certification store — and raised
         # outright when that ambient id was not a UUID.
         run = start_publication_run(target_fqn, definition, self.store, run_id)
+        lineage_record = _schema_record_factory(schema_dict, run.target_fqn)
+        self._emit_lineage("START", run.run_id, lineage_record)
         active = current_trace_context(self.tracer)
         # Correlation follows the run, never the reverse.
         context = TraceContext(
@@ -98,8 +104,24 @@ class PublicationCoordinator:
             evidence_id=active.evidence_id,
             session_id=active.session_id,
         )
-        with trace_context_scope(self.tracer, context, required=self.tracing_required):
-            return self._publish_run(df, schema_dict, definition, run)
+        try:
+            with trace_context_scope(self.tracer, context, required=self.tracing_required):
+                result = self._publish_run(df, schema_dict, definition, run)
+        except Exception:
+            # Observed, never altered: the original exception propagates unchanged.
+            self._emit_lineage("FAIL", run.run_id, lineage_record)
+            raise
+        if result.state == "PROMOTED":
+            self._emit_lineage(
+                "COMPLETE", run.run_id, lineage_record,
+                check_results=result.report.results, certification_status="CERTIFIED",
+            )
+        else:
+            self._emit_lineage(
+                "FAIL", run.run_id, lineage_record,
+                check_results=result.report.results, certification_status="UNCERTIFIED",
+            )
+        return result
 
     def _publish_run(self, df, schema_dict, definition, run) -> PublicationResult:
         attributes = {
@@ -220,6 +242,7 @@ class PublicationCoordinator:
             promoted = promote_staging(self.backend, run, definition, self.store)
             self._resolve_recovered(promoted)
             self._index_resumed_metadata(promoted, definition)
+            self._emit_resumed_lineage(promoted, definition)
             return PublicationResult(run=promoted, report=None, state="PROMOTED")
         attributes = {
             "run_id": run.run_id,
@@ -235,7 +258,35 @@ class PublicationCoordinator:
             promoted = promote_staging(self.backend, run, definition, self.store)
         self._resolve_recovered(promoted)
         self._index_resumed_metadata(promoted, definition)
+        self._emit_resumed_lineage(promoted, definition)
         return PublicationResult(run=promoted, report=None, state="PROMOTED")
+
+    def _emit_lineage(self, event_type, run_id, record_factory, *, check_results=None,
+                      certification_status=None) -> None:
+        """Best-effort OpenLineage emission; never changes the publication outcome (Plan 36.3)."""
+        if self.lineage_emitter is None or self.lineage_context is None:
+            return
+        emit_run_event_best_effort(
+            self.lineage_emitter,
+            event_type=event_type,
+            run_id=run_id,
+            record_factory=record_factory,
+            job_namespace=getattr(self.lineage_context, "job_namespace", None),
+            dataset_namespace=getattr(self.lineage_context, "dataset_namespace", None),
+            check_results=check_results,
+            certification_status=certification_status,
+        )
+
+    def _emit_resumed_lineage(self, run, definition) -> None:
+        """COMPLETE for a resumed run: no schema dict, so the record comes from the contract."""
+        def record_factory():
+            from skifer.observability.metadata_index import dataset_record_from_definition
+
+            return dataset_record_from_definition(definition, run.target_fqn, run.run_id)
+
+        self._emit_lineage(
+            "COMPLETE", run.run_id, record_factory, certification_status="CERTIFIED"
+        )
 
     def _index_resumed_metadata(self, run, definition) -> None:
         """Index contract metadata recovered without the original pipeline schema."""
@@ -299,6 +350,20 @@ class PublicationCoordinator:
                 f"[Incidents] failed to resolve incidents: {type(exc).__name__}",
                 RuntimeWarning,
             )
+
+
+def _schema_record_factory(schema_dict, target_fqn):
+    """Lazy DatasetRecord for lineage events; only called when an emitter is configured.
+
+    The path hint lives in core/patterns.py, which observability must not import, so the
+    target FQN stands in for it — the path never reaches a RunEvent.
+    """
+    def factory():
+        from skifer.observability.metadata_index import index_schema
+
+        return index_schema(schema_dict, target_fqn, target_fqn=target_fqn)
+
+    return factory
 
 
 def start_publication_run(target_fqn: str, definition: ContractDefinition, store, run_id: str | None = None) -> PublicationRun:

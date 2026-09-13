@@ -1978,3 +1978,102 @@ def test_engine_exposes_a_public_backend():
     engine._backend = sentinel
 
     assert engine.backend is sentinel
+
+
+# ==============================================================================
+# OPENLINEAGE EMITTER CONSTRUCTION (Plan 36.3)
+# ==============================================================================
+
+_LINEAGE_ENVIRONMENTS = {"dev": {"catalog": "dev_catalog"}, "local": {"catalog": None}}
+
+
+def _lineage_engine(mocker, config, *, force_env=None):
+    from unittest.mock import MagicMock
+
+    def mock_load_config(instance, config_path):
+        instance.config = config
+        instance.env = "DEV"
+        instance.db = "dev_catalog"
+
+    mocker.patch.object(SkiferEngine, "_load_config_from_yaml", side_effect=mock_load_config, autospec=True)
+    mocker.patch.object(SkiferEngine, "_get_clean_username", return_value="test_user")
+    mocker.patch.object(SkiferEngine, "_find_file_upwards", return_value=None)
+    mocker.patch("skifer.core.spark_backend.SparkBackend")
+    return SkiferEngine(spark=MagicMock(), config_path="dummy/config.yaml", force_env=force_env)
+
+
+def test_engine_lineage_dataset_namespace_prefers_explicit_config(mocker, monkeypatch):
+    from skifer.observability.openlineage import LineageContext
+
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-1.azuredatabricks.net")
+    engine = _lineage_engine(mocker, {
+        "environments": _LINEAGE_ENVIRONMENTS,
+        "observability": {"lineage": {"dataset_namespace": "hive://metastore:9083", "job_namespace": "etl"}},
+    })
+
+    assert engine.lineage_context == LineageContext(
+        job_namespace="etl", dataset_namespace="hive://metastore:9083"
+    )
+
+
+def test_engine_lineage_dataset_namespace_uses_databricks_host_when_not_local(mocker, monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net/")
+    urlopen = mocker.patch("urllib.request.urlopen")
+
+    engine = _lineage_engine(mocker, {"environments": _LINEAGE_ENVIRONMENTS})
+
+    assert engine.is_local is False
+    assert engine.lineage_context.dataset_namespace == "unitycatalog://adb-123.azuredatabricks.net"
+    assert engine.lineage_context.job_namespace == "skifer"
+    urlopen.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "force_env, host",
+    [("local", "https://adb-123.azuredatabricks.net"), (None, None)],
+    ids=["local-ignores-host", "no-host"],
+)
+def test_engine_lineage_dataset_namespace_defaults_to_local(mocker, monkeypatch, force_env, host):
+    from skifer.observability.openlineage import NoOpEmitter
+
+    if host is None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    else:
+        monkeypatch.setenv("DATABRICKS_HOST", host)
+
+    engine = _lineage_engine(mocker, {"environments": _LINEAGE_ENVIRONMENTS}, force_env=force_env)
+
+    assert engine.lineage_context.dataset_namespace == "skifer://local"
+    assert isinstance(engine.lineage_emitter, NoOpEmitter)
+
+
+def test_engine_http_lineage_config_builds_http_emitter_without_network(mocker):
+    from skifer.observability.openlineage import HttpEmitter
+
+    urlopen = mocker.patch("urllib.request.urlopen")
+    engine = _lineage_engine(mocker, {
+        "environments": _LINEAGE_ENVIRONMENTS,
+        "observability": {"lineage": {"emitter": "http", "url": "https://lineage.example.test"}},
+    })
+
+    assert isinstance(engine.lineage_emitter, HttpEmitter)
+    urlopen.assert_not_called()
+
+
+def test_engine_invalid_lineage_config_fails_init(mocker):
+    with pytest.raises(ValueError, match="observability.lineage.emitter"):
+        _lineage_engine(mocker, {
+            "environments": _LINEAGE_ENVIRONMENTS,
+            "observability": {"lineage": {"emitter": "kafka"}},
+        })
+
+
+def test_engine_without_init_exposes_default_lineage_properties():
+    from skifer.observability.openlineage import LineageContext, NoOpEmitter
+
+    engine = object.__new__(SkiferEngine)
+
+    assert isinstance(engine.lineage_emitter, NoOpEmitter)
+    assert engine.lineage_context == LineageContext(
+        job_namespace="skifer", dataset_namespace="skifer://local"
+    )

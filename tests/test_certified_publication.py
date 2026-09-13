@@ -983,3 +983,271 @@ def test_missing_or_invalid_alert_config_defaults_to_empty_mapping(alert_kwargs)
 
     assert result.state == "QUARANTINED"
     assert router.calls[0][2]["config"] == {}
+
+
+# ---------------------------------------------------------------------------
+# OpenLineage emission at publication (Plan 36.3)
+# ---------------------------------------------------------------------------
+
+from skifer.observability.openlineage import InMemoryEmitter, LineageContext, NoOpEmitter  # noqa: E402
+
+_LINEAGE_CONTEXT = LineageContext(job_namespace="skifer", dataset_namespace="skifer://local")
+_LINEAGE_RUN_ID = "3f1b2c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+_LINEAGE_SKIPPED = "[OpenLineage] event skipped: RuntimeError"
+
+
+def _lineage_schema():
+    return {
+        "data_product": {"id": "sales.orders", "version": "1.0.0"},
+        "contract": {"output": {"id": {"logical_type": "integer", "required": True}}},
+        "tables": [{"name": "silver.orders", "alias": "ord"}],
+    }
+
+
+class _RaisingEmitter:
+    def emit(self, event):
+        raise RuntimeError("https://token:secret@catalog.example.test")
+
+
+def _lineage_coordinator(backend, monitor, store, emitter, context=_LINEAGE_CONTEXT):
+    return PublicationCoordinator(
+        backend, monitor, store, lineage_emitter=emitter, lineage_context=context
+    )
+
+
+def _event_types(emitter):
+    return [event["eventType"] for event in emitter.events]
+
+
+def test_lineage_clean_publication_emits_start_then_complete_on_same_run():
+    store, backend, emitter = SqliteCertificationStore(":memory:"), FakeBackend(), InMemoryEmitter()
+    coordinator = _lineage_coordinator(backend, _Monitor(_pass_result), store, emitter)
+
+    result = coordinator.publish(
+        FakeDataFrame([{"id": 1}]), "gold.orders", _lineage_schema(), _definition()
+    )
+
+    assert result.state == "PROMOTED"
+    assert _event_types(emitter) == ["START", "COMPLETE"]
+    assert {event["run"]["runId"] for event in emitter.events} == {result.run.run_id}
+    start, complete = emitter.events
+    assert "dataQualityAssertions" not in start["outputs"][0]["facets"]
+    assert "certification" not in start["outputs"][0]["facets"]["skifer"]
+    output = complete["outputs"][0]
+    assert output["name"] == "gold.orders"
+    assert output["facets"]["dataQualityAssertions"]["assertions"] == [
+        {"assertion": "NullCheck", "success": True, "severity": "error", "column": "id"}
+    ]
+    assert output["facets"]["skifer"]["certification"] == "CERTIFIED"
+
+
+def test_lineage_critical_failure_emits_start_then_fail_uncertified():
+    store, backend, emitter = SqliteCertificationStore(":memory:"), FakeBackend(), InMemoryEmitter()
+    coordinator = _lineage_coordinator(backend, _Monitor(_fail_result), store, emitter)
+
+    result = coordinator.publish(
+        FakeDataFrame([{"id": None}]), "gold.orders", _lineage_schema(), _definition()
+    )
+
+    assert result.state == "QUARANTINED"
+    assert _event_types(emitter) == ["START", "FAIL"]
+    assert {event["run"]["runId"] for event in emitter.events} == {result.run.run_id}
+    facets = emitter.events[1]["outputs"][0]["facets"]
+    assert facets["skifer"]["certification"] == "UNCERTIFIED"
+    assert [a["success"] for a in facets["dataQualityAssertions"]["assertions"]] == [False]
+    assert "null id" not in json.dumps(emitter.events)
+
+
+def test_lineage_check_error_emits_start_then_fail_uncertified():
+    class _BrokenWriteBackend(FakeBackend):
+        def write_staging(self, df, fqn):
+            if "_skifer_quarantine" in fqn:
+                raise RuntimeError("permission denied on quarantine schema")
+            super().write_staging(df, fqn)
+
+    store, backend, emitter = SqliteCertificationStore(":memory:"), _BrokenWriteBackend(), InMemoryEmitter()
+    coordinator = _lineage_coordinator(backend, _Monitor(_fail_result), store, emitter)
+
+    result = coordinator.publish(
+        FakeDataFrame([{"id": None}]), "gold.orders", _lineage_schema(), _definition()
+    )
+
+    assert result.state == "CHECK_ERROR"
+    assert _event_types(emitter) == ["START", "FAIL"]
+    assert emitter.events[1]["outputs"][0]["facets"]["skifer"]["certification"] == "UNCERTIFIED"
+
+
+@pytest.mark.parametrize("traced", [False, True])
+def test_lineage_resume_emits_complete_only_from_contract_record(traced):
+    from skifer.observability.tracing import InMemoryTracer
+
+    definition = _metadata_definition()
+    store, backend, emitter = SqliteCertificationStore(":memory:"), FakeBackend(), InMemoryEmitter()
+    monitor = _Monitor(_pass_result)
+    if traced:
+        monitor.tracer = InMemoryTracer()
+    coordinator = _lineage_coordinator(backend, monitor, store, emitter)
+    run = stage_dataframe(
+        backend,
+        start_publication_run("gold.orders", definition, store),
+        definition,
+        store,
+        FakeDataFrame([{"customer_email": "person@example.com"}]),
+    )
+
+    result = coordinator.resume(run, definition)
+
+    assert result.state == "PROMOTED"
+    assert _event_types(emitter) == ["COMPLETE"]
+    event = emitter.events[0]
+    assert event["run"]["runId"] == run.run_id
+    facets = event["outputs"][0]["facets"]
+    assert "dataQualityAssertions" not in facets
+    assert facets["skifer"]["certification"] == "CERTIFIED"
+    assert facets["skifer"]["classifications"] == {"customer_email": "pii"}
+    assert facets["schema"]["fields"] == [{"name": "customer_email", "type": "string"}]
+    assert "person@example.com" not in json.dumps(emitter.events)
+
+
+def test_lineage_publication_raising_during_staging_emits_fail_and_reraises_same_exception():
+    boom = RuntimeError("staging write failed")
+
+    class _BrokenStagingBackend(FakeBackend):
+        def write_staging(self, df, fqn):
+            raise boom
+
+    store, backend, emitter = SqliteCertificationStore(":memory:"), _BrokenStagingBackend(), InMemoryEmitter()
+    coordinator = _lineage_coordinator(backend, _Monitor(_pass_result), store, emitter)
+
+    with pytest.raises(RuntimeError) as caught:
+        coordinator.publish(
+            FakeDataFrame([{"id": 1}]), "gold.orders", _lineage_schema(), _definition()
+        )
+
+    assert caught.value is boom
+    traceback = caught.value.__traceback__
+    while traceback.tb_next is not None:
+        traceback = traceback.tb_next
+    assert traceback.tb_frame.f_code.co_name == "write_staging"
+    assert _event_types(emitter) == ["START", "FAIL"]
+    assert len({event["run"]["runId"] for event in emitter.events}) == 1
+    facets = emitter.events[1]["outputs"][0]["facets"]
+    assert "dataQualityAssertions" not in facets
+    assert "certification" not in facets["skifer"]
+
+
+@pytest.mark.parametrize(
+    "result_factory, expected_state",
+    [(_pass_result, "PROMOTED"), (_fail_result, "QUARANTINED")],
+)
+def test_lineage_raising_emitter_leaves_publication_identical(result_factory, expected_state):
+    def publish(emitter):
+        store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+        coordinator = _lineage_coordinator(backend, _Monitor(result_factory), store, emitter)
+        result = coordinator.publish(
+            FakeDataFrame([{"id": 1}]),
+            "gold.orders",
+            _lineage_schema(),
+            _definition(),
+            run_id=_LINEAGE_RUN_ID,
+        )
+        return result, store, backend
+
+    baseline, baseline_store, baseline_backend = publish(None)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        observed, observed_store, observed_backend = publish(_RaisingEmitter())
+
+    assert observed.state == baseline.state == expected_state
+    assert observed.run == baseline.run
+    assert [(e.event_id, e.state) for e in observed_store.list_history("gold.orders")] == [
+        (e.event_id, e.state) for e in baseline_store.list_history("gold.orders")
+    ]
+    assert observed_store.get_check_results(_LINEAGE_RUN_ID) == baseline_store.get_check_results(
+        _LINEAGE_RUN_ID
+    )
+    assert observed_backend._written == baseline_backend._written
+    lineage_warnings = [w for w in caught if str(w.message).startswith("[OpenLineage]")]
+    assert [str(w.message) for w in lineage_warnings] == [_LINEAGE_SKIPPED, _LINEAGE_SKIPPED]
+    assert all(w.category is RuntimeWarning for w in lineage_warnings)
+    assert not any("secret" in str(w.message) for w in caught)
+
+
+def test_lineage_raising_emitter_under_warnings_as_errors_never_breaks_publication():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = _lineage_coordinator(backend, _Monitor(_pass_result), store, _RaisingEmitter())
+    boom = RuntimeError("staging write failed")
+
+    class _BrokenStagingBackend(FakeBackend):
+        def write_staging(self, df, fqn):
+            raise boom
+
+    failing = _lineage_coordinator(
+        _BrokenStagingBackend(), _Monitor(_pass_result),
+        SqliteCertificationStore(":memory:"), _RaisingEmitter(),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = coordinator.publish(
+            FakeDataFrame([{"id": 1}]), "gold.orders", _lineage_schema(), _definition()
+        )
+        with pytest.raises(RuntimeError) as caught:
+            failing.publish(
+                FakeDataFrame([{"id": 1}]), "gold.orders", _lineage_schema(), _definition()
+            )
+
+    assert result.state == "PROMOTED"
+    assert store.get_run(result.run.run_id).state == "PROMOTED"
+    assert backend._written["gold.orders"] == [{"id": 1}]
+    assert caught.value is boom
+
+
+@pytest.mark.parametrize(
+    "emitter, context",
+    [
+        (None, _LINEAGE_CONTEXT),
+        (NoOpEmitter(), _LINEAGE_CONTEXT),
+        (InMemoryEmitter(), None),
+    ],
+    ids=["no-emitter", "noop-emitter", "no-context"],
+)
+def test_lineage_disabled_never_builds_a_record(monkeypatch, emitter, context):
+    import skifer.observability.metadata_index as metadata_index
+
+    calls = []
+    monkeypatch.setattr(metadata_index, "index_schema", lambda *a, **k: calls.append("index"))
+    monkeypatch.setattr(
+        metadata_index, "dataset_record_from_definition", lambda *a, **k: calls.append("definition")
+    )
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = _lineage_coordinator(backend, _Monitor(_pass_result), store, emitter, context)
+
+    result = coordinator.publish(
+        FakeDataFrame([{"id": 1}]), "gold.orders", _lineage_schema(), _definition()
+    )
+    resumed = coordinator.resume(result.run, _definition())
+
+    assert result.state == resumed.state == "PROMOTED"
+    assert calls == []
+    assert getattr(emitter, "events", []) == []
+
+
+def test_lineage_enabled_builds_record_through_patched_index_schema(monkeypatch):
+    import skifer.observability.metadata_index as metadata_index
+
+    original = metadata_index.index_schema
+    calls = []
+
+    def counting_index_schema(*args, **kwargs):
+        calls.append(kwargs.get("target_fqn"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(metadata_index, "index_schema", counting_index_schema)
+    store, backend, emitter = SqliteCertificationStore(":memory:"), FakeBackend(), InMemoryEmitter()
+    coordinator = _lineage_coordinator(backend, _Monitor(_pass_result), store, emitter)
+
+    coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", _lineage_schema(), _definition())
+
+    assert calls == ["gold.orders", "gold.orders"]
+    assert _event_types(emitter) == ["START", "COMPLETE"]

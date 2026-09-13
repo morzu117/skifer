@@ -215,6 +215,8 @@ class PipelinePatterns:
                 metadata_store=getattr(e, "metadata_store", None),
                 alert_router=alert_router,
                 alert_config=alert_config,
+                lineage_emitter=getattr(e, "lineage_emitter", None),
+                lineage_context=getattr(e, "lineage_context", None),
             )
             # Same identity from the pipeline down to the certification record,
             # so the link survives without exported traces (Plan 29).
@@ -239,6 +241,9 @@ class PipelinePatterns:
                 } if uses_jdbc_sink else sink_config,
                 materialization=materialization,
             )
+            # Batch only in v1 (Plan 36 D3): streaming and JDBC sinks emit nothing.
+            if not is_streaming and not uses_jdbc_sink:
+                _emit_batch_lineage(e, schema_dict, fqn, run_id)
 
             # With trigger available_now the streaming write has terminated here
             # (awaitTermination inside write_stream_table) — the monitor reads
@@ -547,3 +552,32 @@ def _schema_path_hint(schema_dict: dict, fqn: str) -> str:
         if isinstance(product_id, str) and product_id:
             return product_id
     return fqn
+
+
+def _emit_batch_lineage(e: Any, schema_dict: dict, fqn: str, run_id: str | None) -> None:
+    """COMPLETE for a non-certified batch write: schema and lineage, no assertions (Plan 36.3)."""
+    emitter = getattr(e, "lineage_emitter", None)
+    context = getattr(e, "lineage_context", None)
+    if emitter is None or context is None:
+        return
+    from uuid import uuid4
+
+    from skifer.observability.openlineage import emit_run_event_best_effort
+
+    target_fqn = fqn.replace("`", "")
+
+    def record_factory():
+        from skifer.observability.metadata_index import index_schema
+
+        return index_schema(
+            schema_dict, _schema_path_hint(schema_dict, target_fqn), target_fqn=target_fqn
+        )
+
+    emit_run_event_best_effort(
+        emitter,
+        event_type="COMPLETE",
+        run_id=run_id or str(uuid4()),
+        record_factory=record_factory,
+        job_namespace=getattr(context, "job_namespace", None),
+        dataset_namespace=getattr(context, "dataset_namespace", None),
+    )

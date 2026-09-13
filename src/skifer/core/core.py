@@ -35,6 +35,23 @@ _DEFAULT_TRACER = NoOpTracer()
 # SkiferEngine.clear_env_detection_cache().
 _ENV_DETECTION_CACHE: dict[tuple, tuple[str, str | None]] = {}
 
+_LOCAL_LINEAGE_DATASET_NAMESPACE = "skifer://local"
+
+
+def _resolve_lineage_dataset_namespace(lineage_config, *, is_local, environ) -> str:
+    """OpenLineage dataset namespace (Plan 36 D6): configured, else workspace host, else local.
+
+    Reads only the environment — never the Databricks SDK, never the network.
+    """
+    if lineage_config.dataset_namespace:
+        return lineage_config.dataset_namespace
+    host = None if is_local else environ.get("DATABRICKS_HOST")
+    if host:
+        host = host.strip().split("://", 1)[-1].rstrip("/")
+        if host:
+            return f"unitycatalog://{host}"
+    return _LOCAL_LINEAGE_DATASET_NAMESPACE
+
 # ==============================================================================
 # ENGINE CLASS
 # ==============================================================================
@@ -239,6 +256,15 @@ class SkiferEngine:
         self._tracing_config = parse_tracing_config(self.config)
         self._tracer = create_tracer(self._tracing_config)
 
+        from skifer.core.config import parse_lineage_config
+        from skifer.observability.openlineage import create_lineage_emitter
+
+        self._lineage_config = parse_lineage_config(self.config)
+        self._lineage_emitter = create_lineage_emitter(self._lineage_config)
+        self._lineage_dataset_namespace = _resolve_lineage_dataset_namespace(
+            self._lineage_config, is_local=self.is_local, environ=os.environ
+        )
+
         # ======================================================================
         # 3. DÉTECTION UTILISATEUR & SANDBOX
         # ======================================================================
@@ -282,6 +308,26 @@ class SkiferEngine:
     def tracer(self):
         """Runtime tracer; defaults to the allocation-free no-op implementation."""
         return getattr(self, "_tracer", _DEFAULT_TRACER)
+
+    @property
+    def lineage_emitter(self):
+        """OpenLineage emitter; the zero-cost `NoOpEmitter` unless configured (Plan 36.3)."""
+        from skifer.observability.openlineage import NoOpEmitter
+
+        return getattr(self, "_lineage_emitter", None) or NoOpEmitter()
+
+    @property
+    def lineage_context(self):
+        """Job and dataset namespaces shared by every OpenLineage emission point."""
+        from skifer.observability.openlineage import LineageContext
+
+        config = getattr(self, "_lineage_config", None)
+        return LineageContext(
+            job_namespace=config.job_namespace if config is not None else "skifer",
+            dataset_namespace=getattr(
+                self, "_lineage_dataset_namespace", _LOCAL_LINEAGE_DATASET_NAMESPACE
+            ),
+        )
 
     def set_tracer(self, tracer):
         """Inject a tracer without changing the constructor's public signature."""

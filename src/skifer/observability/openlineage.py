@@ -13,6 +13,7 @@ import os
 import re
 import threading
 import warnings
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence
 
@@ -397,3 +398,46 @@ def create_lineage_emitter(config: Any, *, environ: Mapping[str, str] | None = N
     except Exception as exc:
         _warn_best_effort(f"[OpenLineage] emitter construction failed: {type(exc).__name__}")
         return NoOpEmitter()
+
+
+@dataclass(frozen=True)
+class LineageContext:
+    """Namespaces resolved once by the engine and shared by every emission point (Plan 36 D6)."""
+
+    job_namespace: str
+    dataset_namespace: str
+
+
+def emit_run_event_best_effort(
+    emitter: Any,
+    *,
+    event_type: str,
+    run_id: str,
+    record_factory: Any,
+    job_namespace: str,
+    dataset_namespace: str,
+    check_results: Sequence["CheckResult"] | None = None,
+    certification_status: str | None = None,
+) -> None:
+    """Build and emit one RunEvent without ever affecting the caller (Plan 36.3).
+
+    A `NoOpEmitter` returns before `record_factory` runs, so `emitter: none` builds
+    nothing. Any failure — record, event or emission — becomes one warning naming
+    only the exception class, never its message, which often cites the data.
+    """
+    if emitter is None or isinstance(emitter, NoOpEmitter):
+        return
+    try:
+        event = build_run_event(
+            event_type=event_type,
+            run_id=run_id,
+            event_time=datetime.now(timezone.utc),
+            record=record_factory(),
+            job_namespace=job_namespace,
+            dataset_namespace=dataset_namespace,
+            check_results=check_results,
+            certification_status=certification_status,
+        )
+        emitter.emit(event)
+    except Exception as exc:
+        _warn_best_effort(f"[OpenLineage] event skipped: {type(exc).__name__}")
