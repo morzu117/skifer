@@ -150,9 +150,16 @@ def main() -> None:
     all_events_text = json.dumps(emitter.events)
     print(f"Secret present in events: {SECRET in all_events_text}")
 
+    def _unreachable_catalog_opener(request, timeout=None):
+        raise ConnectionRefusedError("simulated unreachable catalog")
+
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        unreachable_emitter = HttpEmitter("http://127.0.0.1:9", timeout_seconds=2.0)
+        unreachable_emitter = HttpEmitter(
+            "http://catalog.example.internal",
+            timeout_seconds=2.0,
+            opener=_unreachable_catalog_opener,
+        )
         unreachable_emitter.emit(complete_event)
 
     warning = caught[0]

@@ -480,6 +480,11 @@ rejected at load with a message naming the key — the API key is read **only** 
 `OPENLINEAGE_API_KEY` environment variable, never from `config.yaml`. Validation never echoes the
 configured `url` in an error message.
 
+Load-time validation: `url` must be a string starting with `http://` or `https://`, and is
+required when `emitter: http`; `endpoint` must be a non-empty string starting with `/`;
+`timeout_seconds` must be a number greater than 0 and at most 60. Any violation fails at load,
+before any event is ever built.
+
 ### When events are emitted
 
 Certified publication (`data_product:` pipelines, `PublicationCoordinator`) and a non-certified
@@ -488,28 +493,33 @@ materialized views, JDBC sinks, `run_process_and_split` and `run_union_sources_t
 nothing.
 
 - **Certified publication** — `START` is emitted once staging begins, before any check runs.
-    - A critical check failure quarantines the run: `FAIL` carries the check results
-      (`dataQualityAssertions`) and `certification: UNCERTIFIED`.
+    - A critical check failure quarantines the run, and a check that itself errors out
+      (`CHECK_ERROR`) is treated the same way: either non-promoted outcome emits `FAIL` carrying
+      the check results (`dataQualityAssertions`) and `certification: UNCERTIFIED`.
     - A successful promotion: `COMPLETE` carries the check results and `certification: CERTIFIED`.
-    - An exception raised anywhere in `_publish_run` (a backend or write failure, not a check
+    - An exception raised during the publication (a backend or write failure, not a check
       failure): `FAIL` is emitted **without** assertions or a certification value, and the
       original exception still propagates unchanged.
     - `resume()` (crash recovery) emits `COMPLETE`. It is built from the persisted contract, not
       the original pipeline schema, so it carries no `columnLineage`, no `inputs`, and no
       `dataQualityAssertions` — only the output `schema` and the `skifer` facet.
-  All of these share the **same `run_id`** as the certification record itself — the identity a
-  publication is audited under, whether or not tracing is enabled. A `resume()` after a `FAIL`
-  therefore produces two terminal events for one `run_id` (`FAIL` then `COMPLETE`); a consumer
-  should keep the latest.
+
+    All of these share the **same `run_id`** as the certification record itself — the identity a
+    publication is audited under, whether or not tracing is enabled. A `resume()` after a `FAIL`
+    therefore produces two terminal events for one `run_id` (`FAIL` then `COMPLETE`); a consumer
+    should keep the latest.
+
 - **Non-certified batch write** (`run_process_to_table` without `data_product:`) — a single
   `COMPLETE` with schema and column lineage, no assertions and no certification. It is emitted
   **only after the post-write monitor has returned** (or did not run at all): if that monitor
   raises `DataQualityError`, no event is sent for that write.
 
-Every emission is best-effort. `emitter: none` builds no `DatasetRecord` at all — nothing is
-computed just to be thrown away. Any other failure (building the record, building the event,
-sending it) becomes a single `RuntimeWarning` naming only the exception's class, and is safe even
-under a warnings-as-errors filter.
+Every emission is best-effort. With a real emitter, the `DatasetRecord` is rebuilt for each
+event — twice for a certified publication (`START`, then the terminal `FAIL`/`COMPLETE`). Only
+`emitter: none` short-circuits before the record is built, so nothing is computed just to be
+thrown away. Any other failure (building the record, building the event, sending it) becomes a
+single `RuntimeWarning` naming only the exception's class, and is safe even under a
+warnings-as-errors filter.
 
 ### Dataset namespace resolution
 
@@ -524,7 +534,11 @@ In this priority order:
 Only a plain DNS host name reaches step 2's `unitycatalog://` form: the host must fully match
 dot-separated `[a-z0-9-]` labels. A `DATABRICKS_HOST` containing `@` (embedded credentials) or
 whose host does not match is treated as unparseable — it falls back to `skifer://local` with one
-best-effort warning that never echoes the configured value, and never fails the engine.
+best-effort warning that never echoes the configured value, and never fails the engine. An empty
+`DATABRICKS_HOST` (after trimming whitespace), or a value whose host part is itself empty (for
+example `https://:443`), falls back to `skifer://local` **without** a warning — there is no host
+to report. The warning fires only when a host is actually present and gets rejected: it contains
+`@`, fails the allowlist, or cannot be parsed.
 
 !!! warning
     Do not embed credentials in `DATABRICKS_HOST` (`user:secret@host`). Such a value is
@@ -539,7 +553,8 @@ lineage graph:
 
 - **`inputs`** — every distinct source table reached by a real column edge into the output.
 - **`outputs`** — exactly one entry, the target FQN, carrying:
-    - **`schema`** facet — every output column's name and `logical_type`.
+    - **`schema`** facet — every output column's name; `type` is present only when the
+      column declares a `logical_type`.
     - **`columnLineage`** facet (on output columns only) — one `inputFields` entry per real
       source column, each carrying a `transformations` entry mapped from the pipeline's own edge
       type:
@@ -552,12 +567,22 @@ lineage graph:
         | `metric` (declarative `aggregate:`) | `DIRECT` / `AGGREGATION` |
         | `join` | `INDIRECT` / `JOIN` |
 
+      This table documents the full mapping `_transformation_for_edge` supports. **In v1 the
+      lineage tracker never produces the last two rows through a real pipeline**: a `join` edge
+      always targets a source table, and `build_run_event` keeps only edges whose target is the
+      output, so `INDIRECT`/`JOIN` is filtered out before an event is built; a declarative
+      `aggregate:` block produces no lineage edge at all. Concretely, a joined pipeline reports its
+      joined tables in `inputs` with `IDENTITY`/`TRANSFORMATION` column lineage only, and a
+      pipeline using `aggregate:` emits no `columnLineage` and no `inputs` — only the output
+      `schema` and the `skifer` facet.
+
       `description`, when present, is a sorted, comma-joined list of **operation names only**
       (`cast`, `round`, `conditional`, …) — never a `cast:double` argument or an `expr:` SQL
       expression.
     - **`dataQualityAssertions`** facet (certified publication only) — one entry per check that
       was not `SKIPPED`: `assertion` (the check's class name), `success`, `severity` (`critical`
-      → `error`, anything else → `warn`) and `column` when the check is row-scoped. **Never**
+      → `error`, anything else → `warn`) and `column` whenever the check's contract targets a
+      column (a table-scoped check like `SchemaDrift` carries no `column`). **Never**
       `expected`, `actual`, or a check message — those routinely quote the offending data.
     - **`skifer`** custom facet — `definitionHash`, and when known, `contractVersion`,
       `dataProductId`, `certification` (`CERTIFIED` / `UNCERTIFIED`) and a `classifications` map
@@ -574,12 +599,18 @@ facet, since that only names the output. This is a deliberate fail-safe allowlis
 value can leak through it, but lineage for such a column is incomplete rather than approximate.
 Widening it would require a canonical name supplied by the tracker itself, not attempted in v1.
 
+- In v1, a `join` edge never reaches the output and a declarative `aggregate:` block produces no
+  edge at all, so neither ever appears in `columnLineage` — see the note under
+  [What an event contains](#what-an-event-contains).
+
 ### Compatibility with catalog consumers
 
 An HTTP consumer that speaks the OpenLineage API directly (for example
-[Marquez](https://marquezproject.ai)) receives these events as-is. OpenMetadata ingests
-OpenLineage through its own connector over Kafka, not over a direct HTTP POST — reaching it needs
-that connector in front of the events this emitter sends, not a configuration change here.
+[Marquez](https://marquezproject.ai)) receives these events as-is — verified here against a
+generic HTTP endpoint, not against any specific catalog product. This emitter speaks only the
+OpenLineage HTTP API; it does not adapt to a catalog's preferred transport. OpenMetadata has its
+own OpenLineage ingestion path (in some versions, a Kafka-based connector) — check which
+transports your OpenMetadata version supports before pointing this emitter at it.
 
 `examples/23_openlineage/` builds a `START` and a `COMPLETE` event from a small pipeline with a
 `pii` column, prints the column-lineage transformation for a cast column, the redacted
