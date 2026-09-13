@@ -86,6 +86,9 @@ _SUCCESS
 *:*.md
 # même miroir quand l'id de page utilise des / (les : sont refusés sous Windows)
 /skifer/
+# outillage local des agents : codegraph (Claude Code) et config/hooks écrits par Codex
+/.claude/
+/.codex/
 # donnée dérivée, reconstructible à l'identique par `codegraph init`
 /.codegraph/
 # config MCP du projet (index structurel) : commitée pour que les worktrees l'aient
