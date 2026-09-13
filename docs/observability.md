@@ -493,9 +493,10 @@ materialized views, JDBC sinks, `run_process_and_split` and `run_union_sources_t
 nothing.
 
 - **Certified publication** — `START` is emitted once staging begins, before any check runs.
-    - A critical check failure quarantines the run, and a check that itself errors out
-      (`CHECK_ERROR`) is treated the same way: either non-promoted outcome emits `FAIL` carrying
-      the check results (`dataQualityAssertions`) and `certification: UNCERTIFIED`.
+    - A critical check failure emits `FAIL` carrying the check results (`dataQualityAssertions`)
+      and `certification: UNCERTIFIED`. The run is normally quarantined, with a snapshot kept in
+      `_skifer_quarantine`; if the quarantine itself cannot be completed (`CHECK_ERROR`), no
+      snapshot is guaranteed, but the event is the same `FAIL`.
     - A successful promotion: `COMPLETE` carries the check results and `certification: CERTIFIED`.
     - An exception raised during the publication (a backend or write failure, not a check
       failure): `FAIL` is emitted **without** assertions or a certification value, and the
@@ -515,10 +516,10 @@ nothing.
   raises `DataQualityError`, no event is sent for that write.
 
 Every emission is best-effort. With a real emitter, the `DatasetRecord` is rebuilt for each
-event — twice for a certified publication (`START`, then the terminal `FAIL`/`COMPLETE`). Only
-`emitter: none` short-circuits before the record is built, so nothing is computed just to be
-thrown away. Any other failure (building the record, building the event, sending it) becomes a
-single `RuntimeWarning` naming only the exception's class, and is safe even under a
+event sent: twice for a certified publication (`START`, then its terminal `FAIL`/`COMPLETE`),
+once for a `resume()` and once for a non-certified batch write. With `emitter: none` no record
+is built at all. If building the record, building the event or sending it fails, the failure
+becomes a single `RuntimeWarning` naming only the exception's class, and is safe even under a
 warnings-as-errors filter.
 
 ### Dataset namespace resolution
@@ -551,7 +552,9 @@ A `RunEvent` names its `job` (`job_namespace`, name = the target's physical FQN)
 `run_id` as the business run it describes, and dataset entries built from the pipeline's own
 lineage graph:
 
-- **`inputs`** — every distinct source table reached by a real column edge into the output.
+- **`inputs`** — every distinct source table reached by a real column edge into the output. A
+  table that contributes no output column (for example a `left_semi`/`left_anti` join, or a join
+  used only to filter rows) is not listed.
 - **`outputs`** — exactly one entry, the target FQN, carrying:
     - **`schema`** facet — every output column's name; `type` is present only when the
       column declares a `logical_type`.
@@ -567,22 +570,23 @@ lineage graph:
         | `metric` (declarative `aggregate:`) | `DIRECT` / `AGGREGATION` |
         | `join` | `INDIRECT` / `JOIN` |
 
-      This table documents the full mapping `_transformation_for_edge` supports. **In v1 the
-      lineage tracker never produces the last two rows through a real pipeline**: a `join` edge
-      always targets a source table, and `build_run_event` keeps only edges whose target is the
-      output, so `INDIRECT`/`JOIN` is filtered out before an event is built; a declarative
-      `aggregate:` block produces no lineage edge at all. Concretely, a joined pipeline reports its
-      joined tables in `inputs` with `IDENTITY`/`TRANSFORMATION` column lineage only, and a
-      pipeline using `aggregate:` emits no `columnLineage` and no `inputs` — only the output
-      `schema` and the `skifer` facet.
+      This table documents the full mapping the event builder supports. **In v1 the lineage
+      tracker never produces the last two rows through a real pipeline**: a `join` edge always
+      targets a source table, and the event builder keeps only edges whose target is the output,
+      so no `INDIRECT`/`JOIN` entry is emitted; a declarative `aggregate:` block produces no
+      lineage edge at all. Concretely, a joined pipeline lists in `inputs` only the tables that
+      contribute an output column, with `IDENTITY`/`TRANSFORMATION` column lineage; a pipeline
+      using `aggregate:` has no `columnLineage` and no `inputs`. Its other facets are unaffected:
+      `schema` and `skifer` are always present, and a certified `aggregate:` pipeline still
+      carries `dataQualityAssertions` on its terminal event.
 
       `description`, when present, is a sorted, comma-joined list of **operation names only**
       (`cast`, `round`, `conditional`, …) — never a `cast:double` argument or an `expr:` SQL
       expression.
     - **`dataQualityAssertions`** facet (certified publication only) — one entry per check that
       was not `SKIPPED`: `assertion` (the check's class name), `success`, `severity` (`critical`
-      → `error`, anything else → `warn`) and `column` whenever the check's contract targets a
-      column (a table-scoped check like `SchemaDrift` carries no `column`). **Never**
+      → `error`, anything else → `warn`) and `column` whenever the check targets a column
+      (a table-scoped check like `SchemaDrift` carries no `column`). **Never**
       `expected`, `actual`, or a check message — those routinely quote the offending data.
     - **`skifer`** custom facet — `definitionHash`, and when known, `contractVersion`,
       `dataProductId`, `certification` (`CERTIFIED` / `UNCERTIFIED`) and a `classifications` map
@@ -605,9 +609,9 @@ Widening it would require a canonical name supplied by the tracker itself, not a
 
 ### Compatibility with catalog consumers
 
-An HTTP consumer that speaks the OpenLineage API directly (for example
-[Marquez](https://marquezproject.ai)) receives these events as-is — verified here against a
-generic HTTP endpoint, not against any specific catalog product. This emitter speaks only the
+An HTTP consumer that implements the OpenLineage HTTP API (for example
+[Marquez](https://marquezproject.ai)) is the intended target. This emitter has been tested only
+against a local generic HTTP endpoint, not against any specific catalog product. It speaks only the
 OpenLineage HTTP API; it does not adapt to a catalog's preferred transport. OpenMetadata has its
 own OpenLineage ingestion path (in some versions, a Kafka-based connector) — check which
 transports your OpenMetadata version supports before pointing this emitter at it.
