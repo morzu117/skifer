@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Made certified-publication run events strictly ordered within each run and
+  deterministic under identical SQLite timestamps.
 - Cached preview DataFrames across exact counting and bounded collection, made
   service lineage share one lazy memoized metadata-registry graph, and added
   real local Delta coverage for Spark-backed incident persistence and escaping.

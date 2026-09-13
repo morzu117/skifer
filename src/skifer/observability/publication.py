@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import warnings
 
 from skifer.observability.certification import ContractDefinition
-from skifer.observability.certification_store import RunEvent, StoredCheckResult
+from skifer.observability.certification_store import RunEvent, StoredCheckResult, next_run_event_time
 from skifer.observability.checks import CheckStatus
 from skifer.observability.quarantine import quarantine_staging
 from skifer.observability.tracing import (
@@ -246,7 +246,7 @@ def start_publication_run(target_fqn: str, definition: ContractDefinition, store
     run = PublicationRun(run_id, target_fqn, staging, RunState.STARTED)
     store.append_run_event(RunEvent(f"{run_id}:STARTED", run_id, target_fqn, run.state.value,
                                     definition.contract_id, definition.contract_version, definition.definition_hash,
-                                    datetime.now(timezone.utc), target_fqn=target_fqn, staging_fqn=staging))
+                                    next_run_event_time(store, run_id), target_fqn=target_fqn, staging_fqn=staging))
     return run
 
 
@@ -254,10 +254,10 @@ def stage_dataframe(backend, run: PublicationRun, definition: ContractDefinition
     """Persist STAGING/STAGED transitions around one exact staging write."""
     for state in (RunState.STAGING, RunState.STAGED):
         if state is RunState.STAGING:
-            store.append_run_event(RunEvent(f"{run.run_id}:STAGING", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, datetime.now(timezone.utc), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
+            store.append_run_event(RunEvent(f"{run.run_id}:STAGING", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, next_run_event_time(store, run.run_id), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
             backend.write_staging(df, run.staging_fqn)
         else:
-            store.append_run_event(RunEvent(f"{run.run_id}:STAGED", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, datetime.now(timezone.utc), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
+            store.append_run_event(RunEvent(f"{run.run_id}:STAGED", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, next_run_event_time(store, run.run_id), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
     return PublicationRun(run.run_id, run.target_fqn, run.staging_fqn, RunState.STAGED)
 
 
@@ -278,7 +278,7 @@ def promote_staging(backend, run: PublicationRun, definition: ContractDefinition
             f"Cannot promote run {run.run_id}: recorded critical check failures block promotion."
         )
     for state in (RunState.PROMOTING, RunState.PROMOTED):
-        store.append_run_event(RunEvent(f"{run.run_id}:{state.value}", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, datetime.now(timezone.utc), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
+        store.append_run_event(RunEvent(f"{run.run_id}:{state.value}", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, next_run_event_time(store, run.run_id), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
         if state is RunState.PROMOTING:
             backend.write_table(backend.read_staging(run.staging_fqn), run.target_fqn)
     backend.drop_staging(run.staging_fqn)

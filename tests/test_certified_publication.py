@@ -1,6 +1,7 @@
 """Staging identity tests for Plan 29 certified publication."""
 import json
 
+import skifer.observability.certification_store as certification_store
 from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification_store import RunEvent, SqliteCertificationStore, StoredCheckResult
 from skifer.observability.monitor import MonitorReport
@@ -417,3 +418,61 @@ def test_publication_coordinator_keeps_previous_target_after_failed_middle_run()
     assert v3.state == "PROMOTED"
     assert backend._written["gold.orders"] == [{"id": 3, "version": "v3"}]
     assert store.get_run(v2.run.run_id).state == "QUARANTINED"
+
+
+def _freeze_run_event_clock(monkeypatch):
+    frozen = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(certification_store, "datetime", FrozenDateTime)
+
+
+def _assert_strict_run_event_times(store, dataset):
+    occurred_at = [event.occurred_at for event in reversed(store.list_history(dataset))]
+    assert all(left < right for left, right in zip(occurred_at, occurred_at[1:]))
+
+
+def test_frozen_clock_clean_publication_ends_promoted_with_strict_event_times(monkeypatch):
+    _freeze_run_event_clock(monkeypatch)
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(backend, _Monitor(_pass_result), store)
+
+    result = coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, _definition())
+
+    assert result.state == "PROMOTED"
+    assert store.get_run(result.run.run_id).state == "PROMOTED"
+    _assert_strict_run_event_times(store, "gold.orders")
+
+
+def test_frozen_clock_critical_failure_ends_quarantined(monkeypatch):
+    _freeze_run_event_clock(monkeypatch)
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(backend, _Monitor(_fail_result), store)
+
+    result = coordinator.publish(FakeDataFrame([{"id": None}]), "gold.orders", {}, _definition())
+
+    assert result.state == "QUARANTINED"
+    assert store.get_run(result.run.run_id).state == "QUARANTINED"
+    _assert_strict_run_event_times(store, "gold.orders")
+
+
+def test_frozen_clock_quarantine_write_error_ends_check_error(monkeypatch):
+    class BrokenWriteBackend(FakeBackend):
+        def write_staging(self, df, fqn):
+            if "_skifer_quarantine" in fqn:
+                raise RuntimeError("permission denied on quarantine schema")
+            super().write_staging(df, fqn)
+
+    _freeze_run_event_clock(monkeypatch)
+    store, backend = SqliteCertificationStore(":memory:"), BrokenWriteBackend()
+    coordinator = PublicationCoordinator(backend, _Monitor(_fail_result), store)
+
+    result = coordinator.publish(FakeDataFrame([{"id": None}]), "gold.orders", {}, _definition())
+
+    assert result.state == "CHECK_ERROR"
+    assert store.get_run(result.run.run_id).state == "CHECK_ERROR"
+    _assert_strict_run_event_times(store, "gold.orders")

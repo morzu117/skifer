@@ -1,8 +1,7 @@
 """Snapshot-based quarantine for blocked certified-publication runs."""
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from skifer.observability.certification_store import RunEvent
+from skifer.observability.certification_store import RunEvent, next_run_event_time
 from skifer.observability.checks import ContractScope
 
 RESERVED_QUARANTINE_COLUMNS = frozenset({"_violations", "_run_id", "_contract_version"})
@@ -22,7 +21,7 @@ def quarantine_staging(backend, run, definition, store, results=None) -> Quarant
     try:
         staged = backend.read_staging(run.staging_fqn)
     except Exception as exc:
-        store.append_run_event(RunEvent(f"{run.run_id}:CHECK_ERROR", run.run_id, run.target_fqn, "CHECK_ERROR", definition.contract_id, definition.contract_version, definition.definition_hash, datetime.now(timezone.utc), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
+        store.append_run_event(RunEvent(f"{run.run_id}:CHECK_ERROR", run.run_id, run.target_fqn, "CHECK_ERROR", definition.contract_id, definition.contract_version, definition.definition_hash, next_run_event_time(store, run.run_id), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
         return QuarantineResult(run.run_id, run.staging_fqn, None, "CHECK_ERROR", str(exc))
     predicates = row_violation_predicates(results) if results is not None else {}
     if predicates:
@@ -37,9 +36,9 @@ def quarantine_staging(backend, run, definition, store, results=None) -> Quarant
             )
         backend.write_staging(staged, destination)
     except Exception as exc:
-        store.append_run_event(RunEvent(f"{run.run_id}:CHECK_ERROR", run.run_id, run.target_fqn, "CHECK_ERROR", definition.contract_id, definition.contract_version, definition.definition_hash, datetime.now(timezone.utc), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
+        store.append_run_event(RunEvent(f"{run.run_id}:CHECK_ERROR", run.run_id, run.target_fqn, "CHECK_ERROR", definition.contract_id, definition.contract_version, definition.definition_hash, next_run_event_time(store, run.run_id), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
         return QuarantineResult(run.run_id, run.staging_fqn, None, "CHECK_ERROR", str(exc))
-    store.append_run_event(RunEvent(f"{run.run_id}:QUARANTINED", run.run_id, run.target_fqn, "QUARANTINED", definition.contract_id, definition.contract_version, definition.definition_hash, datetime.now(timezone.utc), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn, quarantine_fqn=destination))
+    store.append_run_event(RunEvent(f"{run.run_id}:QUARANTINED", run.run_id, run.target_fqn, "QUARANTINED", definition.contract_id, definition.contract_version, definition.definition_hash, next_run_event_time(store, run.run_id), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn, quarantine_fqn=destination))
     backend.drop_staging(run.staging_fqn)
     return QuarantineResult(run.run_id, run.staging_fqn, destination, "QUARANTINED")
 
