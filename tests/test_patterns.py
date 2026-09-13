@@ -822,14 +822,14 @@ def test_run_process_to_table_batch_write_monitor_failure_emits_nothing():
 
     engine, patterns = _lineage_patterns_engine()
     engine.monitor = MagicMock()
-    engine.monitor.check_from_schema.side_effect = DataQualityError(
-        MonitorReport(table="`gold_schema`.`fact_orders`", results=[])
-    )
+    err = DataQualityError(MonitorReport(table="`gold_schema`.`fact_orders`", results=[]))
+    engine.monitor.check_from_schema.side_effect = err
     schema = {"tables": [{"name": "silver.orders", "alias": "ord"}]}
 
-    with pytest.raises(DataQualityError):
+    with pytest.raises(DataQualityError) as excinfo:
         patterns.run_process_to_table(schema, "gold", "fact_orders", run_id=_LINEAGE_RUN_ID)
 
+    assert excinfo.value is err
     engine._write_dataframe.assert_called_once()
     assert engine.lineage_emitter.events == []
 
@@ -847,11 +847,18 @@ def test_run_process_to_table_batch_write_emits_complete_after_monitor():
 
     engine.monitor = MagicMock()
     engine.monitor.check_from_schema.side_effect = _check_from_schema
+    original_emit = engine.lineage_emitter.emit
+
+    def _emit(event):
+        call_log.append("emit")
+        return original_emit(event)
+
+    engine.lineage_emitter.emit = _emit
     schema = {"tables": [{"name": "silver.orders", "alias": "ord"}]}
 
     patterns.run_process_to_table(schema, "gold", "fact_orders", run_id=_LINEAGE_RUN_ID)
 
-    assert call_log == ["write", "monitor"]
+    assert call_log == ["write", "monitor", "emit"]
     events = engine.lineage_emitter.events
     assert [event["eventType"] for event in events] == ["COMPLETE"]
 

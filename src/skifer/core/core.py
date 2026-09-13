@@ -42,16 +42,29 @@ _LOCAL_LINEAGE_DATASET_NAMESPACE = "skifer://local"
 def _resolve_lineage_dataset_namespace(lineage_config, *, is_local, environ) -> str:
     """OpenLineage dataset namespace (Plan 36 D6): configured, else workspace host, else local.
 
-    Reads only the environment — never the Databricks SDK, never the network.
+    Reads only the environment — never the Databricks SDK, never the network. Built from
+    ``hostname`` only (never ``netloc``): credentials embedded in DATABRICKS_HOST must never
+    reach an emitted event, and the port carries no meaning for a Databricks workspace host.
+    An unparseable value never raises — it falls back to local with a best-effort warning that
+    never echoes the configured value.
     """
     if lineage_config.dataset_namespace:
         return lineage_config.dataset_namespace
     host = None if is_local else environ.get("DATABRICKS_HOST")
     if host:
         host = host.strip()
-        netloc = urlsplit(host if "://" in host else f"https://{host}").netloc.lower()
-        if netloc:
-            return f"unitycatalog://{netloc}"
+        try:
+            hostname = urlsplit(host if "://" in host else f"https://{host}").hostname
+        except ValueError:
+            from skifer.observability.openlineage import _warn_best_effort
+
+            _warn_best_effort(
+                "[OpenLineage] DATABRICKS_HOST could not be parsed; "
+                "dataset namespace falls back to skifer://local"
+            )
+        else:
+            if hostname:
+                return f"unitycatalog://{hostname}"
     return _LOCAL_LINEAGE_DATASET_NAMESPACE
 
 # ==============================================================================

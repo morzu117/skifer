@@ -2101,8 +2101,18 @@ def test_engine_lineage_emitter_property_keeps_falsy_but_real_emitter():
         ("https://adb-1.azuredatabricks.net/?o=123", "unitycatalog://adb-1.azuredatabricks.net"),
         ("HTTPS://ADB-1.azuredatabricks.net", "unitycatalog://adb-1.azuredatabricks.net"),
         ("adb-1.azuredatabricks.net", "unitycatalog://adb-1.azuredatabricks.net"),
+        ("https://adb-1.net:abc", "unitycatalog://adb-1.net"),
+        ("https://adb-1.net:99999", "unitycatalog://adb-1.net"),
+        ("adb-1.net:443", "unitycatalog://adb-1.net"),
     ],
-    ids=["path-and-query-dropped", "lower-cased", "bare-host-no-scheme"],
+    ids=[
+        "path-and-query-dropped",
+        "lower-cased",
+        "bare-host-no-scheme",
+        "non-numeric-port-dropped",
+        "out-of-range-port-dropped",
+        "bare-host-with-port-dropped",
+    ],
 )
 def test_resolve_lineage_dataset_namespace_normalizes_host(host, expected):
     from skifer.core.config import LineageConfig
@@ -2113,3 +2123,64 @@ def test_resolve_lineage_dataset_namespace_normalizes_host(host, expected):
     )
 
     assert namespace == expected
+
+
+def test_resolve_lineage_dataset_namespace_strips_credentials():
+    """DATABRICKS_HOST userinfo must never reach the namespace of an emitted event (Plan 36 review)."""
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    namespace = _resolve_lineage_dataset_namespace(
+        LineageConfig(),
+        is_local=False,
+        environ={"DATABRICKS_HOST": "https://user:s3cret@adb-1.azuredatabricks.net/"},
+    )
+
+    assert namespace == "unitycatalog://adb-1.azuredatabricks.net"
+    assert "s3cret" not in namespace
+    assert "user" not in namespace
+
+
+def test_resolve_lineage_dataset_namespace_falls_back_on_unparseable_host():
+    """An unparseable DATABRICKS_HOST must never raise out of the engine (Plan 36 review)."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": "http://[::1"}
+        )
+
+    assert namespace == "skifer://local"
+    runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+    assert len(runtime_warnings) == 1
+    assert "[::1" not in str(runtime_warnings[0].message)
+
+
+def test_resolve_lineage_dataset_namespace_falls_back_under_warnings_as_errors():
+    """The best-effort warning must never turn into an exception under -W error (Plan 36 review)."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": "http://[::1"}
+        )
+
+    assert namespace == "skifer://local"
+
+
+def test_engine_lineage_dataset_namespace_falls_back_when_host_unparseable(mocker, monkeypatch):
+    """SkiferEngine.__init__ must not fail because DATABRICKS_HOST is unparseable (Plan 36 review)."""
+    monkeypatch.setenv("DATABRICKS_HOST", "http://[::1")
+
+    engine = _lineage_engine(mocker, {"environments": _LINEAGE_ENVIRONMENTS})
+
+    assert engine.is_local is False
+    assert engine.lineage_context.dataset_namespace == "skifer://local"

@@ -45,7 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raises; streaming, materialized views, JDBC sinks, split and union emit nothing. Every emission is
   best-effort: with `emitter: none` no record is built, and any
   failure is one `RuntimeWarning` naming only the exception class, safe under warnings-as-errors.
-  (Plan 36.3)
+  Credentials and ports in `DATABRICKS_HOST` are dropped; an unparseable host falls back to
+  `skifer://local` with a warning. (Plan 36.3)
 - Added OpenLineage emitters (`observability/openlineage.py`): `NoOpEmitter` (default),
   `InMemoryEmitter` (tests/examples) and a standard-library-only `HttpEmitter` that POSTs
   `RunEvent`s, adds `Authorization: Bearer` only when `OPENLINEAGE_API_KEY` is set, and
