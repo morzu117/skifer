@@ -110,6 +110,16 @@ résumé des livrables (leçon du Plan 35).
 - Revérification par l'orchestrateur (gate relancé, périmètre, reproduction) avant chaque review.
 - CI Linux au push pour les tests Spark.
 
+## 8. Suivi hors plan (constaté pendant le cycle)
+
+| Sujet | Nature | Suite proposée |
+|---|---|---|
+| `warnings.warn` non protégé sur les chemins best-effort : sous un filtre « warnings as errors » (`python -W error`, `filterwarnings = error`), l'avertissement lève et casse la garantie non bloquante — `publication.py` (6 sites, dont les alertes du Plan 35), `patterns.py:60` | pré-existant, reproduit sur l'émetteur 36.2 (corrigé là) | helper d'avertissement protégé partagé, appliqué aux chemins best-effort existants |
+| `alerts.py` : quatre messages d'avertissement recopient `{exc}` ; une erreur réseau cite souvent l'URL du webhook (secret) | pré-existant (Plan 31) | messages au seul nom de classe, comme ailleurs |
+| Exemple 11 plante sous Windows (`re.error: bad escape \U` dans `_inject_params` sur un chemin Windows) | pré-existant, dans la base | échapper le remplacement (`re.sub` avec fonction) |
+| Lineage colonne OpenLineage : une vraie colonne dont le nom n'est pas un identifiant ASCII (accent, espace, chiffre en tête) est exclue sans avertissement | limite assumée de 36.1 (fail-safe) | documentée en 36.4 ; lever la limite demanderait un nom canonique fourni par le tracker |
+| Arêtes de règle du tracker attribuées à la table primaire (étape 4 de `from_schema`) | pré-existant, hors 36.1b | même résolution que 36.1b quand l'analyse AST rend des colonnes qualifiées |
+
 ## Sources
 
 - Modèle objet : https://openlineage.io/docs/spec/object-model
