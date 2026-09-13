@@ -20,6 +20,22 @@ definition hash while leaving workflow metadata outside it. See
 The detailed authoring surfaces are documented in [Core Engine](core.md) and
 [Projected semantic models](semantic.md#projected-semantic-models-plan-29).
 
+### Classification propagation: warn, measure, strict — Plan 35
+
+Set `classification_propagation: warn | strict` on each environment; the default
+is `warn`. In `warn` mode, inferred classification elevations are warned and
+recorded without blocking publication. In `strict` mode, a schema that declares
+`data_product` is refused before read-heavy processing or any write when an
+inherited elevation is undeclared. The error names the affected column and its
+upstream source or sources. Strict mode also fails closed unless the engine was
+constructed with `SkiferEngine(metadata_store=...)`.
+
+The recommended migration is to remain in `warn`, measure classification
+coverage with `skifer audit`, and then switch the environment to `strict`.
+For standalone indexing, `skifer index --strict` returns exit code `3` for a
+classification violation; `0` means success, `1` an error, and `2` invalid CLI
+usage.
+
 ## 2. Publication certifies before promotion
 
 An opted-in batch run does not write straight to the consumer table. It stages the candidate,
@@ -27,6 +43,10 @@ executes the declared checks, persists their results under the run identity, and
 two paths: passing data is promoted, while a critical failure is quarantined and the previous good
 table remains in place. Certification is therefore the recorded outcome of the publication path,
 not a label applied later.
+
+Certified publication records every contract definition and can retrieve it by
+definition hash, so breaking-change comparisons begin with the second publication
+of a target for which a prior definition was recorded.
 
 See [Contract identity and certified publication](observability.md#contract-identity-and-odcs-export)
 for the store, checks, promotion, quarantine, and recovery mechanics.

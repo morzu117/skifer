@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Documented publication alert routing and the warn-to-strict classification
+  propagation migration path.
 - Added fail-closed strict classification propagation before certified writes
   and to `skifer index --strict`, while preserving warning-only defaults.
 - Routed certified-publication quarantine incidents and breaking contract changes

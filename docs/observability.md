@@ -305,6 +305,49 @@ are in `EvidencePolicy.sensitive_columns`, even when disclosure of ordinary
 filter values was requested; callers use that set for `restricted` and `pii`
 fields.
 
+### Alert routing at publication — Plan 35
+
+Configure publication alerts on each environment in `config.yaml`:
+
+```yaml
+environments:
+  prod:
+    catalog: production
+    alerts:
+      webhook_url: "https://alerts.example.invalid/skifer"
+      slack_webhook: "https://hooks.slack.com/services/..."
+      msteams_webhook: "https://example.webhook.office.com/..."
+      google_chat_webhook: "https://chat.googleapis.com/v1/spaces/..."
+      email: {}
+      min_severity: critical
+      max_depth: 3
+```
+
+The `alerts` mapping accepts only `webhook_url`, `slack_webhook`,
+`msteams_webhook`, `google_chat_webhook`, `email`, `min_severity`, and
+`max_depth`. Configuration is validated at load time: an unknown key or a value
+of the wrong type raises an error naming the environment and key, without
+echoing the value.
+
+A quarantine sends an incident alert. After a promotion, Skifer compares the
+new definition hash with the last `PROMOTED` definition for the same target and
+sends a breaking-change alert only when the hashes differ and the contract diff
+is breaking. The first publication of a target, an unchanged hash, and a target
+whose earlier publications predate recorded definitions do not produce a
+breaking-change alert. `PublicationCoordinator.resume()` never sends an alert,
+and a failing channel never fails the publication.
+
+Both incident and breaking-change alerts are always critical, so
+`min_severity` has no effect on them. Recipients include the dataset owner and
+the owners of downstream datasets found in the metadata registry, with traversal
+bounded by `max_depth`. Without a metadata store, configured channels are still
+notified, but no owner can be resolved.
+
+!!! warning
+    Webhook URLs and SMTP credentials are secrets, while `config.yaml` is
+    usually versioned. Do not commit real values. Skifer does not yet provide
+    environment-variable interpolation for these settings.
+
 ---
 
 ## Integration with SkiferEngine
