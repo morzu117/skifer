@@ -1,0 +1,28 @@
+# Manifeste projet — résolu par /sync depuis ~/.agent-kernel
+#
+# Ne contient que les écarts. Tout le reste est détecté du repo ou hérité de
+# defaults.yml du noyau :
+#
+#   name/namespace       pyproject.toml
+#   languages            pyproject.toml
+#   memory.source        .gbrain-source
+#   commands, gates      pyproject.toml + AGENTS.md (repris verbatim)
+#   capabilities, models, guardrails, phases    defaults.yml
+
+kernel:
+  version: "v0.5.2"        # dernier tag connu bon ; swairm reste le canari sur main
+
+stack:
+  produit: >
+    Framework déclaratif Spark/Databricks (Bronze → Silver → Gold).
+    YAML = le What ; règles Python du RuleRegistry = le How.
+  tests: >
+    ~2200 tests sans Spark (~27 s) + 182 sur une session Delta locale
+    réelle (fixture `spark`). LLM toujours mocké. examples/ est exécuté
+    par la suite.
+  workflow: >
+    Toute modif de src/ = test + entrée CHANGELOG [Unreleased]. Un point
+    de plan = un commit. Jamais de bump de version.
+  index: >
+    Flux de données piloté par YAML : le rayon d'impact de l'index est un
+    plancher, pas un périmètre.

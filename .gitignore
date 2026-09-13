@@ -84,6 +84,10 @@ _SUCCESS
 /.gbrain-source
 # gbrain `put` write-through mirror files (page-id contains a colon)
 *:*.md
+# donnée dérivée, reconstructible à l'identique par `codegraph init`
+/.codegraph/
+# config MCP du projet (index structurel) : commitée pour que les worktrees l'aient
+!/.mcp.json
 
 # MkDocs generated site
 /site/
