@@ -4,6 +4,7 @@ import http.server
 import json
 import socket
 import threading
+import warnings
 from contextlib import closing
 from datetime import datetime, timezone
 
@@ -1035,3 +1036,97 @@ class TestCreateLineageEmitter:
         runtime_warnings = [w for w in recwarn.list if issubclass(w.category, RuntimeWarning)]
         assert len(runtime_warnings) == 1
         assert "RuntimeError" in str(runtime_warnings[0].message)
+
+
+class TestWarningsNeverPropagateUnderWarningsAsErrors:
+    """redev finding 1: warnings.warn itself raises under a warnings-as-errors filter,
+    so every warning path must go through `_warn_best_effort`, not a bare `warnings.warn`."""
+
+    def test_emit_to_unreachable_url_does_not_raise(self):
+        port = _closed_port()
+        emitter = HttpEmitter(f"http://127.0.0.1:{port}", timeout_seconds=1.0)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            emitter.emit({"eventType": "COMPLETE"})
+
+    def test_emit_to_failing_server_does_not_raise(self, failing_http_server):
+        host, port = failing_http_server.server_address
+        emitter = HttpEmitter(f"http://{host}:{port}", timeout_seconds=2.0)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            emitter.emit({"eventType": "COMPLETE"})
+
+    def test_create_lineage_emitter_construction_failure_does_not_raise(self, monkeypatch):
+        def _raise_init(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(HttpEmitter, "__init__", _raise_init)
+        config = LineageConfig(emitter="http", url="https://catalog.example.com")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            emitter = create_lineage_emitter(config)
+
+        assert isinstance(emitter, NoOpEmitter)
+
+
+class TestHttpEmitterConcurrentWarnOnce:
+    """redev finding 2: the check-then-add on `_warned_kinds` is only race-free under a
+    lock. Cross-thread `warnings.catch_warnings(record=True)` capture is not guaranteed
+    reliable across platforms, so this asserts on the emitter's own rate-limiting state
+    (what the lock actually protects) rather than on recorded warning objects."""
+
+    def test_sixteen_threads_record_the_failure_kind_exactly_once(self):
+        class _AlwaysRaisingOpener:
+            def __call__(self, request, timeout):
+                raise OSError("connection refused")
+
+        emitter = HttpEmitter("http://127.0.0.1:1", opener=_AlwaysRaisingOpener())
+        barrier = threading.Barrier(16)
+
+        def _worker():
+            barrier.wait()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                emitter.emit({"eventType": "COMPLETE"})
+
+        threads = [threading.Thread(target=_worker) for _ in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert emitter._warned_kinds == {"OSError"}
+
+
+class TestHttpEmitterInjectedOpenerNonSuccess:
+    """redev finding 3: the explicit non-2xx branch is only reachable with an injected
+    opener — the default `urllib.request.urlopen` raises `HTTPError` itself for a
+    non-2xx status, so it never falls through to this branch."""
+
+    def test_non_2xx_status_warns_once_and_does_not_raise(self):
+        class _Response:
+            status = 500
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        def _opener(request, timeout):
+            return _Response()
+
+        emitter = HttpEmitter("http://example.invalid", opener=_opener)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            emitter.emit({"eventType": "COMPLETE"})
+
+        runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+        assert len(runtime_warnings) == 1
+        message = str(runtime_warnings[0].message)
+        assert "_NonSuccessResponse" in message
+        assert "example.invalid" not in message

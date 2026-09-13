@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import re
+import threading
 import warnings
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence
@@ -271,6 +272,20 @@ def _build_skifer_facet(record: "DatasetRecord", certification_status: str | Non
 OPENLINEAGE_API_KEY_ENV = "OPENLINEAGE_API_KEY"
 
 
+def _warn_best_effort(message: str) -> None:
+    """Emit a RuntimeWarning without ever raising.
+
+    Under a warnings-as-errors filter (`-W error`, `filterwarnings = error`,
+    `simplefilter("error")`), `warnings.warn` itself raises — which would defeat the
+    only reason these emitters exist: a catalog being down must never crash the
+    pipeline it only observes.
+    """
+    try:
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
+    except Exception:
+        pass
+
+
 class LineageEmitter(Protocol):
     """Anything that can send a built RunEvent somewhere. Never raises."""
 
@@ -330,6 +345,7 @@ class HttpEmitter:
         self._environ = environ
         self._opener = opener
         self._warned_kinds: set[str] = set()
+        self._warned_kinds_lock = threading.Lock()
 
     def __repr__(self) -> str:
         return f"HttpEmitter(url=<configured>, endpoint={self._endpoint!r})"
@@ -360,14 +376,11 @@ class HttpEmitter:
                 raise _NonSuccessResponse(f"HTTP {status}")
 
     def _warn_once(self, kind: str) -> None:
-        if kind in self._warned_kinds:
-            return
-        self._warned_kinds.add(kind)
-        warnings.warn(
-            f"[OpenLineage] emission failed: {kind}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        with self._warned_kinds_lock:
+            if kind in self._warned_kinds:
+                return
+            self._warned_kinds.add(kind)
+        _warn_best_effort(f"[OpenLineage] emission failed: {kind}")
 
 
 def create_lineage_emitter(config: Any, *, environ: Mapping[str, str] | None = None) -> LineageEmitter:
@@ -382,9 +395,5 @@ def create_lineage_emitter(config: Any, *, environ: Mapping[str, str] | None = N
             environ=environ,
         )
     except Exception as exc:
-        warnings.warn(
-            f"[OpenLineage] emitter construction failed: {type(exc).__name__}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        _warn_best_effort(f"[OpenLineage] emitter construction failed: {type(exc).__name__}")
         return NoOpEmitter()
