@@ -93,6 +93,20 @@ def test_sqlite_get_contract_refuses_ambiguous_version():
         store.get_contract("sales.orders", "1.0.0")
 
 
+def test_sqlite_get_contract_by_hash_disambiguates_version_and_returns_none():
+    store = SqliteCertificationStore(":memory:")
+    definition_a = _contract_definition("hash-a")
+    definition_b = _contract_definition("hash-b")
+    store.register_contract(definition_a)
+    store.register_contract(definition_b)
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        store.get_contract("sales.orders", "1.0.0")
+
+    assert store.get_contract_by_hash("sales.orders", "hash-b") == definition_b
+    assert store.get_contract_by_hash("sales.orders", "missing") is None
+
+
 def test_sqlite_run_events_are_append_only_and_idempotent():
     store = SqliteCertificationStore(":memory:")
     store.append_run_event(_event())
@@ -296,6 +310,27 @@ def test_delta_get_contract_delegates_and_rebuilds_definition():
             return DeltaCertificationStore._row(definition)
 
     result = DeltaCertificationStore(Backend()).get_contract("sales.orders", "1.0.0")
+
+    assert result == definition
+
+
+def test_delta_get_contract_by_hash_delegates_and_rebuilds_definition():
+    definition = _contract_definition("definition-hash")
+
+    class Backend:
+        def get_certification_contract_by_hash(
+            self, schema, contract_id, definition_hash
+        ):
+            assert (schema, contract_id, definition_hash) == (
+                "_skifer_certification",
+                "sales.orders",
+                "definition-hash",
+            )
+            return DeltaCertificationStore._row(definition)
+
+    result = DeltaCertificationStore(Backend()).get_contract_by_hash(
+        "sales.orders", "definition-hash"
+    )
 
     assert result == definition
 

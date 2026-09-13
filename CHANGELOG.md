@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Registered contract definitions before certified publication starts and added
+  hash-addressed definition lookup for governance comparisons.
 - Added validated per-environment `alerts` and `classification_propagation`
   settings with runtime context accessors.
 - **Plan 31 (6.2)** — CLI `skifer api serve --project DIR [--port]` (fixed

@@ -374,6 +374,10 @@ def test_publication_coordinator_promotes_clean_staging():
     assert backend._written["gold.orders"] == [{"id": 1}]
     assert monitor.checked_fqns == [(result.run.staging_fqn, False)]
     assert store.get_check_results(result.run.run_id)[0].status is CheckStatus.PASS
+    definition = _definition()
+    assert store.get_contract_by_hash(
+        definition.contract_id, definition.definition_hash
+    ) == definition
 
 
 def test_publication_coordinator_quarantines_critical_failure_without_target_write():
@@ -385,6 +389,25 @@ def test_publication_coordinator_quarantines_critical_failure_without_target_wri
     assert result.state == "QUARANTINED"
     assert "gold.orders" not in backend._written
     assert store.get_run(result.run.run_id).state == "QUARANTINED"
+    definition = _definition()
+    assert store.get_contract_by_hash(
+        definition.contract_id, definition.definition_hash
+    ) == definition
+
+
+def test_publication_registers_same_definition_idempotently():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(backend, _Monitor(_pass_result), store)
+    definition = _definition()
+
+    first = coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, definition)
+    second = coordinator.publish(FakeDataFrame([{"id": 2}]), "gold.orders", {}, definition)
+
+    assert first.state == "PROMOTED"
+    assert second.state == "PROMOTED"
+    assert store.get_contract_by_hash(
+        definition.contract_id, definition.definition_hash
+    ) == definition
 
 
 def test_publication_coordinator_propagates_check_error_instead_of_quarantined():

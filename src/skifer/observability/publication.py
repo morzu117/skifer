@@ -244,6 +244,7 @@ def start_publication_run(target_fqn: str, definition: ContractDefinition, store
     prefix = parts[:1] if len(parts) == 3 else []
     staging = ".".join(prefix + ["_skifer_staging", f"{parts[-1]}_{run_id.replace('-', '')}"])
     run = PublicationRun(run_id, target_fqn, staging, RunState.STARTED)
+    store.register_contract(definition)
     store.append_run_event(RunEvent(f"{run_id}:STARTED", run_id, target_fqn, run.state.value,
                                     definition.contract_id, definition.contract_version, definition.definition_hash,
                                     next_run_event_time(store, run_id), target_fqn=target_fqn, staging_fqn=staging))

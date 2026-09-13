@@ -149,6 +149,17 @@ class FakeBackend:
             )
         return rows[0] if rows else None
 
+    def get_certification_contract_by_hash(
+        self, schema: str, contract_id: str, definition_hash: str
+    ) -> dict | None:
+        rows = [
+            row
+            for row in self._certification["contracts"]
+            if row["contract_id"] == contract_id
+            and row["definition_hash"] == definition_hash
+        ]
+        return rows[0] if rows else None
+
     def append_certification_run(self, schema: str, row: dict) -> None:
         self._append_certification("runs", row)
 

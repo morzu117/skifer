@@ -65,6 +65,9 @@ class Certification:
 class CertificationStore(Protocol):
     def register_contract(self, definition: ContractDefinition) -> None: ...
     def get_contract(self, contract_id: str, version: str) -> ContractDefinition | None: ...
+    def get_contract_by_hash(
+        self, contract_id: str, definition_hash: str
+    ) -> ContractDefinition | None: ...
     def append_run_event(self, event: RunEvent) -> None: ...
     def append_check_results(self, results: Sequence[StoredCheckResult]) -> None: ...
     def get_check_results(self, run_id: str) -> list[StoredCheckResult]: ...
@@ -248,6 +251,21 @@ class SqliteCertificationStore:
                 f"Contract '{contract_id}' version '{version}' has ambiguous definitions."
             )
         payload = json.loads(rows[0][0])
+        if not isinstance(payload, dict):
+            raise ValueError("Stored contract payload must be an object.")
+        return _contract_definition_from_row(payload)
+
+    def get_contract_by_hash(
+        self, contract_id: str, definition_hash: str
+    ) -> ContractDefinition | None:
+        row = self._conn.execute(
+            "SELECT payload FROM contract_definitions "
+            "WHERE contract_id = ? AND definition_hash = ? LIMIT 1",
+            (contract_id, definition_hash),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row[0])
         if not isinstance(payload, dict):
             raise ValueError("Stored contract payload must be an object.")
         return _contract_definition_from_row(payload)
@@ -470,6 +488,14 @@ class DeltaCertificationStore:
 
     def get_contract(self, contract_id: str, version: str) -> ContractDefinition | None:
         row = self.backend.get_certification_contract(self.schema, contract_id, version)
+        return _contract_definition_from_row(row) if row else None
+
+    def get_contract_by_hash(
+        self, contract_id: str, definition_hash: str
+    ) -> ContractDefinition | None:
+        row = self.backend.get_certification_contract_by_hash(
+            self.schema, contract_id, definition_hash
+        )
         return _contract_definition_from_row(row) if row else None
 
     def append_run_event(self, event: RunEvent) -> None:
