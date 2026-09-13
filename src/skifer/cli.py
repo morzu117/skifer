@@ -45,6 +45,7 @@ INCIDENTS_EXIT_NOT_FOUND = 4
 INDEX_EXIT_OK = 0
 INDEX_EXIT_ERROR = 1
 INDEX_EXIT_USAGE = 2
+INDEX_EXIT_CLASSIFICATION = 3
 
 META_EXIT_OK = 0
 META_EXIT_ERROR = 1
@@ -121,6 +122,11 @@ def main() -> None:
         "--target-fqn",
         default=None,
         help="Override target FQN (single path only).",
+    )
+    index_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Reject undeclared inherited classification before indexing.",
     )
 
     lineage_parser = subparsers.add_parser(
@@ -469,7 +475,26 @@ def run_index_command(args: argparse.Namespace, *, store=None) -> int:
     changed = 0
     for path in args.paths:
         try:
+            if getattr(args, "strict", False):
+                wrote = index_from_path(
+                    path,
+                    registry,
+                    target_fqn=args.target_fqn,
+                    classification_mode="strict",
+                )
+                changed += int(wrote)
+                print(f"[index] {path} -> {'updated' if wrote else 'unchanged'}")
+                continue
             wrote = index_from_path(path, registry, target_fqn=args.target_fqn)
+        except ValueError as exc:
+            if getattr(args, "strict", False):
+                print(
+                    f"[index] Classification violation in '{path}': {exc}",
+                    file=sys.stderr,
+                )
+                return INDEX_EXIT_CLASSIFICATION
+            print(f"[index] Failed to index '{path}': {exc}", file=sys.stderr)
+            return INDEX_EXIT_ERROR
         except Exception as exc:
             print(f"[index] Failed to index '{path}': {exc}", file=sys.stderr)
             return INDEX_EXIT_ERROR

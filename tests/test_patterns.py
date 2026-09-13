@@ -405,6 +405,124 @@ def test_promoted_publication_inherits_upstream_pii_classification():
     assert record.columns[0].classification == "pii"
 
 
+def test_strict_classification_rejects_before_processing_and_names_lineage_source():
+    from skifer.observability.metadata_store import (
+        ColumnRecord,
+        DatasetRecord,
+        SqliteMetadataStore,
+    )
+
+    engine, backend, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "strict"
+    store = SqliteMetadataStore(":memory:")
+    engine.metadata_store = store
+    store.upsert(DatasetRecord(
+        target_fqn="silver.orders",
+        pipeline_path="upstream.yaml",
+        data_product_id="sales.raw_orders",
+        contract_version="1.0.0",
+        definition_hash="upstream-hash",
+        owner=None,
+        columns=(ColumnRecord("email", classification="pii"),),
+        indexed_at=datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc),
+    ))
+    schema = _certified_schema(
+        contract={
+            "output": {
+                "email_hash": {"logical_type": "string", "required": True},
+            },
+        },
+        select_final=[["email", "email_hash", ["upper"]]],
+    )
+
+    with pytest.raises(ValueError) as caught:
+        patterns.run_process_to_table(schema, "gold", "fact_orders")
+
+    assert "target column 'email_hash'" in str(caught.value)
+    assert "silver.orders.email" in str(caught.value)
+    engine.process_schema.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+    backend.write_table.assert_not_called()
+
+
+def test_strict_classification_allows_declared_classification():
+    from skifer.observability.metadata_store import SqliteMetadataStore
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "strict"
+    engine.metadata_store = SqliteMetadataStore(":memory:")
+    schema = _certified_schema(
+        contract={
+            "output": {
+                "email_hash": {
+                    "logical_type": "string",
+                    "required": True,
+                    "classification": "pii",
+                },
+            },
+        },
+        select_final=[["email", "email_hash", ["upper"]]],
+    )
+    fqn = "`gold_schema`.`fact_orders`"
+    run = PublicationRun("run-new", fqn, "staging.fact_orders", RunState.PROMOTED)
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(schema, "gold", "fact_orders")
+
+    engine.process_schema.assert_called_once()
+    coordinator.return_value.publish.assert_called_once()
+
+
+def test_strict_classification_requires_metadata_store_before_processing():
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "strict"
+
+    with pytest.raises(
+        ValueError,
+        match="strict requires SkiferEngine\\(metadata_store=\\.\\.\\.\\)",
+    ):
+        patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    engine.process_schema.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+
+
+def test_warn_classification_without_metadata_store_keeps_publication_flow():
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "warn"
+    run = PublicationRun(
+        "run-1",
+        "`gold_schema`.`fact_orders`",
+        "staging.fact_orders",
+        RunState.PROMOTED,
+    )
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    engine.process_schema.assert_called_once()
+    coordinator.return_value.publish.assert_called_once()
+
+
 def test_metadata_store_failure_does_not_fail_publication(caplog):
     from skifer.observability.monitor import MonitorReport
     from skifer.observability.publication import PublicationResult, PublicationRun, RunState

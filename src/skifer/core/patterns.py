@@ -124,6 +124,44 @@ class PipelinePatterns:
                     "Schema declares 'data_product' but SkiferEngine was built without "
                     "certification_store and/or monitor — pass both to enable certified publication."
                 )
+            if e.context.classification_propagation() == "strict":
+                store = getattr(e, "metadata_store", None)
+                if store is None:
+                    raise ValueError(
+                        "classification_propagation: strict requires "
+                        "SkiferEngine(metadata_store=...) — without a metadata registry "
+                        "no source classification can be checked."
+                    )
+                from skifer.lineage.tracker import LineageGraph
+                from skifer.observability.metadata_index import index_schema
+
+                record = index_schema(
+                    schema_dict,
+                    _schema_path_hint(schema_dict, fqn),
+                    target_fqn=fqn,
+                )
+                try:
+                    _inherit_registry_classifications(store, record, mode="strict")
+                except ValueError as exc:
+                    graph = LineageGraph.from_dict(record.lineage)
+                    target_column = next(
+                        (
+                            column.name
+                            for column in record.columns
+                            if f"Column '{column.name}'" in str(exc)
+                        ),
+                        "<unknown>",
+                    )
+                    sources = sorted(
+                        {
+                            f"{edge.source_table}.{edge.source_column}"
+                            for edge in graph.upstream(record.target_fqn, target_column)
+                        }
+                    )
+                    raise ValueError(
+                        f"Classification violation for target column '{target_column}' "
+                        f"from upstream source(s): {', '.join(sources)}. {exc}"
+                    ) from exc
 
         # Materialized view (Plan 28): defined by SQL, so the DataFrame pipeline
         # is short-circuited entirely — no source is ever read here.
@@ -418,7 +456,9 @@ def _index_promoted_metadata(e: Any, schema_dict: dict, fqn: str, run_id: str) -
         logger.warning("   -> [Metadata] SYNC_ERROR indexing skipped (non-blocking): %s", exc)
 
 
-def _inherit_registry_classifications(store: Any, record: Any) -> Any:
+def _inherit_registry_classifications(
+    store: Any, record: Any, *, mode: str = "warn"
+) -> Any:
     """Enrich undeclared output classifications from indexed source columns."""
     from dataclasses import replace
 
@@ -469,7 +509,7 @@ def _inherit_registry_classifications(store: Any, record: Any) -> Any:
                 record.target_fqn,
                 {},
                 source_classifications,
-                mode="warn",
+                mode=mode,
             )
         )
 

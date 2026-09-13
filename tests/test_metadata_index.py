@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 
 from skifer.cli import (
+    INDEX_EXIT_CLASSIFICATION,
     INDEX_EXIT_ERROR,
     INDEX_EXIT_OK,
     INDEX_EXIT_USAGE,
@@ -177,6 +178,83 @@ def test_run_index_command_exit_codes(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "updated" in captured.out
     assert "--target-fqn" in captured.err
+
+
+def test_run_index_command_strict_violation_writes_nothing_for_path(tmp_path, capsys):
+    from skifer.observability.metadata_store import ColumnRecord, DatasetRecord
+
+    path = tmp_path / "orders.yaml"
+    path.write_text(
+        """
+data_product: {id: sales.strict_orders, version: 1.0.0}
+contract:
+  output:
+    email_hash: {logical_type: string}
+tables: [{name: silver.orders, alias: ord}]
+select_final:
+  - [email, email_hash, [upper]]
+""",
+        encoding="utf-8",
+    )
+    store = SqliteMetadataStore(":memory:")
+    store.upsert(DatasetRecord(
+        target_fqn="silver.orders",
+        pipeline_path="upstream.yaml",
+        data_product_id="sales.raw_orders",
+        contract_version="1.0.0",
+        definition_hash="upstream-hash",
+        owner=None,
+        columns=(ColumnRecord("email", classification="pii"),),
+        indexed_at=datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc),
+    ))
+
+    result = run_index_command(
+        argparse.Namespace(
+            paths=[str(path)],
+            db="unused.db",
+            target_fqn=None,
+            strict=True,
+        ),
+        store=store,
+    )
+
+    assert result == INDEX_EXIT_CLASSIFICATION
+    assert store.get("sales.strict_orders") is None
+    assert len(store.list_all()) == 1
+    captured = capsys.readouterr()
+    assert f"[index] Classification violation in '{path}':" in captured.err
+    assert "email_hash" in captured.err
+
+
+def test_run_index_command_strict_compliant_pipeline_writes_record(tmp_path, capsys):
+    path = tmp_path / "orders.yaml"
+    path.write_text(
+        """
+data_product: {id: sales.strict_orders, version: 1.0.0}
+contract:
+  output:
+    email_hash: {logical_type: string, classification: pii}
+tables: [{name: silver.orders, alias: ord}]
+select_final:
+  - [email, email_hash, [upper]]
+""",
+        encoding="utf-8",
+    )
+    store = SqliteMetadataStore(":memory:")
+
+    result = run_index_command(
+        argparse.Namespace(
+            paths=[str(path)],
+            db="unused.db",
+            target_fqn=None,
+            strict=True,
+        ),
+        store=store,
+    )
+
+    assert result == INDEX_EXIT_OK
+    assert store.get("sales.strict_orders") is not None
+    assert "updated" in capsys.readouterr().out
 
 
 def test_index_schema_with_business_rule_uses_rule_analyzer_lineage():
