@@ -24,12 +24,14 @@ SKIFER_FACET_URL = "https://github.com/morzu117/skifer/blob/main/docs/observabil
 
 _VALID_EVENT_TYPES = frozenset({"START", "COMPLETE", "FAIL"})
 _OP_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+_COLUMN_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-# Synthetic source_column markers emitted by skifer.lineage.tracker (LineageGraph) for
-# constants and unresolved rule outputs — not real dataset columns, never emitted here.
+# Documentation only: synthetic source_column markers the tracker (LineageGraph) can
+# emit for constants and unresolved rule outputs. Not consulted by _is_real_edge below
+# — an unqualified identifier check (allowlist) already rejects these along with any
+# other non-column shape (literal:*, lit:*, expr:*, dotted/nested paths).
 _LITERAL_COLUMN_MARKER = "<literal>"
 _UNKNOWN_COLUMN_MARKER = "<unknown>"
-_SYNTHETIC_COLUMN_MARKERS = frozenset({_LITERAL_COLUMN_MARKER, _UNKNOWN_COLUMN_MARKER})
 
 
 def build_run_event(
@@ -95,10 +97,14 @@ def _format_event_time(event_time: datetime) -> str:
 
 
 def _is_real_edge(edge, target_fqn: str) -> bool:
-    """Reject edges pointing at a synthetic tracker marker rather than a real dataset column."""
+    """Allowlist: an edge is a real column edge only if it comes from another dataset
+    and its source_column is a plain identifier. Rejects literal shorthand
+    (literal:ERP, lit:X), expressions, synthetic tracker markers (<literal>,
+    <unknown>) and dotted/nested paths (address.city) — none of these are columns the
+    consumer can resolve, and none may leave the process as a value (plan D5)."""
     if edge.source_table in (target_fqn, RULE_ORIGIN):
         return False
-    return edge.source_column not in _SYNTHETIC_COLUMN_MARKERS
+    return bool(_COLUMN_NAME_RE.fullmatch(edge.source_column))
 
 
 def _build_inputs(target_edges, target_fqn: str, dataset_namespace: str) -> list[dict]:

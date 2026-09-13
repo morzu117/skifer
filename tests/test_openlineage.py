@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+from skifer.core.schema_loader import parse_schema
 from skifer.lineage.tracker import LineageEdge, LineageGraph
 from skifer.observability.checks import CheckResult, CheckStatus, NullCheck, UniqueCheck
+from skifer.observability.metadata_index import index_schema
 from skifer.observability.metadata_store import ColumnRecord, DatasetRecord
 from skifer.observability.openlineage import (
     COLUMN_LINEAGE_FACET_URL,
@@ -712,3 +714,107 @@ def test_deterministic_json_regardless_of_edge_insertion_order():
 
     assert json.dumps(event_a, sort_keys=True) == json.dumps(event_b, sort_keys=True)
     assert json.dumps(event_a, sort_keys=True) == json.dumps(event_a_again, sort_keys=True)
+
+
+class TestAllowlistThroughRealTracker:
+    """_is_real_edge as defense in depth: exercised through index_schema (the real
+    LineageTracker), not hand-built edges — a raw, un-normalised schema dict can reach
+    index_schema directly (run_process_to_table accepts any dict), so the builder must
+    reject a literal shorthand copied verbatim even though the normal YAML path never
+    produces it (plan 36.1 redev finding)."""
+
+    def _event_for(self, schema: dict, target_fqn: str) -> dict:
+        record = index_schema(schema, "schemas/test.yaml", target_fqn=target_fqn)
+        return build_run_event(
+            event_type="COMPLETE",
+            run_id="run-1",
+            event_time=EVENT_TIME,
+            record=record,
+            job_namespace=JOB_NAMESPACE,
+            dataset_namespace=DATASET_NAMESPACE,
+        )
+
+    def test_raw_dict_literal_shorthand_never_leaves_the_process(self):
+        schema = {
+            "tables": [{"name": "silver.orders", "alias": "o"}],
+            "select_final": [
+                ["o.amount", "amount", ["cast:double"]],
+                ["literal:ERP", "source_system"],
+                ["lit:SECRETLIT", "flag"],
+            ],
+        }
+
+        event = self._event_for(schema, "gold.raw_target")
+
+        dumped = json.dumps(event)
+        assert "ERP" not in dumped
+        assert "SECRETLIT" not in dumped
+        assert "literal:" not in dumped
+        assert "lit:" not in dumped
+
+        lineage_fields = event["outputs"][0]["facets"]["columnLineage"]["fields"]
+        assert "source_system" not in lineage_fields
+        assert "flag" not in lineage_fields
+
+        schema_field_names = {f["name"] for f in event["outputs"][0]["facets"]["schema"]["fields"]}
+        assert {"amount", "source_system", "flag"} <= schema_field_names
+
+        assert lineage_fields["amount"]["inputFields"] == [
+            {
+                "namespace": DATASET_NAMESPACE,
+                "name": "silver.orders",
+                "field": "amount",
+                "transformations": [
+                    {"type": "DIRECT", "subtype": "TRANSFORMATION", "description": "cast"}
+                ],
+            }
+        ]
+
+    def test_normal_path_join_resolves_alias_to_bare_column(self):
+        yaml_text = """
+tables:
+  - name: silver.orders
+    alias: o
+  - name: silver.customers
+    alias: c
+join:
+  - table_from: [o, customer_id]
+    table_to: [c, id]
+select_final:
+  - [o.amount, amount, [cast:double]]
+  - [c.name, customer_name]
+"""
+        schema = parse_schema(yaml_text)
+
+        event = self._event_for(schema, "gold.normal_target")
+
+        lineage_fields = event["outputs"][0]["facets"]["columnLineage"]["fields"]
+        assert lineage_fields["customer_name"]["inputFields"] == [
+            {
+                "namespace": DATASET_NAMESPACE,
+                "name": "silver.customers",
+                "field": "name",
+                "transformations": [{"type": "DIRECT", "subtype": "IDENTITY"}],
+            }
+        ]
+        assert event["inputs"] == [
+            {"namespace": DATASET_NAMESPACE, "name": "silver.customers"},
+            {"namespace": DATASET_NAMESPACE, "name": "silver.orders"},
+        ]
+
+    def test_nested_field_with_unknown_prefix_excluded(self):
+        schema = {
+            "tables": [{"name": "silver.orders", "alias": "o"}],
+            "select_final": [
+                ["address.city", "city"],
+                ["o.amount", "amount"],
+            ],
+        }
+
+        event = self._event_for(schema, "gold.nested_target")
+
+        dumped = json.dumps(event)
+        assert "address.city" not in dumped
+
+        lineage_fields = event["outputs"][0]["facets"]["columnLineage"]["fields"]
+        assert "city" not in lineage_fields

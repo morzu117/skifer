@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sources (e.g. `o.amount`, `silver.customers.name`) to the table they actually belong to, instead
   of attributing every such column to the primary table with the alias prefix left in the column
   name. (Plan 36.1b)
+- OpenLineage `build_run_event` now allowlists source columns as plain identifiers instead of
+  blacklisting known synthetic markers, so a literal shorthand copied verbatim by the tracker on a
+  raw, un-normalised schema dict (`literal:ERP`, `lit:SECRET`) can never reach `inputs` or
+  `columnLineage` as a value. (Plan 36.1 redev)
 - Reserved index exit code 3 for classification violations via `ClassificationViolationError`.
 - Made certified-publication run events strictly ordered within each run and
   deterministic under identical SQLite timestamps.
