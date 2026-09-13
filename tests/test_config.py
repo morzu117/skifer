@@ -144,3 +144,154 @@ def test_config_absent_capability_autonomy_is_none(tmp_path):
 
     manager = ConfigurationManager(config_path=str(config_file))
     assert manager.get_value("capability_autonomy") is None
+
+
+def _write_local_config(tmp_path, **environment_values):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "priority_check": ["local"],
+                "environments": {
+                    "local": {"catalog": None, **environment_values}
+                },
+            }
+        )
+    )
+    return config_file
+
+
+def test_config_accepts_valid_alerts(tmp_path):
+    alerts = {
+        "webhook_url": "https://example.test/webhook",
+        "slack_webhook": "https://example.test/slack",
+        "msteams_webhook": "https://example.test/teams",
+        "google_chat_webhook": "https://example.test/chat",
+        "email": {"recipients": ["ops@example.test"], "provider": "smtp"},
+        "min_severity": "warning",
+        "max_depth": 0,
+    }
+
+    manager = ConfigurationManager(
+        config_path=str(_write_local_config(tmp_path, alerts=alerts))
+    )
+
+    assert manager.get_value("alerts") == alerts
+
+
+@pytest.mark.parametrize("value", [None, [], "webhook"])
+def test_config_rejects_non_mapping_alerts(tmp_path, value):
+    config_file = _write_local_config(tmp_path, alerts=value)
+
+    with pytest.raises(ValueError, match="environment 'local'.*alerts.*mapping"):
+        ConfigurationManager(config_path=str(config_file))
+
+
+def test_config_rejects_unknown_alert_key_without_echoing_value(tmp_path):
+    secret = "https://hooks.example.test/unknown-secret"
+    config_file = _write_local_config(
+        tmp_path, alerts={"pagerduty_webhook": secret}
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        ConfigurationManager(config_path=str(config_file))
+
+    message = str(exc_info.value)
+    assert "environment 'local'" in message
+    assert "pagerduty_webhook" in message
+    assert secret not in message
+
+
+@pytest.mark.parametrize("value", ["emergency", None, []])
+def test_config_rejects_bad_alert_min_severity(tmp_path, value):
+    config_file = _write_local_config(
+        tmp_path, alerts={"min_severity": value}
+    )
+
+    with pytest.raises(
+        ValueError, match="alerts.min_severity.*environment 'local'.*Expected one of"
+    ):
+        ConfigurationManager(config_path=str(config_file))
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "3"])
+def test_config_rejects_invalid_alert_max_depth(tmp_path, value):
+    config_file = _write_local_config(tmp_path, alerts={"max_depth": value})
+
+    with pytest.raises(
+        ValueError, match="alerts.max_depth.*environment 'local'.*integer"
+    ):
+        ConfigurationManager(config_path=str(config_file))
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "webhook_url",
+        "slack_webhook",
+        "msteams_webhook",
+        "google_chat_webhook",
+    ],
+)
+def test_config_rejects_empty_alert_webhook(tmp_path, key):
+    config_file = _write_local_config(tmp_path, alerts={key: ""})
+
+    with pytest.raises(ValueError, match=rf"alerts.{key}.*environment 'local'"):
+        ConfigurationManager(config_path=str(config_file))
+
+
+def test_config_webhook_error_does_not_echo_secret_url(tmp_path):
+    secret = "https://hooks.example.test/private-token"
+    config_file = _write_local_config(
+        tmp_path, alerts={"webhook_url": [secret]}
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        ConfigurationManager(config_path=str(config_file))
+
+    message = str(exc_info.value)
+    assert "environment 'local'" in message
+    assert "alerts.webhook_url" in message
+    assert secret not in message
+
+
+def test_config_rejects_non_mapping_alert_email(tmp_path):
+    config_file = _write_local_config(tmp_path, alerts={"email": []})
+
+    with pytest.raises(
+        ValueError, match="alerts.email.*environment 'local'.*mapping"
+    ):
+        ConfigurationManager(config_path=str(config_file))
+
+
+@pytest.mark.parametrize("value", ["warn", "strict"])
+def test_config_accepts_classification_propagation(tmp_path, value):
+    manager = ConfigurationManager(
+        config_path=str(
+            _write_local_config(tmp_path, classification_propagation=value)
+        )
+    )
+
+    assert manager.get_value("classification_propagation") == value
+
+
+@pytest.mark.parametrize("value", ["off", "WARN", None, 1, []])
+def test_config_rejects_invalid_classification_propagation(tmp_path, value):
+    config_file = _write_local_config(
+        tmp_path, classification_propagation=value
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="classification_propagation.*environment 'local'.*Expected one of",
+    ):
+        ConfigurationManager(config_path=str(config_file))
+
+
+def test_config_accepts_absent_governance_wiring_keys(tmp_path):
+    manager = ConfigurationManager(
+        config_path=str(_write_local_config(tmp_path))
+    )
+
+    assert manager.get_value("alerts") is None
+    assert manager.get_value("classification_propagation") is None

@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added validated per-environment `alerts` and `classification_propagation`
+  settings with runtime context accessors.
 - **Plan 31 (6.2)** — CLI `skifer api serve --project DIR [--port]` (fixed
   loopback bind and lazy imports) and `skifer api openapi` (deterministic JSON
   export). Added a Spark-free `/health` check and a normalized OpenAPI contract

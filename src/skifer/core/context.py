@@ -72,6 +72,14 @@ class ExecutionContext:
             )
         return params
 
+    def alerts_config(self) -> dict:
+        """Alert routing settings declared on the active environment."""
+        return self.env_config().get("alerts", {})
+
+    def classification_propagation(self) -> str:
+        """Classification propagation mode for the active environment."""
+        return self.env_config().get("classification_propagation", "warn")
+
     @property
     def default_params(self) -> dict:
         """
