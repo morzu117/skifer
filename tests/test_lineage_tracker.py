@@ -489,3 +489,123 @@ def test_a_plain_source_column_keeps_its_source_table():
     assert [e.source_table for e in graph.upstream("gold.orders", "amount")] == [
         "raw_orders"
     ]
+
+
+# ---------------------------------------------------------------------------
+# Alias-qualified select/add_columns sources resolve to the right table (36.1b)
+# ---------------------------------------------------------------------------
+
+_SCHEMA_ALIAS_JOIN = {
+    "tables": [
+        {"name": "silver.orders", "alias": "o"},
+        {"name": "silver.customers", "alias": "c"},
+    ],
+    "join": [
+        {"table_from": ["o", "customer_id"], "table_to": ["c", "id"]},
+    ],
+    "select_final": [
+        ["o.amount", "amount", ["cast:double"]],
+        [None, "source_system", ["lit:ERP"]],
+        ["c.name", "customer_name"],
+    ],
+}
+
+
+class TestFromSchemaAliasResolution:
+    def test_alias_qualified_select_resolves_to_own_table(self):
+        graph = LineageTracker.from_schema(_SCHEMA_ALIAS_JOIN, target_name="output")
+        edges = graph.upstream("output", "amount")
+        assert len(edges) == 1
+        assert edges[0].source_table == "silver.orders"
+        assert edges[0].source_column == "amount"
+
+    def test_alias_qualified_select_resolves_other_table(self):
+        graph = LineageTracker.from_schema(_SCHEMA_ALIAS_JOIN, target_name="output")
+        edges = graph.upstream("output", "customer_name")
+        assert len(edges) == 1
+        assert edges[0].source_table == "silver.customers"
+        assert edges[0].source_column == "name"
+
+    def test_literal_column_unaffected_by_alias_resolution(self):
+        graph = LineageTracker.from_schema(_SCHEMA_ALIAS_JOIN, target_name="output")
+        edges = graph.upstream("output", "source_system")
+        assert len(edges) == 1
+        assert edges[0].source_table == "silver.orders"
+        assert edges[0].source_column == "<literal>"
+
+    def test_joined_table_appears_in_graph_tables(self):
+        graph = LineageTracker.from_schema(_SCHEMA_ALIAS_JOIN, target_name="output")
+        assert "silver.customers" in graph.tables()
+
+    def test_add_columns_alias_qualified_source_resolves(self):
+        schema = {
+            "tables": [
+                {"name": "silver.orders", "alias": "o"},
+                {"name": "silver.customers", "alias": "c"},
+            ],
+            "join": [
+                {"table_from": ["o", "customer_id"], "table_to": ["c", "id"]},
+            ],
+            "add_columns": [
+                ["c.name", "customer_name_upper", ["upper"]],
+            ],
+        }
+        graph = LineageTracker.from_schema(schema, target_name="output")
+        edges = graph.upstream("output", "customer_name_upper")
+        assert len(edges) == 1
+        assert edges[0].source_table == "silver.customers"
+        assert edges[0].source_column == "name"
+
+    def test_fqn_qualified_source_resolves_to_declared_table(self):
+        schema = {
+            "tables": [
+                {"name": "silver.orders", "alias": "o"},
+                {"name": "silver.customers", "alias": "c"},
+            ],
+            "join": [
+                {"table_from": ["o", "customer_id"], "table_to": ["c", "id"]},
+            ],
+            "select_final": [
+                ["silver.customers.name", "customer_name"],
+            ],
+        }
+        graph = LineageTracker.from_schema(schema, target_name="output")
+        edges = graph.upstream("output", "customer_name")
+        assert len(edges) == 1
+        assert edges[0].source_table == "silver.customers"
+        assert edges[0].source_column == "name"
+
+    def test_unknown_dotted_prefix_keeps_primary_table_and_full_name(self):
+        schema = {
+            "tables": [{"name": "silver.orders", "alias": "o"}],
+            "select_final": [
+                ["address.city", "city"],
+            ],
+        }
+        graph = LineageTracker.from_schema(schema, target_name="output")
+        edges = graph.upstream("output", "city")
+        assert len(edges) == 1
+        assert edges[0].source_table == "silver.orders"
+        assert edges[0].source_column == "address.city"
+
+    def test_unqualified_rule_output_still_maps_to_rule_origin(self):
+        RuleRegistry.register_rule(name="_test_alias_rule_classify")(_rule_classify)
+        try:
+            schema = {
+                "tables": [
+                    {"name": "silver.orders", "alias": "o"},
+                    {"name": "silver.customers", "alias": "c"},
+                ],
+                "join": [
+                    {"table_from": ["o", "customer_id"], "table_to": ["c", "id"]},
+                ],
+                "business_rules": ["_test_alias_rule_classify"],
+                "select_final": [
+                    ["order_class", "order_class"],
+                ],
+            }
+            graph = LineageTracker.from_schema(schema, target_name="output")
+            select_edges = [e for e in graph.upstream("output", "order_class") if e.edge_type == "select"]
+            assert [e.source_table for e in select_edges] == ["<rule>"]
+        finally:
+            RuleRegistry._rules.pop("_test_alias_rule_classify", None)

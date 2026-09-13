@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `LineageTracker.from_schema` now resolves alias- and FQN-qualified `select_final`/`add_columns`
+  sources (e.g. `o.amount`, `silver.customers.name`) to the table they actually belong to, instead
+  of attributing every such column to the primary table with the alias prefix left in the column
+  name. (Plan 36.1b)
 - Reserved index exit code 3 for classification violations via `ClassificationViolationError`.
 - Made certified-publication run events strictly ordered within each run and
   deterministic under identical SQLite timestamps.
