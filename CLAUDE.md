@@ -903,11 +903,11 @@ sync code walk for them requires an explicit `--allow-reclone` opt-in.
 
 <!-- gstack-gbrain-search-guidance:end -->
 
-<!-- agentkit:start 0.5.2 -->
+<!-- agentkit:start 0.5.3 -->
 
 ## Chaîne agent — skifer
 
-Rendu depuis agent-kernel 0.5.2. Ne pas éditer à la main :
+Rendu depuis agent-kernel 0.5.3. Ne pas éditer à la main :
 toute modification est écrasée au prochain `/sync`. Pour changer ce bloc,
 modifier le noyau ou `agent.yml`.
 
@@ -1143,29 +1143,17 @@ en cours de travail — ça produit du volume sans validation.
 **`lesson:` en rétro uniquement.** Aucune autre phase ne touche à l'espace
 transverse.
 
-#### `dev_agent` — claude-dev
+#### `dev_agent` — codex
 
 **Appel**
 
-Le brief passe par un fichier : il contient des backticks, des guillemets et
-des dollars qui se font manger au passage du shell.
-
 ```bash
-claude -p "$(cat /tmp/brief.txt)" --permission-mode bypassPermissions --strict-mcp-config --mcp-config .mcp.json --model <MODEL> --max-budget-usd <BUDGET> --output-format json --no-session-persistence < /dev/null
+codex exec -m <MODEL> --dangerously-bypass-approvals-and-sandbox "<BRIEF>" < /dev/null
 ```
 
-| Flag | Rôle |
-|---|---|
-| `-p` | one-shot programmatique ; `claude` lit `CLAUDE.md` du projet nativement (le bloc rendu) |
-| `--permission-mode bypassPermissions` | miroir du `--dangerously-bypass-approvals-and-sandbox` de Codex : aucun prompt en mode `-p`, sinon chaque `Bash` est refusé et le dev rend un travail à moitié |
-| `--strict-mcp-config --mcp-config .mcp.json` | seuls les serveurs MCP du **projet** (l'index structurel) ; sans lui les ~150 outils MCP de l'opérateur entrent dans chaque tour (mesuré : 0,58 $ le tour à vide) |
-| `--model <MODEL>` | `models.trivial` / `standard` / `complex` du manifeste |
-| `--max-budget-usd <BUDGET>` | garde-fou budget : trivial 2, standard 8, complexe 15 (dépassé ⇒ `subtype: error_max_budget_usd`, travail partiel commité ou non — relire `git status`) |
-| `--output-format json` | `result` = compte rendu final du dev, `total_cost_usd` = coût réel |
-| `--no-session-persistence` | rien dans `~/.claude` |
-
-**Le `< /dev/null` n'est pas optionnel** : stdin fermé, comme pour Codex.
-**Pas de `--bare`** : il saute le trousseau, le CLI répond « Not logged in ».
+**Le `< /dev/null` n'est pas optionnel.** Sans stdin fermé, `codex exec` bloque
+indéfiniment et laisse un run zombie. C'est le piège le plus coûteux de la
+chaîne parce qu'il ne produit aucune erreur — juste une attente.
 
 **Par phase**
 
@@ -1175,15 +1163,13 @@ claude -p "$(cat /tmp/brief.txt)" --permission-mode bypassPermissions --strict-m
 
 **Contraintes**
 
-**Aucun credential GitHub.** L'agent de dev ne pousse pas, n'ouvre pas de PR,
-ne merge pas. Il commite en local sur la branche courante. Le brief le
-répète ; `bypassPermissions` ne l'en dispense pas.
+**Aucun credential.** L'agent de dev ne pousse pas, n'ouvre pas de PR, ne
+merge pas. Il commite en local sur la branche courante. C'est structurel, pas
+une politesse.
 
 **Ne conçoit pas.** Si le brief est ambigu sur une décision de conception, il
 s'arrête et le signale dans son handoff. Inventer une architecture est une
 escalade humaine manquée.
-
-**Même fournisseur que la review.** Le manifeste le dit ; la PR le dit.
 
 #### `review_agent` — claude
 

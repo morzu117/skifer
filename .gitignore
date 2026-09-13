@@ -84,6 +84,8 @@ _SUCCESS
 /.gbrain-source
 # gbrain `put` write-through mirror files (page-id contains a colon)
 *:*.md
+# même miroir quand l'id de page utilise des / (les : sont refusés sous Windows)
+/skifer/
 # donnée dérivée, reconstructible à l'identique par `codegraph init`
 /.codegraph/
 # config MCP du projet (index structurel) : commitée pour que les worktrees l'aient

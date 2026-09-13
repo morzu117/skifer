@@ -1,7 +1,7 @@
 # Plan 35 — Câblage de la gouvernance : routage d'alertes et classification stricte
 
 > Rédigé le 13 septembre 2026. Premier cycle de la chaîne agent-kernel sur skifer (rodage).
-> Statut : **en attente de validation et de GO.**
+> Statut : **D1–D4 validés et GO donné le 13 septembre 2026.**
 > Tâche mémoire : `skifer:plan:governance-wiring`.
 
 ## 1. Contexte
