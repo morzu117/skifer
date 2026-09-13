@@ -2104,6 +2104,7 @@ def test_engine_lineage_emitter_property_keeps_falsy_but_real_emitter():
         ("https://adb-1.net:abc", "unitycatalog://adb-1.net"),
         ("https://adb-1.net:99999", "unitycatalog://adb-1.net"),
         ("adb-1.net:443", "unitycatalog://adb-1.net"),
+        ("https://adb-1.net#frag", "unitycatalog://adb-1.net"),
     ],
     ids=[
         "path-and-query-dropped",
@@ -2112,6 +2113,7 @@ def test_engine_lineage_emitter_property_keeps_falsy_but_real_emitter():
         "non-numeric-port-dropped",
         "out-of-range-port-dropped",
         "bare-host-with-port-dropped",
+        "fragment-dropped",
     ],
 )
 def test_resolve_lineage_dataset_namespace_normalizes_host(host, expected):
@@ -2125,20 +2127,36 @@ def test_resolve_lineage_dataset_namespace_normalizes_host(host, expected):
     assert namespace == expected
 
 
-def test_resolve_lineage_dataset_namespace_strips_credentials():
-    """DATABRICKS_HOST userinfo must never reach the namespace of an emitted event (Plan 36 review)."""
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://user:s3cret@adb-1.azuredatabricks.net/",
+        "https://token:dapiXXXX@adb-1.azuredatabricks.net",
+    ],
+    ids=["userinfo-with-password", "userinfo-with-token"],
+)
+def test_resolve_lineage_dataset_namespace_strips_credentials(host):
+    """A DATABRICKS_HOST with an '@' anywhere is unparseable on sight (Plan 36 D6 review):
+    a well-formed userinfo section is not an exception, since ``urlsplit`` cuts the netloc
+    before '@' and a malformed userinfo (e.g. a password containing '#') would otherwise leak
+    its prefix as a plausible-looking hostname."""
+    import warnings
+
     from skifer.core.config import LineageConfig
     from skifer.core.core import _resolve_lineage_dataset_namespace
 
-    namespace = _resolve_lineage_dataset_namespace(
-        LineageConfig(),
-        is_local=False,
-        environ={"DATABRICKS_HOST": "https://user:s3cret@adb-1.azuredatabricks.net/"},
-    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": host}
+        )
 
-    assert namespace == "unitycatalog://adb-1.azuredatabricks.net"
+    assert namespace == "skifer://local"
     assert "s3cret" not in namespace
     assert "user" not in namespace
+    runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+    assert len(runtime_warnings) == 1
+    assert host not in str(runtime_warnings[0].message)
 
 
 def test_resolve_lineage_dataset_namespace_falls_back_on_unparseable_host():
@@ -2171,6 +2189,82 @@ def test_resolve_lineage_dataset_namespace_falls_back_under_warnings_as_errors()
         warnings.simplefilter("error")
         namespace = _resolve_lineage_dataset_namespace(
             LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": "http://[::1"}
+        )
+
+    assert namespace == "skifer://local"
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://svc:Pa#ss@adb-1.azuredatabricks.net",
+        "https://s3cr?et@adb-1.azuredatabricks.net",
+        "https://user:pa/ss@adb-1.azuredatabricks.net",
+        "svc:Pa#ss@adb-1.azuredatabricks.net",
+        "adb-1.net x",
+        "https://adb-1.net\x00a",
+        "https://[::1]:443",
+    ],
+    ids=[
+        "at-hash-in-userinfo",
+        "at-question-mark-in-userinfo",
+        "at-slash-in-userinfo",
+        "at-no-scheme",
+        "space-in-host",
+        "nul-byte-in-host",
+        "ipv6-literal",
+    ],
+)
+def test_resolve_lineage_dataset_namespace_never_leaks_secret_prefix(host):
+    """None of these must leak a userinfo/secret prefix, nor any other unparseable value, as if
+    it were a real hostname (Plan 36 D6 fix — allowlist, not urlsplit-parseability, decides)."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": host}
+        )
+
+    assert namespace == "skifer://local"
+    runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+    assert len(runtime_warnings) == 1
+    assert host not in str(runtime_warnings[0].message)
+
+
+def test_resolve_lineage_dataset_namespace_at_sign_falls_back_under_warnings_as_errors():
+    """The '@' short-circuit warning must never turn into an exception under -W error."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(),
+            is_local=False,
+            environ={"DATABRICKS_HOST": "https://svc:Pa#ss@adb-1.azuredatabricks.net"},
+        )
+
+    assert namespace == "skifer://local"
+
+
+def test_resolve_lineage_dataset_namespace_allowlist_rejection_falls_back_under_warnings_as_errors():
+    """The allowlist-rejection warning (a hostname that parses but is not a plain DNS name) must
+    never turn into an exception under -W error."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": "https://[::1]:443"}
         )
 
     assert namespace == "skifer://local"

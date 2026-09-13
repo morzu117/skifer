@@ -5,6 +5,7 @@ Core Engine Module. Handles the execution flow: Schema Parsing -> Processing -> 
 from __future__ import annotations
 
 import logging
+import re
 import yaml
 from dotenv import load_dotenv
 import os
@@ -38,6 +39,13 @@ _ENV_DETECTION_CACHE: dict[tuple, tuple[str, str | None]] = {}
 
 _LOCAL_LINEAGE_DATASET_NAMESPACE = "skifer://local"
 
+# Full-match only: a Databricks workspace host is a plain DNS name — dot-separated
+# labels of lowercase letters/digits with inner hyphens. Anything else (space, control
+# character, ':' from an IPv6 literal, '_', non-ASCII, empty label) is unparseable.
+_LINEAGE_HOSTNAME_ALLOWLIST = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
+)
+
 
 def _resolve_lineage_dataset_namespace(lineage_config, *, is_local, environ) -> str:
     """OpenLineage dataset namespace (Plan 36 D6): configured, else workspace host, else local.
@@ -45,26 +53,39 @@ def _resolve_lineage_dataset_namespace(lineage_config, *, is_local, environ) -> 
     Reads only the environment — never the Databricks SDK, never the network. Built from
     ``hostname`` only (never ``netloc``): credentials embedded in DATABRICKS_HOST must never
     reach an emitted event, and the port carries no meaning for a Databricks workspace host.
-    An unparseable value never raises — it falls back to local with a best-effort warning that
-    never echoes the configured value.
+    The hostname must fully match a DNS-name allowlist rather than merely parse: extracting a
+    host with a general-purpose URL parser inherits its splitting rules, and ``urlsplit`` cuts
+    the netloc before ``@`` — so a value like ``svc:secret@host`` would otherwise leak ``svc``
+    as a plausible-looking hostname. Any ``@`` anywhere in the value is therefore unparseable on
+    sight, checked before parsing. An unparseable value never raises — it falls back to local
+    with a best-effort warning that never echoes the configured value.
     """
     if lineage_config.dataset_namespace:
         return lineage_config.dataset_namespace
     host = None if is_local else environ.get("DATABRICKS_HOST")
     if host:
         host = host.strip()
-        try:
-            hostname = urlsplit(host if "://" in host else f"https://{host}").hostname
-        except ValueError:
-            from skifer.observability.openlineage import _warn_best_effort
+        if host:
+            unparseable = False
+            hostname = None
+            if "@" in host:
+                unparseable = True
+            else:
+                try:
+                    hostname = urlsplit(host if "://" in host else f"https://{host}").hostname
+                except ValueError:
+                    unparseable = True
+            if hostname and not unparseable:
+                if _LINEAGE_HOSTNAME_ALLOWLIST.fullmatch(hostname):
+                    return f"unitycatalog://{hostname}"
+                unparseable = True
+            if unparseable:
+                from skifer.observability.openlineage import _warn_best_effort
 
-            _warn_best_effort(
-                "[OpenLineage] DATABRICKS_HOST could not be parsed; "
-                "dataset namespace falls back to skifer://local"
-            )
-        else:
-            if hostname:
-                return f"unitycatalog://{hostname}"
+                _warn_best_effort(
+                    "[OpenLineage] DATABRICKS_HOST could not be parsed; "
+                    "dataset namespace falls back to skifer://local"
+                )
     return _LOCAL_LINEAGE_DATASET_NAMESPACE
 
 # ==============================================================================
