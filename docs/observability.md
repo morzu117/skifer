@@ -457,6 +457,137 @@ result that still returns after an exporter raises.
 
 ---
 
+## OpenLineage
+
+Skifer produces what a catalog displays — output schema, design-time column lineage, check
+results, a versioned contract, a computed certification — and can push it out as
+[OpenLineage](https://openlineage.io) `RunEvent`s. This is **off by default**, adds no mandatory
+dependency, and, like `uc_mirror.py`, never changes what the pipeline it observes does.
+
+```yaml
+observability:
+  lineage:
+    emitter: none               # none (default) | http
+    url: "https://lineage.example.internal"   # required when emitter: http
+    endpoint: /api/v1/lineage   # default
+    job_namespace: skifer       # default
+    dataset_namespace: null     # default — resolved automatically, see below
+    timeout_seconds: 5.0        # default; must be > 0 and <= 60
+```
+
+Any other key under `observability.lineage` (including `api_key`, `apiKey` or `token`) is
+rejected at load with a message naming the key — the API key is read **only** from the
+`OPENLINEAGE_API_KEY` environment variable, never from `config.yaml`. Validation never echoes the
+configured `url` in an error message.
+
+### When events are emitted
+
+Certified publication (`data_product:` pipelines, `PublicationCoordinator`) and a non-certified
+batch write from `run_process_to_table` are the only two sources in v1. Streaming tables,
+materialized views, JDBC sinks, `run_process_and_split` and `run_union_sources_to_table` emit
+nothing.
+
+- **Certified publication** — `START` is emitted once staging begins, before any check runs.
+    - A critical check failure quarantines the run: `FAIL` carries the check results
+      (`dataQualityAssertions`) and `certification: UNCERTIFIED`.
+    - A successful promotion: `COMPLETE` carries the check results and `certification: CERTIFIED`.
+    - An exception raised anywhere in `_publish_run` (a backend or write failure, not a check
+      failure): `FAIL` is emitted **without** assertions or a certification value, and the
+      original exception still propagates unchanged.
+    - `resume()` (crash recovery) emits `COMPLETE`. It is built from the persisted contract, not
+      the original pipeline schema, so it carries no `columnLineage`, no `inputs`, and no
+      `dataQualityAssertions` — only the output `schema` and the `skifer` facet.
+  All of these share the **same `run_id`** as the certification record itself — the identity a
+  publication is audited under, whether or not tracing is enabled. A `resume()` after a `FAIL`
+  therefore produces two terminal events for one `run_id` (`FAIL` then `COMPLETE`); a consumer
+  should keep the latest.
+- **Non-certified batch write** (`run_process_to_table` without `data_product:`) — a single
+  `COMPLETE` with schema and column lineage, no assertions and no certification. It is emitted
+  **only after the post-write monitor has returned** (or did not run at all): if that monitor
+  raises `DataQualityError`, no event is sent for that write.
+
+Every emission is best-effort. `emitter: none` builds no `DatasetRecord` at all — nothing is
+computed just to be thrown away. Any other failure (building the record, building the event,
+sending it) becomes a single `RuntimeWarning` naming only the exception's class, and is safe even
+under a warnings-as-errors filter.
+
+### Dataset namespace resolution
+
+In this priority order:
+
+1. `observability.lineage.dataset_namespace`, if set.
+2. Off local mode, `unitycatalog://<hostname>` derived from the `DATABRICKS_HOST` environment
+   variable. `DATABRICKS_HOST` may be a bare host or a full workspace URL — port, path, query and
+   fragment are ignored, and the host is lower-cased.
+3. Otherwise (local mode, or `DATABRICKS_HOST` unset), `skifer://local`.
+
+Only a plain DNS host name reaches step 2's `unitycatalog://` form: the host must fully match
+dot-separated `[a-z0-9-]` labels. A `DATABRICKS_HOST` containing `@` (embedded credentials) or
+whose host does not match is treated as unparseable — it falls back to `skifer://local` with one
+best-effort warning that never echoes the configured value, and never fails the engine.
+
+!!! warning
+    Do not embed credentials in `DATABRICKS_HOST` (`user:secret@host`). Such a value is
+    **rejected**, not stripped and cleaned — set `observability.lineage.dataset_namespace`
+    explicitly if the host cannot be used as-is.
+
+### What an event contains
+
+A `RunEvent` names its `job` (`job_namespace`, name = the target's physical FQN), the same
+`run_id` as the business run it describes, and dataset entries built from the pipeline's own
+lineage graph:
+
+- **`inputs`** — every distinct source table reached by a real column edge into the output.
+- **`outputs`** — exactly one entry, the target FQN, carrying:
+    - **`schema`** facet — every output column's name and `logical_type`.
+    - **`columnLineage`** facet (on output columns only) — one `inputFields` entry per real
+      source column, each carrying a `transformations` entry mapped from the pipeline's own edge
+      type:
+
+        | Skifer edge | OpenLineage `type`/`subtype` |
+        |---|---|
+        | `select`/`add_columns`, no operation | `DIRECT` / `IDENTITY` |
+        | `select`/`add_columns`, with operations (`cast:`, `round:`, …) | `DIRECT` / `TRANSFORMATION` |
+        | `rule` (business rule) | `DIRECT` / `TRANSFORMATION` |
+        | `metric` (declarative `aggregate:`) | `DIRECT` / `AGGREGATION` |
+        | `join` | `INDIRECT` / `JOIN` |
+
+      `description`, when present, is a sorted, comma-joined list of **operation names only**
+      (`cast`, `round`, `conditional`, …) — never a `cast:double` argument or an `expr:` SQL
+      expression.
+    - **`dataQualityAssertions`** facet (certified publication only) — one entry per check that
+      was not `SKIPPED`: `assertion` (the check's class name), `success`, `severity` (`critical`
+      → `error`, anything else → `warn`) and `column` when the check is row-scoped. **Never**
+      `expected`, `actual`, or a check message — those routinely quote the offending data.
+    - **`skifer`** custom facet — `definitionHash`, and when known, `contractVersion`,
+      `dataProductId`, `certification` (`CERTIFIED` / `UNCERTIFIED`) and a `classifications` map
+      of column name to declared classification (`public`, `internal`, `confidential`,
+      `restricted`, `pii`).
+
+### Limits of column lineage
+
+Only a source column whose name is a plain ASCII identifier (`[A-Za-z_][A-Za-z0-9_]*`) is
+emitted in `columnLineage` or `inputs`. A constant (`literal:`/`lit:` shorthand), a raw `expr:`
+result, a column a business rule created, a nested/dotted path, or a real column whose name
+carries an accent, a space, or a leading digit is left out — it still appears in the `schema`
+facet, since that only names the output. This is a deliberate fail-safe allowlist, not a bug: no
+value can leak through it, but lineage for such a column is incomplete rather than approximate.
+Widening it would require a canonical name supplied by the tracker itself, not attempted in v1.
+
+### Compatibility with catalog consumers
+
+An HTTP consumer that speaks the OpenLineage API directly (for example
+[Marquez](https://marquezproject.ai)) receives these events as-is. OpenMetadata ingests
+OpenLineage through its own connector over Kafka, not over a direct HTTP POST — reaching it needs
+that connector in front of the events this emitter sends, not a configuration change here.
+
+`examples/23_openlineage/` builds a `START` and a `COMPLETE` event from a small pipeline with a
+`pii` column, prints the column-lineage transformation for a cast column, the redacted
+assertions, and proves a secret carried by a check result never reaches the emitted JSON — then
+shows an unreachable HTTP emitter reporting only an exception class name.
+
+---
+
 ## Comparison with existing tools
 
 | Tool | Approach | Limitation |

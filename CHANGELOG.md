@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Documented the OpenLineage emitter (`docs/observability.md#openlineage`: configuration,
+  event timing per code path, dataset-namespace resolution, the edge-type-to-facet mapping, the
+  column-lineage allowlist's honest limits, and HTTP-vs-OpenMetadata compatibility) and added
+  `examples/23_openlineage/`, a Spark-free example building `START`/`COMPLETE` events from a
+  pipeline with a `pii` column and proving a check-result secret never reaches the emitted JSON.
+  (Plan 36.4)
 - Wired OpenLineage emission into the engine: `SkiferEngine` builds the configured emitter and
   resolves the dataset namespace (configured value, else `unitycatalog://<DATABRICKS_HOST>` off
   local, else `skifer://local` — environment only, no SDK or network call). Certified publication
@@ -45,8 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raises; streaming, materialized views, JDBC sinks, split and union emit nothing. Every emission is
   best-effort: with `emitter: none` no record is built, and any
   failure is one `RuntimeWarning` naming only the exception class, safe under warnings-as-errors.
-  Only a plain DNS host name is used; a value containing `@` or any other character is treated
-  as unparseable and falls back to `skifer://local` with a warning. (Plan 36.3)
+  `DATABRICKS_HOST` may be a bare host or a full workspace URL (port, path, query and fragment are
+  ignored); a value containing `@` or whose host is not a plain DNS name is treated as unparseable
+  and falls back to `skifer://local` with a warning. (Plan 36.3)
 - Added OpenLineage emitters (`observability/openlineage.py`): `NoOpEmitter` (default),
   `InMemoryEmitter` (tests/examples) and a standard-library-only `HttpEmitter` that POSTs
   `RunEvent`s, adds `Authorization: Bearer` only when `OPENLINEAGE_API_KEY` is set, and

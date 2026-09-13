@@ -34,5 +34,6 @@ breaks the build like any other regression. What you read here is what the code 
 | 20 | [Builder and orchestration](20_builder_and_orchestration/) | Offline LLM drafting, schema-validation refusal, and disposable orchestration export |
 | 21 | [Hub routing](21_hub_routing/) | Spark-free routing to static lineage and dictionary agents, with honest missing-agent refusals |
 | 22 | [Quality agent](22_quality_agent/) | Live checks, explicit execution errors, response-level critical status, and temporary history |
+| 23 | [OpenLineage events](23_openlineage/) | A pure `RunEvent` builder, redacted data-quality assertions, and non-blocking emission |
 
 Read them in order for a guided tour, or jump directly to the feature you need; every example is self-contained about its local inputs.
