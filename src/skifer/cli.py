@@ -460,6 +460,7 @@ def _run_dictionary(args: argparse.Namespace) -> None:
 
 def run_index_command(args: argparse.Namespace, *, store=None) -> int:
     """Index one or more pipeline YAML files into the local metadata registry."""
+    from skifer.lineage.classification import ClassificationViolationError
     from skifer.observability.metadata_index import index_from_path
     from skifer.observability.metadata_store import SqliteMetadataStore
 
@@ -486,15 +487,12 @@ def run_index_command(args: argparse.Namespace, *, store=None) -> int:
                 print(f"[index] {path} -> {'updated' if wrote else 'unchanged'}")
                 continue
             wrote = index_from_path(path, registry, target_fqn=args.target_fqn)
-        except ValueError as exc:
-            if getattr(args, "strict", False):
-                print(
-                    f"[index] Classification violation in '{path}': {exc}",
-                    file=sys.stderr,
-                )
-                return INDEX_EXIT_CLASSIFICATION
-            print(f"[index] Failed to index '{path}': {exc}", file=sys.stderr)
-            return INDEX_EXIT_ERROR
+        except ClassificationViolationError as exc:
+            print(
+                f"[index] Classification violation in '{path}': {exc}",
+                file=sys.stderr,
+            )
+            return INDEX_EXIT_CLASSIFICATION
         except Exception as exc:
             print(f"[index] Failed to index '{path}': {exc}", file=sys.stderr)
             return INDEX_EXIT_ERROR

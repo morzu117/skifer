@@ -406,6 +406,7 @@ def test_promoted_publication_inherits_upstream_pii_classification():
 
 
 def test_strict_classification_rejects_before_processing_and_names_lineage_source():
+    from skifer.lineage.classification import ClassificationViolationError
     from skifer.observability.metadata_store import (
         ColumnRecord,
         DatasetRecord,
@@ -437,11 +438,34 @@ def test_strict_classification_rejects_before_processing_and_names_lineage_sourc
         select_final=[["email", "email_hash", ["upper"]]],
     )
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ClassificationViolationError) as caught:
         patterns.run_process_to_table(schema, "gold", "fact_orders")
 
     assert "target column 'email_hash'" in str(caught.value)
     assert "silver.orders.email" in str(caught.value)
+    engine.process_schema.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+    backend.write_table.assert_not_called()
+
+
+def test_strict_classification_preflight_propagates_technical_index_error():
+    class TechnicalIndexError(ValueError):
+        pass
+
+    engine, backend, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "strict"
+    engine.metadata_store = MagicMock()
+
+    with patch(
+        "skifer.observability.metadata_index.index_schema",
+        side_effect=TechnicalIndexError("invalid dataset record"),
+    ):
+        with pytest.raises(TechnicalIndexError, match="invalid dataset record"):
+            patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
     engine.process_schema.assert_not_called()
     engine._ensure_schema_exists.assert_not_called()
     engine._write_dataframe.assert_not_called()

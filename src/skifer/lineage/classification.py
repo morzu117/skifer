@@ -15,6 +15,14 @@ class ClassificationPropagationWarning(UserWarning):
     """An inferred classification elevation was not explicitly declared."""
 
 
+class ClassificationViolationError(ValueError):
+    """An inferred classification elevation rejected by strict mode."""
+
+    def __init__(self, message: str, *, column: str) -> None:
+        super().__init__(message)
+        self.column = column
+
+
 def _max_level(levels: list[str]) -> str | None:
     ranked = [level for level in levels if level in CLASSIFICATION_RANK]
     return max(ranked, key=CLASSIFICATION_RANK.__getitem__) if ranked else None
@@ -61,7 +69,7 @@ def resolve_field_classifications(
                     "lineage but has no explicit declaration."
                 )
                 if mode == "strict":
-                    raise ValueError(message)
+                    raise ClassificationViolationError(message, column=column)
                 warnings.warn(message, ClassificationPropagationWarning, stacklevel=2)
             effective[column] = inferred
             continue

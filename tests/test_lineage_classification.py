@@ -5,6 +5,7 @@ import pytest
 
 from skifer.lineage.classification import (
     ClassificationPropagationWarning,
+    ClassificationViolationError,
     resolve_field_classifications,
 )
 from skifer.lineage.tracker import LineageEdge, LineageGraph
@@ -90,7 +91,7 @@ def test_explicit_elevation_is_silent(caplog):
 def test_strict_mode_raises_on_inferred_elevation():
     graph = _graph(LineageEdge("customers", "email", "gold.customers", "email"))
 
-    with pytest.raises(ValueError, match="email.*confidential"):
+    with pytest.raises(ClassificationViolationError, match="email.*confidential") as caught:
         resolve_field_classifications(
             graph,
             "gold.customers",
@@ -98,3 +99,6 @@ def test_strict_mode_raises_on_inferred_elevation():
             {"email": "confidential"},
             mode="strict",
         )
+
+    assert isinstance(caught.value, ValueError)
+    assert caught.value.column == "email"

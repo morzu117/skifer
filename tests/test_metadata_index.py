@@ -257,6 +257,54 @@ select_final:
     assert "updated" in capsys.readouterr().out
 
 
+def test_run_index_command_strict_malformed_yaml_is_index_error(tmp_path, capsys):
+    path = tmp_path / "broken.yaml"
+    path.write_text("tables: [", encoding="utf-8")
+
+    result = run_index_command(
+        argparse.Namespace(
+            paths=[str(path)],
+            db="unused.db",
+            target_fqn=None,
+            strict=True,
+        ),
+        store=SqliteMetadataStore(":memory:"),
+    )
+
+    assert result == INDEX_EXIT_ERROR
+    captured = capsys.readouterr()
+    assert f"[index] Failed to index '{path}':" in captured.err
+    assert "Classification violation" not in captured.err
+
+
+def test_run_index_command_strict_non_classification_value_error_is_index_error(
+    tmp_path, capsys,
+):
+    from unittest.mock import patch
+
+    path = tmp_path / "orders.yaml"
+    path.write_text(BASE_YAML, encoding="utf-8")
+
+    with patch(
+        "skifer.observability.metadata_index.index_from_path",
+        side_effect=ValueError("invalid dataset record"),
+    ):
+        result = run_index_command(
+            argparse.Namespace(
+                paths=[str(path)],
+                db="unused.db",
+                target_fqn=None,
+                strict=True,
+            ),
+            store=SqliteMetadataStore(":memory:"),
+        )
+
+    assert result == INDEX_EXIT_ERROR
+    captured = capsys.readouterr()
+    assert f"[index] Failed to index '{path}': invalid dataset record" in captured.err
+    assert "Classification violation" not in captured.err
+
+
 def test_index_schema_with_business_rule_uses_rule_analyzer_lineage():
     from skifer.core.registry import RuleRegistry
 

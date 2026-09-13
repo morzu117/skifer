@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reserved index exit code 3 for classification violations via `ClassificationViolationError`.
 - Made certified-publication run events strictly ordered within each run and
   deterministic under identical SQLite timestamps.
 - Cached preview DataFrames across exact counting and bounded collection, made

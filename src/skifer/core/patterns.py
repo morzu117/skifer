@@ -132,6 +132,7 @@ class PipelinePatterns:
                         "SkiferEngine(metadata_store=...) — without a metadata registry "
                         "no source classification can be checked."
                     )
+                from skifer.lineage.classification import ClassificationViolationError
                 from skifer.lineage.tracker import LineageGraph
                 from skifer.observability.metadata_index import index_schema
 
@@ -142,25 +143,19 @@ class PipelinePatterns:
                 )
                 try:
                     _inherit_registry_classifications(store, record, mode="strict")
-                except ValueError as exc:
+                except ClassificationViolationError as exc:
                     graph = LineageGraph.from_dict(record.lineage)
-                    target_column = next(
-                        (
-                            column.name
-                            for column in record.columns
-                            if f"Column '{column.name}'" in str(exc)
-                        ),
-                        "<unknown>",
-                    )
+                    target_column = exc.column
                     sources = sorted(
                         {
                             f"{edge.source_table}.{edge.source_column}"
                             for edge in graph.upstream(record.target_fqn, target_column)
                         }
                     )
-                    raise ValueError(
+                    raise ClassificationViolationError(
                         f"Classification violation for target column '{target_column}' "
-                        f"from upstream source(s): {', '.join(sources)}. {exc}"
+                        f"from upstream source(s): {', '.join(sources)}. {exc}",
+                        column=target_column,
                     ) from exc
 
         # Materialized view (Plan 28): defined by SQL, so the DataFrame pipeline
