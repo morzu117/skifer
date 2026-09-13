@@ -7,6 +7,7 @@ import threading
 import warnings
 from contextlib import closing
 from datetime import datetime, timezone
+from unittest import mock
 
 import pytest
 
@@ -1073,32 +1074,59 @@ class TestWarningsNeverPropagateUnderWarningsAsErrors:
 
 
 class TestHttpEmitterConcurrentWarnOnce:
-    """redev finding 2: the check-then-add on `_warned_kinds` is only race-free under a
-    lock. Cross-thread `warnings.catch_warnings(record=True)` capture is not guaranteed
-    reliable across platforms, so this asserts on the emitter's own rate-limiting state
-    (what the lock actually protects) rather than on recorded warning objects."""
+    """redev finding 2 (redev 2/2): the check-then-add on `_warned_kinds` is only
+    race-free under a lock. A prior version of this test asserted on
+    `emitter._warned_kinds` after the fact — but adding the same key to a set twice
+    is idempotent, so that assertion held whether or not the lock existed; it never
+    proved "at most one warning per failure kind". This test forces the race
+    deterministically instead of hoping for it: `_warned_kinds` is swapped for a set
+    whose `__contains__` rendezvous on a two-party barrier, so neither thread's
+    membership check can complete before the other thread has started its own —
+    exactly the interleaving the lock must rule out. `_warn_best_effort` is patched
+    with a counting stub so the outcome is "how many times it was actually called",
+    not a state snapshot a lock-free implementation could still satisfy."""
 
-    def test_sixteen_threads_record_the_failure_kind_exactly_once(self):
+    def test_two_concurrent_failures_call_warn_best_effort_exactly_once(self):
+        class _RendezvousSet(set):
+            """A `set` whose `in` check rendezvous with a sibling thread's check
+            before returning, so two concurrent `_warn_once` calls are forced to
+            both be inside the (unlocked) critical section at once — or, under the
+            real lock, forced to serialize because the second thread cannot even
+            reach its `__contains__` call until the first has released the lock."""
+
+            def __init__(self, barrier: threading.Barrier) -> None:
+                super().__init__()
+                self._barrier = barrier
+
+            def __contains__(self, item: object) -> bool:
+                present = super().__contains__(item)
+                try:
+                    self._barrier.wait(timeout=2)
+                except threading.BrokenBarrierError:
+                    pass
+                return present
+
         class _AlwaysRaisingOpener:
             def __call__(self, request, timeout):
                 raise OSError("connection refused")
 
         emitter = HttpEmitter("http://127.0.0.1:1", opener=_AlwaysRaisingOpener())
-        barrier = threading.Barrier(16)
+        barrier = threading.Barrier(2)
+        emitter._warned_kinds = _RendezvousSet(barrier)
 
         def _worker():
-            barrier.wait()
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 emitter.emit({"eventType": "COMPLETE"})
 
-        threads = [threading.Thread(target=_worker) for _ in range(16)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
+        with mock.patch("skifer.observability.openlineage._warn_best_effort") as warn_mock:
+            threads = [threading.Thread(target=_worker) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5)
 
-        assert emitter._warned_kinds == {"OSError"}
+        assert warn_mock.call_count == 1
 
 
 class TestHttpEmitterInjectedOpenerNonSuccess:
