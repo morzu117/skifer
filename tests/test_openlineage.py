@@ -275,6 +275,129 @@ def test_inputs_exclude_target_and_synthetic_rule_origin():
     assert event["inputs"] == []
 
 
+def test_rule_origin_excluded_from_column_lineage():
+    record = _record(
+        columns=[ColumnRecord(name="is_high_value")],
+        edges=[
+            LineageEdge(
+                source_table="<rule>",
+                source_column="is_high_value",
+                target_table=TARGET_FQN,
+                target_column="is_high_value",
+                transformations=["rule:flag_high_value"],
+                edge_type="rule",
+            ),
+        ],
+    )
+
+    event = build_run_event(
+        event_type="COMPLETE",
+        run_id="run-1",
+        event_time=EVENT_TIME,
+        record=record,
+        job_namespace=JOB_NAMESPACE,
+        dataset_namespace=DATASET_NAMESPACE,
+    )
+
+    assert "<rule>" not in json.dumps(event)
+    assert event["inputs"] == []
+    assert "columnLineage" not in event["outputs"][0]["facets"]
+
+
+def test_literal_column_excluded_from_column_lineage_but_kept_in_schema():
+    record = _record(
+        columns=[ColumnRecord(name="source_system")],
+        edges=[
+            LineageEdge(
+                source_table="silver.orders",
+                source_column="<literal>",
+                target_table=TARGET_FQN,
+                target_column="source_system",
+                transformations=["lit:ERP"],
+                edge_type="select",
+            ),
+        ],
+    )
+
+    event = build_run_event(
+        event_type="COMPLETE",
+        run_id="run-1",
+        event_time=EVENT_TIME,
+        record=record,
+        job_namespace=JOB_NAMESPACE,
+        dataset_namespace=DATASET_NAMESPACE,
+    )
+
+    assert "<literal>" not in json.dumps(event)
+    schema_fields = event["outputs"][0]["facets"]["schema"]["fields"]
+    assert {"name": "source_system"} in schema_fields
+    assert "columnLineage" not in event["outputs"][0]["facets"]
+
+
+def test_unknown_column_excluded_from_column_lineage():
+    record = _record(
+        columns=[ColumnRecord(name="mystery")],
+        edges=[
+            LineageEdge(
+                source_table="silver.orders",
+                source_column="<unknown>",
+                target_table=TARGET_FQN,
+                target_column="mystery",
+                transformations=[],
+                edge_type="select",
+            ),
+        ],
+    )
+
+    event = build_run_event(
+        event_type="COMPLETE",
+        run_id="run-1",
+        event_time=EVENT_TIME,
+        record=record,
+        job_namespace=JOB_NAMESPACE,
+        dataset_namespace=DATASET_NAMESPACE,
+    )
+
+    assert "<unknown>" not in json.dumps(event)
+    assert "columnLineage" not in event["outputs"][0]["facets"]
+
+
+def test_only_synthetic_edges_means_empty_inputs_and_no_facet():
+    record = _record(
+        columns=[ColumnRecord(name="flag"), ColumnRecord(name="source_system")],
+        edges=[
+            LineageEdge(
+                source_table="<rule>",
+                source_column="flag",
+                target_table=TARGET_FQN,
+                target_column="flag",
+                transformations=[],
+                edge_type="rule",
+            ),
+            LineageEdge(
+                source_table="silver.orders",
+                source_column="<literal>",
+                target_table=TARGET_FQN,
+                target_column="source_system",
+                transformations=["lit:ERP"],
+                edge_type="select",
+            ),
+        ],
+    )
+
+    event = build_run_event(
+        event_type="COMPLETE",
+        run_id="run-1",
+        event_time=EVENT_TIME,
+        record=record,
+        job_namespace=JOB_NAMESPACE,
+        dataset_namespace=DATASET_NAMESPACE,
+    )
+
+    assert event["inputs"] == []
+    assert "columnLineage" not in event["outputs"][0]["facets"]
+
+
 def test_no_lineage_edges_means_no_column_lineage_facet():
     record = _record(columns=[ColumnRecord(name="c")], edges=[])
 
@@ -523,6 +646,36 @@ def test_empty_identifiers_refused(kwargs, match):
 
     with pytest.raises(ValueError, match=match):
         build_run_event(**base_kwargs)
+
+
+def test_op_name_with_trailing_newline_rejected():
+    record = _record(
+        columns=[ColumnRecord(name="amount_eur")],
+        edges=[
+            LineageEdge(
+                source_table="silver.orders",
+                source_column="amount",
+                target_table=TARGET_FQN,
+                target_column="amount_eur",
+                transformations=["cast\n"],
+                edge_type="select",
+            ),
+        ],
+    )
+
+    event = build_run_event(
+        event_type="COMPLETE",
+        run_id="run-1",
+        event_time=EVENT_TIME,
+        record=record,
+        job_namespace=JOB_NAMESPACE,
+        dataset_namespace=DATASET_NAMESPACE,
+    )
+
+    transformation = event["outputs"][0]["facets"]["columnLineage"]["fields"]["amount_eur"][
+        "inputFields"
+    ][0]["transformations"][0]
+    assert "description" not in transformation
 
 
 def test_deterministic_json_regardless_of_edge_insertion_order():

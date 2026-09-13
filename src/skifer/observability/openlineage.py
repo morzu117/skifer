@@ -25,6 +25,12 @@ SKIFER_FACET_URL = "https://github.com/morzu117/skifer/blob/main/docs/observabil
 _VALID_EVENT_TYPES = frozenset({"START", "COMPLETE", "FAIL"})
 _OP_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
+# Synthetic source_column markers emitted by skifer.lineage.tracker (LineageGraph) for
+# constants and unresolved rule outputs — not real dataset columns, never emitted here.
+_LITERAL_COLUMN_MARKER = "<literal>"
+_UNKNOWN_COLUMN_MARKER = "<unknown>"
+_SYNTHETIC_COLUMN_MARKERS = frozenset({_LITERAL_COLUMN_MARKER, _UNKNOWN_COLUMN_MARKER})
+
 
 def build_run_event(
     *,
@@ -88,11 +94,18 @@ def _format_event_time(event_time: datetime) -> str:
     return event_time.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _is_real_edge(edge, target_fqn: str) -> bool:
+    """Reject edges pointing at a synthetic tracker marker rather than a real dataset column."""
+    if edge.source_table in (target_fqn, RULE_ORIGIN):
+        return False
+    return edge.source_column not in _SYNTHETIC_COLUMN_MARKERS
+
+
 def _build_inputs(target_edges, target_fqn: str, dataset_namespace: str) -> list[dict]:
     real_sources = {
         edge.source_table
         for edge in target_edges
-        if edge.source_table not in (target_fqn, RULE_ORIGIN)
+        if _is_real_edge(edge, target_fqn)
     }
     return [
         {"namespace": dataset_namespace, "name": name}
@@ -111,8 +124,11 @@ def _build_output(
         "schema": _build_schema_facet(record),
         "skifer": _build_skifer_facet(record, certification_status),
     }
-    if target_edges:
-        facets["columnLineage"] = _build_column_lineage_facet(target_edges, dataset_namespace)
+    column_lineage_facet = _build_column_lineage_facet(
+        target_edges, record.target_fqn, dataset_namespace
+    )
+    if column_lineage_facet is not None:
+        facets["columnLineage"] = column_lineage_facet
     if check_results:
         assertions_facet = _build_assertions_facet(check_results)
         if assertions_facet is not None:
@@ -136,7 +152,7 @@ def _build_schema_facet(record: "DatasetRecord") -> dict:
 
 def _op_names(transformations: Sequence[str]) -> list[str]:
     names = {t.split(":", 1)[0] for t in transformations}
-    return sorted(name for name in names if _OP_NAME_RE.match(name))
+    return sorted(name for name in names if _OP_NAME_RE.fullmatch(name))
 
 
 def _transformation_for_edge(edge) -> dict:
@@ -158,9 +174,13 @@ def _transformation_for_edge(edge) -> dict:
     return transformation
 
 
-def _build_column_lineage_facet(target_edges, dataset_namespace: str) -> dict:
+def _build_column_lineage_facet(
+    target_edges, target_fqn: str, dataset_namespace: str
+) -> dict | None:
     edges_by_target: dict[str, list] = {}
     for edge in target_edges:
+        if not _is_real_edge(edge, target_fqn):
+            continue
         edges_by_target.setdefault(edge.target_column, []).append(edge)
 
     fields = {}
@@ -177,6 +197,8 @@ def _build_column_lineage_facet(target_edges, dataset_namespace: str) -> dict:
         input_fields.sort(key=lambda f: (f["namespace"], f["name"], f["field"]))
         fields[target_column] = {"inputFields": input_fields}
 
+    if not fields:
+        return None
     return {
         "_producer": PRODUCER,
         "_schemaURL": COLUMN_LINEAGE_FACET_URL,
