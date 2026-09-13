@@ -2,6 +2,7 @@ import pytest
 import yaml
 from unittest.mock import MagicMock
 from skifer.core.config import ConfigurationManager
+from skifer.core.config import LineageConfig, parse_lineage_config
 from skifer.core.spark_backend import SparkBackend
 
 # ==============================================================================
@@ -295,3 +296,122 @@ def test_config_accepts_absent_governance_wiring_keys(tmp_path):
 
     assert manager.get_value("alerts") is None
     assert manager.get_value("classification_propagation") is None
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        {},
+        {"observability": None},
+        {"observability": {}},
+        {"observability": {"lineage": None}},
+    ],
+)
+def test_parse_lineage_config_defaults(config):
+    assert parse_lineage_config(config) == LineageConfig()
+
+
+def test_parse_lineage_config_accepts_full_http_config():
+    config = parse_lineage_config(
+        {
+            "observability": {
+                "lineage": {
+                    "emitter": "http",
+                    "url": "https://lineage.example.test",
+                    "endpoint": "/events",
+                    "job_namespace": "analytics",
+                    "dataset_namespace": "unitycatalog://workspace.example.test",
+                    "timeout_seconds": 12.5,
+                }
+            }
+        }
+    )
+
+    assert config == LineageConfig(
+        emitter="http",
+        url="https://lineage.example.test",
+        endpoint="/events",
+        job_namespace="analytics",
+        dataset_namespace="unitycatalog://workspace.example.test",
+        timeout_seconds=12.5,
+    )
+
+
+@pytest.mark.parametrize(
+    ("lineage", "key"),
+    [
+        ([], "observability.lineage"),
+        ({"unexpected": True}, "observability.lineage.unexpected"),
+        ({"emitter": "console"}, "observability.lineage.emitter"),
+        ({"emitter": "http"}, "observability.lineage.url"),
+        ({"url": "ftp://lineage.example.test"}, "observability.lineage.url"),
+        ({"url": 1}, "observability.lineage.url"),
+        ({"endpoint": ""}, "observability.lineage.endpoint"),
+        ({"endpoint": "events"}, "observability.lineage.endpoint"),
+        ({"endpoint": None}, "observability.lineage.endpoint"),
+        ({"job_namespace": ""}, "observability.lineage.job_namespace"),
+        ({"job_namespace": None}, "observability.lineage.job_namespace"),
+        ({"dataset_namespace": ""}, "observability.lineage.dataset_namespace"),
+        ({"dataset_namespace": 1}, "observability.lineage.dataset_namespace"),
+        ({"timeout_seconds": True}, "observability.lineage.timeout_seconds"),
+        ({"timeout_seconds": 0}, "observability.lineage.timeout_seconds"),
+        ({"timeout_seconds": -1}, "observability.lineage.timeout_seconds"),
+        ({"timeout_seconds": 61}, "observability.lineage.timeout_seconds"),
+        ({"timeout_seconds": "5"}, "observability.lineage.timeout_seconds"),
+    ],
+)
+def test_parse_lineage_config_rejects_invalid_values(lineage, key):
+    with pytest.raises(ValueError) as exc_info:
+        parse_lineage_config({"observability": {"lineage": lineage}})
+
+    assert key in str(exc_info.value)
+
+
+def test_parse_lineage_config_rejects_non_mapping_observability():
+    with pytest.raises(ValueError, match="observability.*mapping"):
+        parse_lineage_config({"observability": []})
+
+
+@pytest.mark.parametrize("key", ["api_key", "apiKey", "token"])
+def test_parse_lineage_config_rejects_api_key_settings(key):
+    with pytest.raises(ValueError) as exc_info:
+        parse_lineage_config({"observability": {"lineage": {key: "secret"}}})
+
+    message = str(exc_info.value)
+    assert f"observability.lineage.{key}" in message
+    assert "OPENLINEAGE_API_KEY" in message
+    assert "secret" not in message
+
+
+def test_lineage_config_never_discloses_url():
+    secret_url = "https://user:s3cret@host"
+
+    assert secret_url not in repr(LineageConfig(url=secret_url))
+    with pytest.raises(ValueError) as exc_info:
+        parse_lineage_config(
+            {"observability": {"lineage": {"url": secret_url, "endpoint": []}}}
+        )
+    assert secret_url not in str(exc_info.value)
+
+
+def test_configuration_manager_validates_global_lineage_config(tmp_path):
+    config_file = _write_local_config(tmp_path)
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "priority_check": ["local"],
+                "environments": {"local": {"catalog": None}},
+                "observability": {"lineage": {"timeout_seconds": 0}},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="observability.lineage.timeout_seconds"):
+        ConfigurationManager(config_path=str(config_file))
+
+
+def test_configuration_manager_accepts_absent_global_lineage_config(tmp_path):
+    manager = ConfigurationManager(config_path=str(_write_local_config(tmp_path)))
+
+    assert manager.current_env_name == "local"

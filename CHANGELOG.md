@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added validated global `observability.lineage` settings for the planned
+  OpenLineage emitter, with environment-only API key handling. (Plan 36.0)
 - Documented publication alert routing and the warn-to-strict classification
   propagation migration path.
 - Added fail-closed strict classification propagation before certified writes
