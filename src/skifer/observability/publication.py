@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import warnings
 
 from skifer.observability.certification import ContractDefinition
+from skifer.observability.certification import diff_contracts, schema_from_definition
 from skifer.observability.certification_store import RunEvent, StoredCheckResult, next_run_event_time
 from skifer.observability.checks import CheckStatus
 from skifer.observability.quarantine import quarantine_staging
@@ -52,14 +53,23 @@ class PublicationResult:
     state: str
 
 
+@dataclass(frozen=True)
+class _BreakingChangeView:
+    breaking: bool
+    from_version: str
+    to_version: str
+
+
 class PublicationCoordinator:
     """Stage, validate, persist check results, then promote or quarantine."""
 
-    def __init__(self, backend, monitor, store, metadata_store=None):
+    def __init__(self, backend, monitor, store, metadata_store=None, alert_router=None, alert_config=None):
         self.backend = backend
         self.monitor = monitor
         self.store = store
         self.metadata_store = metadata_store
+        self.alert_router = alert_router
+        self.alert_config = alert_config if isinstance(alert_config, dict) else {}
         # Plain getattr, not monitor.__dict__: a monitor exposing `tracer` as a
         # property was silently downgraded to NoOpTracer, i.e. tracing quietly
         # off with no way to notice.
@@ -136,13 +146,66 @@ class PublicationCoordinator:
                     self.backend, run, definition, self.store, results=report.results
                 )
                 if outcome.state == "QUARANTINED":
-                    self._record_incidents(run, definition, report)
+                    incidents = self._record_incidents(run, definition, report)
+                    if self.alert_router is not None and incidents:
+                        try:
+                            self.alert_router.alert_incident(
+                                None,
+                                target_fqn=run.target_fqn,
+                                incidents=incidents,
+                                config=self.alert_config,
+                            )
+                        except Exception as exc:
+                            warnings.warn(
+                                f"[Alerts] failed to alert incident: {type(exc).__name__}",
+                                RuntimeWarning,
+                            )
                 set_span_attribute(
                     span, "decision", "QUARANTINED", required=self.tracing_required
                 )
                 return PublicationResult(run=run, report=report, state=outcome.state)
+            previous = None
+            if self.alert_router is not None:
+                try:
+                    previous = self.store.get_latest_promoted(run.target_fqn)
+                except Exception as exc:
+                    warnings.warn(
+                        f"[Alerts] failed to read previous publication: {type(exc).__name__}",
+                        RuntimeWarning,
+                    )
             promoted = promote_staging(self.backend, run, definition, self.store)
             self._resolve_recovered(promoted)
+            if (
+                self.alert_router is not None
+                and previous is not None
+                and previous.definition_hash != definition.definition_hash
+            ):
+                try:
+                    previous_definition = self.store.get_contract_by_hash(
+                        previous.contract_id,
+                        previous.definition_hash,
+                    )
+                    if previous_definition is not None:
+                        diff = diff_contracts(
+                            schema_from_definition(previous_definition),
+                            schema_from_definition(definition),
+                        )
+                        if diff.breaking:
+                            self.alert_router.alert_breaking_change(
+                                None,
+                                target_fqn=run.target_fqn,
+                                diff=_BreakingChangeView(
+                                    breaking=diff.breaking,
+                                    from_version=previous.contract_version,
+                                    to_version=definition.contract_version,
+                                ),
+                                config=self.alert_config,
+                            )
+                except Exception as exc:
+                    warnings.warn(
+                        f"[Alerts] failed to alert breaking change: {type(exc).__name__}",
+                        RuntimeWarning,
+                    )
             set_span_attribute(
                 span, "decision", "PROMOTED", required=self.tracing_required
             )
@@ -199,8 +262,9 @@ class PublicationCoordinator:
                 RuntimeWarning,
             )
 
-    def _record_incidents(self, run, definition, report) -> None:
+    def _record_incidents(self, run, definition, report):
         """Open incidents for failed critical checks without blocking publication."""
+        opened = []
         try:
             from skifer.observability.incidents import incidents_from_report
 
@@ -208,12 +272,14 @@ class PublicationCoordinator:
             for incident in incidents_from_report(
                 report, run_id=run.run_id, target_fqn=run.target_fqn, at=now
             ):
-                self.store.open_incident(incident)
+                opened.append(self.store.open_incident(incident))
         except Exception as exc:
             warnings.warn(
                 f"[Incidents] failed to open incident(s): {type(exc).__name__}",
                 RuntimeWarning,
             )
+            return []
+        return opened
 
     def _resolve_recovered(self, run) -> None:
         """Resolve open incidents as recovered without blocking publication."""

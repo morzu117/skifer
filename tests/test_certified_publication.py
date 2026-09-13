@@ -1,5 +1,6 @@
 """Staging identity tests for Plan 29 certified publication."""
 import json
+import warnings
 
 import skifer.observability.certification_store as certification_store
 from skifer.observability.certification import ContractDefinition
@@ -37,8 +38,44 @@ class _SequenceMonitor:
         return MonitorReport(fqn, [result_factory(fqn)])
 
 
+class _CapturingAlertRouter:
+    def __init__(self, error=None):
+        self.calls = []
+        self.error = error
+
+    def alert_incident(self, ctx, **kwargs):
+        if self.error is not None:
+            raise self.error
+        self.calls.append(("incident", ctx, kwargs))
+
+    def alert_breaking_change(self, ctx, **kwargs):
+        if self.error is not None:
+            raise self.error
+        self.calls.append(("breaking", ctx, kwargs))
+
+
 def _definition():
     return ContractDefinition("sales.orders", "1.0.0", "hash", "{}", "sales.orders", None)
+
+
+def _contract_definition(version, definition_hash, fields):
+    canonical_json = json.dumps({
+        "data_product": {"id": "sales.orders", "version": version},
+        "contract": {
+            "output": [
+                {"name": name, **spec}
+                for name, spec in fields.items()
+            ],
+        },
+    })
+    return ContractDefinition(
+        "sales.orders",
+        version,
+        definition_hash,
+        canonical_json,
+        "sales.orders",
+        None,
+    )
 
 
 def _metadata_definition():
@@ -393,6 +430,330 @@ def test_publication_coordinator_quarantines_critical_failure_without_target_wri
     assert store.get_contract_by_hash(
         definition.contract_id, definition.definition_hash
     ) == definition
+
+
+def test_quarantine_alerts_with_opened_incidents_and_config_without_data_values():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    config = {"slack_webhook": "https://alerts.example.test/hook"}
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_fail_result),
+        store,
+        alert_router=router,
+        alert_config=config,
+    )
+
+    result = coordinator.publish(
+        FakeDataFrame([{"id": "secret-data-value"}]),
+        "gold.orders",
+        {},
+        _definition(),
+    )
+
+    assert result.state == "QUARANTINED"
+    assert len(router.calls) == 1
+    kind, ctx, payload = router.calls[0]
+    assert kind == "incident"
+    assert ctx is None
+    assert payload["target_fqn"] == "gold.orders"
+    assert payload["incidents"] == store.list_incidents()
+    assert payload["config"] == config
+    assert "secret-data-value" not in repr(payload["incidents"])
+
+
+def test_quarantine_without_router_keeps_result_and_does_not_alert():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(backend, _Monitor(_fail_result), store)
+
+    result = coordinator.publish(
+        FakeDataFrame([{"id": None}]),
+        "gold.orders",
+        {},
+        _definition(),
+    )
+
+    assert result.state == "QUARANTINED"
+
+
+def test_quarantine_router_failure_is_non_blocking_and_redacted():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter(RuntimeError("secret webhook failure"))
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_fail_result),
+        store,
+        alert_router=router,
+    )
+
+    with pytest.warns(RuntimeWarning) as caught:
+        result = coordinator.publish(
+            FakeDataFrame([{"id": None}]),
+            "gold.orders",
+            {},
+            _definition(),
+        )
+
+    assert result.state == "QUARANTINED"
+    assert [str(item.message) for item in caught] == [
+        "[Alerts] failed to alert incident: RuntimeError"
+    ]
+
+
+def test_first_promotion_does_not_alert_breaking_change():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=router,
+    )
+    definition = _contract_definition(
+        "1.0.0",
+        "hash-v1",
+        {"id": {"logical_type": "integer", "required": True}},
+    )
+
+    result = coordinator.publish(
+        FakeDataFrame([{"id": 1}]), "gold.orders", {}, definition
+    )
+
+    assert result.state == "PROMOTED"
+    assert router.calls == []
+
+
+def test_same_hash_and_added_field_do_not_alert_breaking_change():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=router,
+    )
+    original = _contract_definition(
+        "1.0.0",
+        "hash-v1",
+        {"id": {"logical_type": "integer", "required": True}},
+    )
+    added = _contract_definition(
+        "1.1.0",
+        "hash-v2",
+        {
+            "id": {"logical_type": "integer", "required": True},
+            "label": {"logical_type": "string", "required": False},
+        },
+    )
+
+    coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, original)
+    coordinator.publish(FakeDataFrame([{"id": 2}]), "gold.orders", {}, original)
+    coordinator.publish(
+        FakeDataFrame([{"id": 3, "label": "safe"}]),
+        "gold.orders",
+        {},
+        added,
+    )
+
+    assert router.calls == []
+
+
+@pytest.mark.parametrize(
+    ("version", "definition_hash", "fields"),
+    [
+        ("2.0.0", "hash-removed", {}),
+        (
+            "2.0.0",
+            "hash-retyped",
+            {"id": {"logical_type": "string", "required": True}},
+        ),
+    ],
+)
+def test_breaking_change_alert_exposes_versions(version, definition_hash, fields):
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=router,
+        alert_config={"email": {"to": ["owner@example.test"]}},
+    )
+    original = _contract_definition(
+        "1.0.0",
+        "hash-v1",
+        {"id": {"logical_type": "integer", "required": True}},
+    )
+    changed = _contract_definition(version, definition_hash, fields)
+
+    coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, original)
+    result = coordinator.publish(
+        FakeDataFrame([{"id": 2}]), "gold.orders", {}, changed
+    )
+
+    assert result.state == "PROMOTED"
+    assert len(router.calls) == 1
+    kind, ctx, payload = router.calls[0]
+    assert kind == "breaking"
+    assert ctx is None
+    assert payload["target_fqn"] == "gold.orders"
+    assert payload["diff"].breaking is True
+    assert payload["diff"].from_version == "1.0.0"
+    assert payload["diff"].to_version == version
+    assert not hasattr(payload["diff"], "removed")
+
+
+def test_breaking_change_without_version_bump_is_alerted():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=router,
+    )
+    original = _contract_definition(
+        "1.0.0",
+        "hash-v1",
+        {"id": {"logical_type": "integer", "required": True}},
+    )
+    changed = _contract_definition("1.0.0", "hash-v2", {})
+
+    coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, original)
+    coordinator.publish(FakeDataFrame([{}]), "gold.orders", {}, changed)
+
+    assert len(router.calls) == 1
+    assert router.calls[0][2]["diff"].from_version == "1.0.0"
+    assert router.calls[0][2]["diff"].to_version == "1.0.0"
+
+
+def test_unregistered_previous_definition_skips_alert_without_warning():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    store.append_run_event(
+        RunEvent(
+            "legacy-run:PROMOTED",
+            "legacy-run",
+            "gold.orders",
+            "PROMOTED",
+            "sales.orders",
+            "0.9.0",
+            "legacy-unregistered-hash",
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            target_fqn="gold.orders",
+            staging_fqn="_skifer_staging.orders_legacy",
+        )
+    )
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=router,
+    )
+    definition = _contract_definition(
+        "1.0.0",
+        "hash-v1",
+        {"id": {"logical_type": "integer", "required": True}},
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = coordinator.publish(
+            FakeDataFrame([{"id": 1}]), "gold.orders", {}, definition
+        )
+
+    assert result.state == "PROMOTED"
+    assert router.calls == []
+    assert caught == []
+
+
+def test_breaking_change_router_failure_is_non_blocking_and_redacted():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter(RuntimeError("secret webhook failure"))
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=router,
+    )
+    original = _contract_definition(
+        "1.0.0",
+        "hash-v1",
+        {"id": {"logical_type": "integer", "required": True}},
+    )
+    changed = _contract_definition("2.0.0", "hash-v2", {})
+    coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, original)
+
+    with pytest.warns(RuntimeWarning) as caught:
+        result = coordinator.publish(
+            FakeDataFrame([{}]), "gold.orders", {}, changed
+        )
+
+    assert result.state == "PROMOTED"
+    assert [str(item.message) for item in caught] == [
+        "[Alerts] failed to alert breaking change: RuntimeError"
+    ]
+
+
+def test_previous_promotion_read_failure_is_non_blocking_and_redacted(monkeypatch):
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=router,
+    )
+    monkeypatch.setattr(
+        store,
+        "get_latest_promoted",
+        lambda target_fqn: (_ for _ in ()).throw(RuntimeError("secret store error")),
+    )
+
+    with pytest.warns(RuntimeWarning) as caught:
+        result = coordinator.publish(
+            FakeDataFrame([{"id": 1}]),
+            "gold.orders",
+            {},
+            _contract_definition(
+                "1.0.0",
+                "hash-v1",
+                {"id": {"logical_type": "integer", "required": True}},
+            ),
+        )
+
+    assert result.state == "PROMOTED"
+    assert [str(item.message) for item in caught] == [
+        "[Alerts] failed to read previous publication: RuntimeError"
+    ]
+
+
+def test_resume_with_router_emits_no_alerts():
+    definition = _contract_definition(
+        "1.0.0",
+        "hash-v1",
+        {"id": {"logical_type": "integer", "required": True}},
+    )
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    router = _CapturingAlertRouter()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=router,
+    )
+    run = stage_dataframe(
+        backend,
+        start_publication_run("gold.orders", definition, store),
+        definition,
+        store,
+        FakeDataFrame([{"id": 1}]),
+    )
+
+    result = coordinator.resume(run, definition)
+
+    assert result.state == "PROMOTED"
+    assert router.calls == []
 
 
 def test_publication_registers_same_definition_idempotently():

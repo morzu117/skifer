@@ -264,7 +264,65 @@ def test_run_process_to_table_certified_schema_uses_publication_coordinator():
         patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
 
     coordinator.return_value.publish.assert_called_once()
+    assert coordinator.call_args.kwargs["alert_router"] is None
+    assert coordinator.call_args.kwargs["alert_config"] == {}
     engine._write_dataframe.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        "not-a-mapping",
+        {},
+        {"max_depth": 5, "min_severity": "critical"},
+    ],
+)
+def test_build_alert_router_requires_mapping_with_truthy_channel(config):
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.context.alerts_config.return_value = config
+
+    router, alert_config = _build_alert_router(engine)
+
+    assert router is None
+    assert alert_config == {}
+
+
+def test_build_alert_router_uses_configured_max_depth():
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.metadata_store = None
+    config = {
+        "slack_webhook": "https://alerts.example.test/hook",
+        "max_depth": 7,
+        "min_severity": "warning",
+    }
+    engine.context.alerts_config.return_value = config
+
+    router, alert_config = _build_alert_router(engine)
+
+    assert router is not None
+    assert router._max_depth == 7
+    assert alert_config == config
+
+
+def test_build_alert_router_failure_is_non_blocking_and_redacted():
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.context.alerts_config.side_effect = RuntimeError("secret config value")
+
+    with pytest.warns(RuntimeWarning) as caught:
+        router, alert_config = _build_alert_router(engine)
+
+    assert router is None
+    assert alert_config == {}
+    assert [str(item.message) for item in caught] == [
+        "[Alerts] failed to build alert router: RuntimeError"
+    ]
 
 
 def test_promoted_publication_indexes_metadata_and_attaches_latest_run_id():

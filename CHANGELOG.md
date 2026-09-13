@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Routed certified-publication quarantine incidents and breaking contract changes
+  through configured best-effort alert channels and governed metadata recipients.
 - Registered contract definitions before certified publication starts and added
   hash-addressed definition lookup for governance comparisons.
 - Added validated per-environment `alerts` and `classification_propagation`

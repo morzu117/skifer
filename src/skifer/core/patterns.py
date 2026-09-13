@@ -9,11 +9,52 @@ from __future__ import annotations
 import logging
 import os
 from typing import TYPE_CHECKING, Any
+import warnings
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _build_alert_router(e):
+    try:
+        config = e.context.alerts_config()
+        if not isinstance(config, dict):
+            config = {}
+        channel_keys = (
+            "webhook_url",
+            "slack_webhook",
+            "msteams_webhook",
+            "google_chat_webhook",
+            "email",
+        )
+        if not any(config.get(key) for key in channel_keys):
+            return None, {}
+
+        from skifer.observability.alerts import AlertDispatcher
+        from skifer.observability.incidents import AlertRouter, MetadataStoreGovernance
+
+        metadata_store = getattr(e, "metadata_store", None)
+        governance = (
+            MetadataStoreGovernance(metadata_store)
+            if metadata_store is not None
+            else object()
+        )
+        return (
+            AlertRouter(
+                governance,
+                AlertDispatcher(),
+                max_depth=config.get("max_depth", 3),
+            ),
+            config,
+        )
+    except Exception as exc:
+        warnings.warn(
+            f"[Alerts] failed to build alert router: {type(exc).__name__}",
+            RuntimeWarning,
+        )
+        return None, {}
 
 
 class PipelinePatterns:
@@ -126,11 +167,14 @@ class PipelinePatterns:
             from skifer.observability.publication import PublicationCoordinator
 
             definition = canonicalize_contract(parse_to_ir(schema_dict))
+            alert_router, alert_config = _build_alert_router(e)
             coordinator = PublicationCoordinator(
                 e._get_backend(),
                 e.monitor,
                 e.certification_store,
                 metadata_store=getattr(e, "metadata_store", None),
+                alert_router=alert_router,
+                alert_config=alert_config,
             )
             # Same identity from the pipeline down to the certification record,
             # so the link survives without exported traces (Plan 29).

@@ -7,6 +7,8 @@ from enum import Enum
 import inspect
 from typing import TYPE_CHECKING
 
+from skifer.observability.metadata_store import MetadataRegistryQuery
+
 if TYPE_CHECKING:
     from skifer.observability.alerts import AlertDispatcher
 
@@ -124,6 +126,22 @@ class _BreakingChangeAlert:
     severity: str
     from_version: str | None = None
     to_version: str | None = None
+
+
+class MetadataStoreGovernance:
+    """Adapt the metadata registry to the engine-side alert routing interface."""
+
+    def __init__(self, metadata_store):
+        self._metadata_store = metadata_store
+
+    def get_dataset(self, ctx, target_fqn):
+        return self._metadata_store.get(target_fqn)
+
+    def registry_downstream(self, ctx, fqn, column, max_depth: int = 3):
+        return MetadataRegistryQuery(
+            self._metadata_store,
+            max_depth=max_depth,
+        ).downstream(fqn, column)
 
 
 class AlertRouter:
