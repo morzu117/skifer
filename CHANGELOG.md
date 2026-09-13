@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- `run_process_and_split` and `run_union_sources_to_table` now refuse schemas declaring `data_product` before any processing, reads, or writes, directing certified publication through `run_process_to_table` or `run_from_yaml`. (Plan 35.5)
+
 ### Fixed
 
 - Reserved index exit code 3 for classification violations via `ClassificationViolationError`.

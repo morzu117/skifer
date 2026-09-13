@@ -288,6 +288,14 @@ class PipelinePatterns:
                 "streaming pivot table, then N downstream streaming pipelines each "
                 "filtering their slice (filter is stream-safe, one checkpoint per branch)."
             )
+        if schema_dict.get("data_product") is not None:
+            raise NotImplementedError(
+                "run_process_and_split does not support certified publication — the schema "
+                "declares 'data_product', which must be staged, checked and promoted or "
+                "quarantined. Use run_process_to_table (or run_from_yaml) for a data product; "
+                "publish one certified table per slice (one schema per slice, each with its "
+                "own filter), or split downstream of the certified table."
+            )
 
         logger.info(
             "--- Executing Pattern: process_and_split (Base: %s, Column: %s) ---",
@@ -355,6 +363,14 @@ class PipelinePatterns:
                 "run_union_sources_to_table does not support streaming schemas — "
                 "multi-source streaming union is a materialized-table use case "
                 "(planned for a later plan)."
+            )
+        if schema_dict.get("data_product") is not None:
+            raise NotImplementedError(
+                "run_union_sources_to_table does not support certified publication — the "
+                "schema declares 'data_product', which must be staged, checked and promoted "
+                "or quarantined. Use run_process_to_table (or run_from_yaml) for a data "
+                "product; list the sources explicitly in 'tables:' and publish with "
+                "run_process_to_table."
             )
 
         actual_schema_source = e.get_target_schema(source_layer)

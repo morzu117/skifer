@@ -57,6 +57,75 @@ def _certified_schema(**overrides):
     return schema
 
 
+def test_run_process_and_split_refuses_data_product_before_engine_work():
+    engine, backend, patterns = _make_patterns_engine()
+
+    with pytest.raises(NotImplementedError, match="data_product.*run_process_to_table"):
+        patterns.run_process_and_split(
+            schema_dict=_certified_schema(),
+            split_values=[{"label": "fr", "value": "FR"}],
+            target_layer="gold",
+            target_base_name="orders",
+            split_column="country",
+        )
+
+    engine.process_schema.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+
+
+def test_run_union_sources_to_table_refuses_data_product_before_engine_work():
+    engine, backend, patterns = _make_patterns_engine()
+
+    with pytest.raises(NotImplementedError, match="data_product"):
+        patterns.run_union_sources_to_table(
+            schema_dict=_certified_schema(),
+            source_partitions=[{"label": "fr"}],
+            source_layer="silver",
+            target_layer="gold",
+            target_table_name="orders",
+            source_base_names=["orders"],
+            source_alias="unioned",
+        )
+
+    backend.table_exists.assert_not_called()
+    backend.read_table.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine.process_schema.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+
+
+def test_run_process_and_split_without_data_product_reaches_normal_flow():
+    engine, backend, patterns = _make_patterns_engine()
+
+    patterns.run_process_and_split(
+        schema_dict={"tables": []},
+        split_values=[],
+        target_layer="gold",
+        target_base_name="orders",
+        split_column="country",
+    )
+
+    engine.process_schema.assert_called_once_with({"tables": []})
+
+
+def test_run_union_sources_to_table_without_data_product_reaches_normal_flow():
+    engine, backend, patterns = _make_patterns_engine(table_exists_map={"orders_fr": False})
+
+    with pytest.raises(ValueError, match="No sources found"):
+        patterns.run_union_sources_to_table(
+            schema_dict={"tables": []},
+            source_partitions=[{"label": "fr"}],
+            source_layer="silver",
+            target_layer="gold",
+            target_table_name="orders",
+            source_base_names=["orders"],
+            source_alias="unioned",
+        )
+
+    backend.table_exists.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # B.4 — absent table is silently skipped, warning emitted
 # ---------------------------------------------------------------------------
