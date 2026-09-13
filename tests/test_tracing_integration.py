@@ -162,7 +162,7 @@ def test_pipeline_publication_span_tree_and_run_id_propagation():
     tracer = InMemoryTracer()
     engine, backend = _engine(tracer)
 
-    assert engine.run_process_to_table(_schema(), "gold", "orders") is None
+    returned_run_id = engine.run_process_to_table(_schema(), "gold", "orders")
 
     assert _span_names(tracer) == [
         "skifer.pipeline.run",
@@ -188,6 +188,8 @@ def test_pipeline_publication_span_tree_and_run_id_propagation():
     assert {span.trace_id for span in tracer.spans} == {root.trace_id}
     assert stage.attributes["run_id"] == promote.attributes["run_id"]
     assert stage.attributes["run_id"] == root.attributes["run_id"]
+    # Slice 5.2: the returned run_id is exactly the one propagated through the trace.
+    assert returned_run_id == root.attributes["run_id"]
     assert stage.trace_context.run_id == stage.attributes["run_id"]
     assert backend._written["gold.orders"] == [{"id": 1}]
 
@@ -224,7 +226,9 @@ def test_raising_tracer_preserves_engine_and_publication_results():
         "gold",
         "orders",
     )
-    assert failing_result is baseline_result is None
+    # Slice 5.2: both runs now return their minted run_id (distinct per run); the
+    # raising tracer must not change the business outcome — proven by identical writes.
+    assert failing_result is not None and baseline_result is not None
     assert failing_backend._written == baseline_backend._written
 
     def publish_with(tracer):

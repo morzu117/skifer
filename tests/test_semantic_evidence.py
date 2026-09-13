@@ -161,6 +161,27 @@ def test_evidence_includes_only_requested_sql_and_filter_values():
     }
 
 
+def test_evidence_redacts_sensitive_filter_values_even_when_requested():
+    evidence = _evidence(
+        normalized_filters=(
+            {"column": "ssn", "operator": "eq", "value": "123-45-6789"},
+            {"column": "region", "operator": "eq", "value": "EMEA"},
+        )
+    )
+
+    # Even with include_filter_values=True, a pii/restricted column value must
+    # never be exposed in evidence; an ordinary column value is shown as asked.
+    payload = evidence.to_dict(
+        include_filter_values=True, sensitive_columns=frozenset({"ssn"})
+    )
+
+    assert payload["normalized_filters"][0]["value"] == "<redacted>"
+    assert payload["normalized_filters"][1]["value"] == "EMEA"
+    assert EvidencePolicy(sensitive_columns=frozenset({"ssn"})).sensitive_columns == {
+        "ssn"
+    }
+
+
 def test_evidence_refuses_naive_datetime():
     with pytest.raises(ValueError, match="compiled_at.*timezone-aware"):
         _evidence(compiled_at=datetime(2026, 9, 4, 12, 30)).to_dict()

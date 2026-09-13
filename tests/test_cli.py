@@ -6,21 +6,33 @@ On teste uniquement les chemins de sortie rapide (pas le REPL interactif).
 
 from __future__ import annotations
 
+import argparse
+import builtins
+import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import yaml
 
 from skifer.cli import (
+    API_LOOPBACK_HOST,
+    AUDIT_EXIT_BELOW_THRESHOLD,
+    AUDIT_EXIT_OK,
+    INDEX_EXIT_ERROR,
+    INDEX_EXIT_OK,
     SEMANTIC_EXIT_CONFLICT,
     SEMANTIC_EXIT_DRIFT,
     SEMANTIC_EXIT_ERROR,
     SEMANTIC_EXIT_OK,
+    run_contract_command,
+    run_audit,
     run_semantic_sync,
     run_semantic_validate,
+    _run_api,
 )
 from skifer.core.ir import parse_to_ir
 from skifer.core.schema_loader import parse_schema
@@ -57,6 +69,33 @@ def _write_yaml(path: Path, payload: dict) -> None:
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, default_flow_style=False),
         encoding="utf-8",
     )
+
+
+AUDIT_FULLY_COVERED = """\
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  owner: sales-data
+contract:
+  output:
+    order_id: {description: Order identifier, classification: internal}
+    amount: {description: Order amount, classification: confidential}
+tables:
+  - name: silver.orders
+    alias: ord
+select_final:
+  - [id, order_id]
+  - [amount, amount]
+"""
+
+
+AUDIT_BARE_PIPELINE = """\
+tables:
+  - name: silver.orders
+    alias: ord
+select_final:
+  - [amount, amount]
+"""
 
 
 def _seed_base_and_curated(
@@ -119,6 +158,145 @@ def test_cli_main_importable():
     )
     assert result.returncode == 0
     assert "ok" in result.stdout
+
+
+def test_api_serve_help_exits_zero():
+    result = _run_cli("api", "serve", "--help")
+    assert result.returncode == 0
+    assert "--project" in result.stdout
+    assert "--port" in result.stdout
+
+
+def test_api_serve_refuses_non_loopback_host_flag(tmp_path):
+    result = _run_cli(
+        "api",
+        "serve",
+        "--project",
+        str(tmp_path),
+        "--host",
+        "0.0.0.0",
+    )
+    assert result.returncode == 2
+    assert "unrecognized arguments: --host 0.0.0.0" in result.stderr
+
+
+def test_api_serve_uses_fixed_loopback_bind(monkeypatch, tmp_path):
+    calls = {}
+    fake_app = object()
+    monkeypatch.setattr("skifer.api.app.create_app", lambda _project: fake_app)
+    monkeypatch.setitem(
+        sys.modules,
+        "uvicorn",
+        SimpleNamespace(run=lambda app, **kwargs: calls.update(app=app, **kwargs)),
+    )
+
+    _run_api(
+        argparse.Namespace(
+            api_command="serve",
+            project=str(tmp_path),
+            port=8123,
+        )
+    )
+
+    assert calls == {
+        "app": fake_app,
+        "host": API_LOOPBACK_HOST,
+        "port": 8123,
+        "log_config": None,
+    }
+    assert API_LOOPBACK_HOST == "127.0.0.1"
+
+
+def test_api_openapi_command_prints_json(tmp_path):
+    pytest.importorskip("fastapi")
+    result = _run_cli("api", "openapi", "--project", str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    document = json.loads(result.stdout)
+    assert document["openapi"].startswith("3.")
+    assert document["info"]["version"] == "0"
+    assert list(tmp_path.glob(".skifer_*.db")) == []
+
+
+def test_api_command_without_extra_reports_dependency(monkeypatch, tmp_path, capsys):
+    original_import = builtins.__import__
+
+    def missing_fastapi(name, *args, **kwargs):
+        if name == "fastapi" or name.startswith("fastapi."):
+            raise ImportError
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_fastapi)
+    with pytest.raises(SystemExit) as raised:
+        _run_api(
+            argparse.Namespace(
+                api_command="serve",
+                project=str(tmp_path),
+                port=8000,
+            )
+        )
+    assert raised.value.code == 1
+    assert 'pip install -e ".[api]"' in capsys.readouterr().err
+
+
+def test_mcp_serve_help_still_works():
+    result = _run_cli("mcp", "serve", "--help")
+    assert result.returncode == 0
+    assert "--transport" in result.stdout
+    assert "--config" in result.stdout
+
+
+def test_cli_contract_import_prints_yaml_block(tmp_path, capsys):
+    contract_file = tmp_path / "contract.yaml"
+    contract_file.write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "v3.1.0",
+                "kind": "DataContract",
+                "id": "sales.orders",
+                "version": "1.0.0",
+                "schema": {"properties": [{"name": "order_id", "logicalType": "identifier"}]},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = run_contract_command(
+        argparse.Namespace(contract_command="import", file=str(contract_file))
+    )
+
+    assert exit_code == 0
+    payload = yaml.safe_load(capsys.readouterr().out)
+    assert payload["data_product"] == {"id": "sales.orders", "version": "1.0.0"}
+    assert payload["contract"]["output"]["order_id"]["logical_type"] == "identifier"
+
+
+def test_cli_contract_import_missing_file_exit_1(tmp_path, capsys):
+    exit_code = run_contract_command(
+        argparse.Namespace(contract_command="import", file=str(tmp_path / "missing.yaml"))
+    )
+
+    assert exit_code == 1
+    assert "Import failed:" in capsys.readouterr().out
+
+
+def test_cli_contract_import_malformed_yaml_exit_1(tmp_path, capsys):
+    contract_file = tmp_path / "malformed.yaml"
+    contract_file.write_text("schema: [unterminated\n", encoding="utf-8")
+
+    exit_code = run_contract_command(
+        argparse.Namespace(contract_command="import", file=str(contract_file))
+    )
+
+    assert exit_code == 1
+    assert "Import failed:" in capsys.readouterr().out
+
+
+def test_cli_contract_missing_subcommand_exit_2(capsys):
+    exit_code = run_contract_command(argparse.Namespace(contract_command=None))
+
+    assert exit_code == 2
+    assert "Contract command missing" in capsys.readouterr().out
 
 
 # ==============================================================================
@@ -203,6 +381,113 @@ def test_validate_help_exits_zero():
     """skifer validate --help exits 0."""
     result = _run_cli("validate", "--help")
     assert result.returncode == 0
+
+
+def test_index_subcommand_indexes_without_spark(tmp_path):
+    schema_file = tmp_path / "orders.yaml"
+    db_path = tmp_path / "metadata.db"
+    schema_file.write_text(
+        """
+data_product: {id: sales.orders, version: 1.0.0}
+tables: [{name: silver.orders, alias: ord}]
+select_final:
+  - [id, order_id]
+""",
+        encoding="utf-8",
+    )
+
+    first = _run_cli("index", str(schema_file), "--db", str(db_path))
+    second = _run_cli("index", str(schema_file), "--db", str(db_path))
+
+    assert first.returncode == INDEX_EXIT_OK, first.stdout + first.stderr
+    assert second.returncode == INDEX_EXIT_OK, second.stdout + second.stderr
+    assert "updated" in first.stdout
+    assert "unchanged" in second.stdout
+
+
+def test_index_bad_db_path_exits_cleanly(tmp_path):
+    result = _run_cli(
+        "index",
+        str(tmp_path / "schema.yaml"),
+        "--db",
+        str(tmp_path / "missing" / "metadata.db"),
+    )
+
+    assert result.returncode == INDEX_EXIT_ERROR
+    assert "Traceback" not in result.stdout + result.stderr
+    assert "Failed to open metadata registry" in result.stderr
+
+
+def test_audit_cli_exit_zero_without_threshold(tmp_path, capsys):
+    pipeline = tmp_path / "covered.yaml"
+    pipeline.write_text(AUDIT_FULLY_COVERED, encoding="utf-8")
+
+    exit_code = run_audit([str(pipeline)], as_json=False, min_coverage=None)
+
+    assert exit_code == AUDIT_EXIT_OK
+    assert "overall" in capsys.readouterr().out
+
+
+def test_audit_cli_exit_two_below_threshold(tmp_path, capsys):
+    pipeline = tmp_path / "bare.yaml"
+    pipeline.write_text(AUDIT_BARE_PIPELINE, encoding="utf-8")
+
+    exit_code = run_audit([str(pipeline)], as_json=False, min_coverage=50.0)
+
+    assert exit_code == AUDIT_EXIT_BELOW_THRESHOLD
+    assert "0.00%" in capsys.readouterr().out
+
+
+def test_audit_cli_exit_zero_at_or_above_threshold(tmp_path, capsys):
+    pipeline = tmp_path / "covered.yaml"
+    pipeline.write_text(AUDIT_FULLY_COVERED, encoding="utf-8")
+
+    exit_code = run_audit([str(pipeline)], as_json=False, min_coverage=80.0)
+
+    assert exit_code == AUDIT_EXIT_OK
+    assert "80.00%" in capsys.readouterr().out
+
+
+def test_audit_cli_json_stable(tmp_path, capsys):
+    first = tmp_path / "a.yaml"
+    second = tmp_path / "b.yaml"
+    first.write_text(AUDIT_FULLY_COVERED, encoding="utf-8")
+    second.write_text(AUDIT_BARE_PIPELINE, encoding="utf-8")
+
+    exit_code = run_audit([str(second), str(first)], as_json=True, min_coverage=None)
+
+    assert exit_code == AUDIT_EXIT_OK
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert output.strip() == json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    assert payload["pipelines"][0]["path"] == str(first)
+
+
+def test_audit_cli_no_files_exits_zero(tmp_path, capsys):
+    exit_code = run_audit(
+        [str(tmp_path / "none*.yaml")],
+        as_json=False,
+        min_coverage=90.0,
+    )
+
+    assert exit_code == AUDIT_EXIT_OK
+    assert "No schema files found." in capsys.readouterr().out
+
+
+def test_audit_cli_end_to_end(tmp_path):
+    pipeline = tmp_path / "covered.yaml"
+    pipeline.write_text(AUDIT_FULLY_COVERED, encoding="utf-8")
+
+    result = _run_cli("audit", str(pipeline), "--min-coverage", "100")
+
+    assert result.returncode == AUDIT_EXIT_BELOW_THRESHOLD
+    assert "Audited 1 pipeline(s)" in result.stdout
+    assert "overall" in result.stdout
 
 
 BASE_SYNC_YAML = """

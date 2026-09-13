@@ -5,6 +5,83 @@ They define the business vocabulary — dimensions, metrics, filters — for one
 
 ---
 
+## Pipeline governance metadata — Plan 31
+
+Pipeline schemas may attach ownership and lifecycle governance to the existing
+`data_product` and `contract` blocks:
+
+```yaml
+data_product:
+  id: sales.orders
+  version: 2.0.0
+  owner:
+    team: sales-analytics
+    steward: alice@example.com
+    domain: commerce
+    contact: data-sales@example.com
+  description: Certified order facts
+
+contract:
+  status: active                 # draft | active | deprecated; default: active
+  reviewers: [alice@example.com, bob@example.com]
+  effective_from: 2026-01-01    # inclusive ISO date
+  effective_until: 2026-12-31   # inclusive ISO date; must not precede effective_from
+  grain: [order_id]
+  sla:
+    refresh_frequency: daily
+    max_latency: 2h
+  security:
+    level: restricted
+    access_policy: row_filter:region
+  output:
+    order_id:
+      logical_type: identifier
+      required: true
+      unique: true
+      classification: internal
+      description: Stable order identifier
+    customer_email:
+      logical_type: string
+      classification: pii
+      description: Customer contact email
+```
+
+An owner may still be a legacy string. The structured mapping accepts only
+`team`, `steward`, `domain`, and `contact`; `data_product.domain` remains the
+product-level domain and takes precedence over `owner.domain` for the effective
+domain.
+
+Field classification uses one ordered taxonomy, from least to most sensitive:
+`public`, `internal`, `confidential`, `restricted`, `pii`. Static column lineage
+propagates the strongest upstream classification. A missing non-public target
+declaration warns in the default mode and raises in strict mode; an explicit
+lower classification remains explicit but is logged. Regardless of evidence
+disclosure settings, filter values for columns supplied in
+`EvidencePolicy.sensitive_columns` are always rendered as `<redacted>`; callers
+use that set for `restricted` and `pii` fields.
+
+Contract identity uses canonicalization version 2. `sla` and `security` are part
+of the SHA-256 definition hash. Lifecycle workflow metadata—`status`,
+`reviewers`, `effective_from`, and `effective_until`—is intentionally outside
+the hash, as are ownership and descriptions. `diff_contracts(old, new)` marks
+field removals, retypes, required hardening, classification downgrades, and SLA
+relaxation or an uncomparable SLA change as breaking.
+
+ODCS 3.1 documents can be imported to these two YAML blocks:
+
+```bash
+skifer contract import contract.odcs.yaml
+```
+
+The importer validates the supported ODCS shape, maps supported ownership,
+fields, quality, SLA, and security metadata, and emits comments for information
+that has no Skifer mapping instead of dropping it silently.
+
+See [Services and local API](services_and_api.md) for metadata indexing,
+incident management, and the governance coverage audit.
+
+---
+
 ## File location
 
 ```

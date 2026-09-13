@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping
 import json
 from typing import Any
 
-from skifer.agentic.data_service import (
+from skifer.services import (
     RequestContext,
     ScopeDenied,
     require_scope,

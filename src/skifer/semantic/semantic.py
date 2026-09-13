@@ -646,7 +646,12 @@ class SemanticEngine:
             entry = {"column": item.get("column"), "operator": item.get("operator")}
             if "value" in item:
                 entry["value"] = (
-                    item["value"] if evidence_policy.include_filter_values else "<redacted>"
+                    item["value"]
+                    if (
+                        evidence_policy.include_filter_values
+                        and item.get("column") not in evidence_policy.sensitive_columns
+                    )
+                    else "<redacted>"
                 )
             normalized.append(entry)
         return tuple(normalized)

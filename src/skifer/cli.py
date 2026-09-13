@@ -10,11 +10,16 @@ Usage :
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
+from dataclasses import asdict
+from io import StringIO
 import json
 import os
 from pathlib import Path
 import re
 import sys
+
+from skifer.semantic.sync import assert_no_curation_loss as _assert_no_curation_loss
 
 
 SEMANTIC_EXIT_OK = 0
@@ -30,6 +35,27 @@ ADAPTIVE_EXIT_USAGE = 2
 ADAPTIVE_EXIT_STALE = 3
 ADAPTIVE_EXIT_CONFLICT = 4
 ADAPTIVE_EXIT_REGRESSED = 5
+
+INCIDENTS_EXIT_OK = 0
+INCIDENTS_EXIT_ERROR = 1
+INCIDENTS_EXIT_USAGE = 2
+INCIDENTS_EXIT_INVALID_TRANSITION = 3
+INCIDENTS_EXIT_NOT_FOUND = 4
+
+INDEX_EXIT_OK = 0
+INDEX_EXIT_ERROR = 1
+INDEX_EXIT_USAGE = 2
+
+META_EXIT_OK = 0
+META_EXIT_ERROR = 1
+META_EXIT_USAGE = 2
+META_EXIT_NOT_FOUND = 3
+
+AUDIT_EXIT_OK = 0
+AUDIT_EXIT_ERROR = 1
+AUDIT_EXIT_BELOW_THRESHOLD = 2
+
+API_LOOPBACK_HOST = "127.0.0.1"
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
@@ -52,6 +78,75 @@ def main() -> None:
         metavar="PATH",
         help="Schema file path(s) or glob patterns (e.g. schemas/**/*.yaml).",
     )
+
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="Audit governance coverage for pipeline YAML files (no Spark required).",
+    )
+    audit_parser.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATHS",
+        help="Schema file path(s) or glob patterns (e.g. schemas/**/*.yaml).",
+    )
+    audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a stable sorted-key JSON report.",
+    )
+    audit_parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Exit 2 when overall coverage is below this percentage.",
+    )
+
+    index_parser = subparsers.add_parser(
+        "index",
+        help="Index pipeline metadata into the registry (no Spark).",
+    )
+    index_parser.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATHS",
+        help="Pipeline YAML paths to index.",
+    )
+    index_parser.add_argument(
+        "--db",
+        default=".skifer_metadata.db",
+        help="SQLite registry path.",
+    )
+    index_parser.add_argument(
+        "--target-fqn",
+        default=None,
+        help="Override target FQN (single path only).",
+    )
+
+    lineage_parser = subparsers.add_parser(
+        "lineage",
+        help="Show lineage for a dataset column from the registry.",
+    )
+    lineage_parser.add_argument(
+        "target",
+        metavar="FQN[.column]",
+        help=(
+            "Dataset FQN, optionally .column. If the whole value matches a "
+            "registry FQN it selects the dataset; otherwise the final dot "
+            "separates the column."
+        ),
+    )
+    lineage_parser.add_argument("--direction", choices=["up", "down"], default="down")
+    lineage_parser.add_argument("--format", choices=["mermaid", "json"], default="mermaid")
+    lineage_parser.add_argument("--db", default=".skifer_metadata.db")
+
+    dictionary_parser = subparsers.add_parser(
+        "dictionary",
+        help="Show the column dictionary for a dataset.",
+    )
+    dictionary_parser.add_argument("target", metavar="FQN")
+    dictionary_parser.add_argument("--db", default=".skifer_metadata.db")
+    dictionary_parser.add_argument("--format", choices=["text", "json"], default="text")
 
     hub_parser = subparsers.add_parser(
         "hub",
@@ -136,6 +231,38 @@ def main() -> None:
         help="Path to the closed MCP server YAML configuration.",
     )
 
+    api_parser = subparsers.add_parser(
+        "api",
+        help="Run the optional local HTTP API.",
+    )
+    api_subparsers = api_parser.add_subparsers(dest="api_command")
+    api_serve_parser = api_subparsers.add_parser(
+        "serve",
+        help="Serve services/ over a loopback HTTP API.",
+    )
+    api_serve_parser.add_argument(
+        "--project",
+        required=True,
+        metavar="DIR",
+        help="Skifer project directory.",
+    )
+    api_serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Loopback port (default: 8000).",
+    )
+    api_openapi_parser = api_subparsers.add_parser(
+        "openapi",
+        help="Print the OpenAPI schema (JSON) to stdout.",
+    )
+    api_openapi_parser.add_argument(
+        "--project",
+        default=".",
+        metavar="DIR",
+        help="Project directory (default: cwd).",
+    )
+
     adaptive_parser = subparsers.add_parser(
         "adaptive",
         help="Review adaptive Gold proposals; never deploy or invoke Git.",
@@ -192,18 +319,104 @@ def main() -> None:
         help="Days in each comparison window (default: 30).",
     )
 
+    incidents_parser = subparsers.add_parser(
+        "incidents",
+        help="Manage data-quality incidents.",
+    )
+    incidents_subparsers = incidents_parser.add_subparsers(dest="incidents_command")
+    incidents_list_parser = incidents_subparsers.add_parser(
+        "list",
+        help="List incidents.",
+    )
+    incidents_list_parser.add_argument(
+        "--status",
+        choices=["NEW", "ACKNOWLEDGED", "ASSIGNED", "RESOLVED"],
+    )
+    incidents_list_parser.add_argument("--target", dest="target_fqn", metavar="FQN")
+    incidents_list_parser.add_argument("--limit", type=int, default=50)
+    incidents_list_parser.add_argument(
+        "--store",
+        default=".skifer_certification.db",
+        metavar="PATH",
+    )
+
+    incidents_ack_parser = incidents_subparsers.add_parser(
+        "ack",
+        help="Acknowledge an incident.",
+    )
+    incidents_ack_parser.add_argument("incident_id", metavar="INCIDENT_ID")
+    incidents_ack_parser.add_argument(
+        "--store",
+        default=".skifer_certification.db",
+    )
+
+    incidents_assign_parser = incidents_subparsers.add_parser(
+        "assign",
+        help="Assign an incident.",
+    )
+    incidents_assign_parser.add_argument("incident_id", metavar="INCIDENT_ID")
+    incidents_assign_parser.add_argument("--assignee", required=True)
+    incidents_assign_parser.add_argument(
+        "--store",
+        default=".skifer_certification.db",
+    )
+
+    incidents_resolve_parser = incidents_subparsers.add_parser(
+        "resolve",
+        help="Resolve an incident.",
+    )
+    incidents_resolve_parser.add_argument("incident_id", metavar="INCIDENT_ID")
+    incidents_resolve_parser.add_argument(
+        "--root-cause",
+        dest="root_cause",
+        required=True,
+    )
+    incidents_resolve_parser.add_argument(
+        "--store",
+        default=".skifer_certification.db",
+    )
+
+    contract_parser = subparsers.add_parser(
+        "contract",
+        help="Data-contract utilities (Plan 31).",
+    )
+    contract_subparsers = contract_parser.add_subparsers(dest="contract_command")
+    contract_import_parser = contract_subparsers.add_parser(
+        "import",
+        help="Import an ODCS 3.1 DataContract and print the Skifer YAML block.",
+    )
+    contract_import_parser.add_argument(
+        "file",
+        metavar="FILE",
+        help="Path to an ODCS 3.1 YAML/JSON document.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "validate":
         _run_validate(args)
+    elif args.command == "audit":
+        _run_audit(args)
+    elif args.command == "index":
+        _run_index(args)
+    elif args.command == "lineage":
+        _run_lineage(args)
+    elif args.command == "dictionary":
+        _run_dictionary(args)
     elif args.command == "hub":
         _run_hub(args)
     elif args.command == "semantic":
         _run_semantic(args)
     elif args.command == "mcp":
         _run_mcp(args)
+    elif args.command == "api":
+        _run_api(args)
     elif args.command == "adaptive":
         _run_adaptive(args)
+    elif args.command == "incidents":
+        _run_incidents(args)
+    elif args.command == "contract":
+        _run_contract(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -212,6 +425,281 @@ def main() -> None:
 def _run_adaptive(args: argparse.Namespace) -> None:
     """Run the human review boundary with stable, category-specific exit codes."""
     sys.exit(run_adaptive_command(args))
+
+
+def _run_incidents(args: argparse.Namespace) -> None:
+    """Run incident management with stable, category-specific exit codes."""
+    sys.exit(run_incidents_command(args))
+
+
+def _run_index(args: argparse.Namespace) -> None:
+    """Run Spark-free metadata indexing with stable exit codes."""
+    sys.exit(run_index_command(args))
+
+
+def _run_audit(args: argparse.Namespace) -> None:
+    """Run governance coverage audit with stable exit codes."""
+    sys.exit(run_audit(args.paths, as_json=args.json, min_coverage=args.min_coverage))
+
+
+def _run_lineage(args: argparse.Namespace) -> None:
+    """Render registry-backed lineage with stable exit codes."""
+    sys.exit(run_lineage_command(args))
+
+
+def _run_dictionary(args: argparse.Namespace) -> None:
+    """Render the registry-backed column dictionary with stable exit codes."""
+    sys.exit(run_dictionary_command(args))
+
+
+def run_index_command(args: argparse.Namespace, *, store=None) -> int:
+    """Index one or more pipeline YAML files into the local metadata registry."""
+    from skifer.observability.metadata_index import index_from_path
+    from skifer.observability.metadata_store import SqliteMetadataStore
+
+    if args.target_fqn and len(args.paths) > 1:
+        print("[index] --target-fqn is only valid with a single path.", file=sys.stderr)
+        return INDEX_EXIT_USAGE
+
+    try:
+        registry = store or SqliteMetadataStore(args.db)
+    except Exception as exc:
+        print(f"[index] Failed to open metadata registry: {exc}", file=sys.stderr)
+        return INDEX_EXIT_ERROR
+    changed = 0
+    for path in args.paths:
+        try:
+            wrote = index_from_path(path, registry, target_fqn=args.target_fqn)
+        except Exception as exc:
+            print(f"[index] Failed to index '{path}': {exc}", file=sys.stderr)
+            return INDEX_EXIT_ERROR
+        changed += int(wrote)
+        print(f"[index] {path} -> {'updated' if wrote else 'unchanged'}")
+
+    print(f"[index] {changed} record(s) written, {len(args.paths) - changed} unchanged.")
+    return INDEX_EXIT_OK
+
+
+def run_lineage_command(args: argparse.Namespace, *, store=None) -> int:
+    """Show upstream or downstream lineage from the persisted metadata registry."""
+    from skifer.lineage.renderer import LineageRenderer
+    from skifer.lineage.tracker import LineageGraph
+    from skifer.observability.metadata_store import (
+        MetadataRegistryQuery,
+        SqliteMetadataStore,
+    )
+
+    if args.direction not in {"up", "down"} or args.format not in {"mermaid", "json"}:
+        print("[lineage] Invalid direction or format.", file=sys.stderr)
+        return META_EXIT_USAGE
+
+    registry = store or SqliteMetadataStore(args.db)
+    try:
+        resolved = _resolve_registry_target(registry, args.target)
+        if resolved is None:
+            print(
+                f"[lineage] '{args.target}' was not found in the metadata registry.",
+                file=sys.stderr,
+            )
+            return META_EXIT_NOT_FOUND
+        fqn, columns = resolved
+        query = MetadataRegistryQuery(registry)
+        graph = LineageGraph()
+        for column in columns:
+            edges = (
+                query.upstream(fqn, column)
+                if args.direction == "up"
+                else query.downstream(fqn, column)
+            )
+            for edge in edges:
+                graph.add_edge(edge)
+        if args.format == "json":
+            print(json.dumps(graph.to_dict(), sort_keys=True))
+        else:
+            print(LineageRenderer().to_mermaid(graph))
+        return META_EXIT_OK
+    except Exception as exc:
+        print(f"[lineage] Failed to read metadata registry: {exc}", file=sys.stderr)
+        return META_EXIT_ERROR
+
+
+def run_dictionary_command(args: argparse.Namespace, *, store=None) -> int:
+    """Show a dataset column dictionary from the persisted metadata registry."""
+    from skifer.observability.metadata_store import SqliteMetadataStore
+
+    if args.format not in {"text", "json"}:
+        print("[dictionary] Invalid format.", file=sys.stderr)
+        return META_EXIT_USAGE
+
+    registry = store or SqliteMetadataStore(args.db)
+    try:
+        record = registry.get(args.target)
+        if record is None:
+            print(
+                f"[dictionary] '{args.target}' was not found in the metadata registry.",
+                file=sys.stderr,
+            )
+            return META_EXIT_NOT_FOUND
+        columns = sorted(record.columns, key=lambda column: column.name)
+        if args.format == "json":
+            print(
+                json.dumps(
+                    {
+                        "target_fqn": record.target_fqn,
+                        "columns": [asdict(column) for column in columns],
+                    },
+                    default=str,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(_format_dictionary_text(columns))
+        return META_EXIT_OK
+    except Exception as exc:
+        print(f"[dictionary] Failed to read metadata registry: {exc}", file=sys.stderr)
+        return META_EXIT_ERROR
+
+
+def run_audit(
+    paths: list[str], *, as_json: bool, min_coverage: float | None
+) -> int:
+    """Expand globs, audit files, print a stable report, and return the exit code."""
+    import glob as glob_mod
+
+    from skifer.observability.audit import METRIC_KEYS, audit_project
+
+    try:
+        expanded_paths: list[str] = []
+        for pattern in paths:
+            expanded = sorted(glob_mod.glob(pattern, recursive=True))
+            if expanded:
+                expanded_paths.extend(expanded)
+            elif glob_mod.has_magic(pattern):
+                continue
+            else:
+                expanded_paths.append(pattern)
+
+        report = audit_project(expanded_paths)
+        if as_json:
+            print(
+                json.dumps(
+                    report.to_dict(),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif not report.total:
+            print("No schema files found.")
+            print(_format_audit_text(report, METRIC_KEYS))
+        else:
+            print(_format_audit_text(report, METRIC_KEYS))
+
+        if report.total and min_coverage is not None:
+            if report.overall_coverage_pct < min_coverage:
+                return AUDIT_EXIT_BELOW_THRESHOLD
+        return AUDIT_EXIT_OK
+    except Exception as exc:
+        print(f"[audit] Command failed ({type(exc).__name__}).", file=sys.stderr)
+        return AUDIT_EXIT_ERROR
+
+
+def _resolve_registry_target(store, target: str) -> tuple[str, list[str]] | None:
+    records = store.list_all()
+    known_fqns = {record.target_fqn for record in records}
+    if target in known_fqns:
+        record = store.get(target)
+        if record is None:
+            return None
+        return target, sorted(column.name for column in record.columns)
+
+    fqn, sep, column = target.rpartition(".")
+    if not sep or fqn not in known_fqns:
+        return None
+    record = store.get(fqn)
+    if record is None:
+        return None
+    column_names = {item.name for item in record.columns}
+    if column not in column_names:
+        return None
+    return fqn, [column]
+
+
+def _format_dictionary_text(columns) -> str:
+    rows = [
+        (
+            column.name,
+            column.logical_type or "",
+            column.classification or "",
+            ",".join(column.sources),
+        )
+        for column in columns
+    ]
+    headers = ("name", "logical_type", "classification", "sources")
+    widths = [
+        max(len(str(row[index])) for row in (headers, *rows))
+        for index in range(len(headers))
+    ]
+
+    def render(row: tuple[str, str, str, str]) -> str:
+        return "  ".join(
+            str(value).ljust(widths[index])
+            for index, value in enumerate(row)
+        ).rstrip()
+
+    return "\n".join([render(headers), *(render(row) for row in rows)])
+
+
+def _format_audit_text(report, metric_keys: tuple[str, ...]) -> str:
+    lines = [
+        (
+            f"Audited {report.total} pipeline(s) — "
+            f"{report.parsed} parsed, {report.errored} errored."
+        ),
+        "",
+    ]
+    for key in metric_keys:
+        satisfying = sum(1 for pipeline in report.pipelines if pipeline.metric(key))
+        lines.append(
+            f"  {key:<21}{report.coverage[key]:>7.2f}%   ({satisfying}/{report.total})"
+        )
+    lines.extend(["", f"  {'overall':<21}{report.overall_coverage_pct:>7.2f}%"])
+    failures = [pipeline for pipeline in report.pipelines if not pipeline.parsed]
+    if failures:
+        lines.append("")
+        for pipeline in failures:
+            lines.append(f"FAIL {pipeline.path}")
+            if pipeline.error:
+                lines.append(f"     {pipeline.error}")
+    return "\n".join(lines)
+
+
+def _run_contract(args: argparse.Namespace) -> None:
+    """Run data-contract utilities with stable exit codes."""
+    sys.exit(run_contract_command(args))
+
+
+def run_contract_command(args: argparse.Namespace) -> int:
+    """0 success; 1 technical/validation error; 2 usage error."""
+    import yaml
+
+    from skifer.observability.odcs import import_odcs_31
+
+    if getattr(args, "contract_command", None) != "import":
+        print("Contract command missing. Use 'skifer contract import FILE'.")
+        return 2
+    try:
+        with open(args.file, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        result = import_odcs_31(doc)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"Import failed: {exc}")
+        return 1
+    block = {"data_product": result.data_product, "contract": result.contract}
+    print(yaml.safe_dump(block, sort_keys=False, allow_unicode=True))
+    for warning in result.warnings:
+        print(f"# warning: {warning}")
+    return 0
 
 
 def run_adaptive_command(args: argparse.Namespace, *, workflow=None) -> int:
@@ -327,6 +815,78 @@ def run_adaptive_command(args: argparse.Namespace, *, workflow=None) -> int:
         return ADAPTIVE_EXIT_ERROR
 
 
+def _local_incidents_context():
+    from skifer.services.identity import LocalIdentity
+
+    return LocalIdentity.resolve().to_request_context()
+
+
+def run_incidents_command(args: argparse.Namespace, *, service=None) -> int:
+    """Execute one incident action through QualityService with stable exit codes."""
+    from skifer.observability.incidents import InvalidIncidentTransition
+    from skifer.services.context import ResourceNotFound
+
+    command = getattr(args, "incidents_command", None)
+    if command is None:
+        print(
+            "Incidents command missing. Use 'skifer incidents --help'.",
+            file=sys.stderr,
+        )
+        return INCIDENTS_EXIT_USAGE
+    ctx = _local_incidents_context()
+    try:
+        if service is None:
+            from skifer.observability.certification_store import SqliteCertificationStore
+            from skifer.services.quality import QualityService
+
+            store = SqliteCertificationStore(args.store)
+            service = QualityService(history_store=None, incident_store=store)
+
+        if command == "list":
+            views = service.list_incidents(
+                ctx,
+                status=getattr(args, "status", None),
+                target_fqn=getattr(args, "target_fqn", None),
+                limit=getattr(args, "limit", 50),
+            )
+            print(
+                json.dumps(
+                    [view.to_dict() for view in views],
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return INCIDENTS_EXIT_OK
+        if command == "ack":
+            view = service.acknowledge_incident(ctx, args.incident_id)
+        elif command == "assign":
+            view = service.assign_incident(ctx, args.incident_id, args.assignee)
+        elif command == "resolve":
+            view = service.resolve_incident(ctx, args.incident_id, args.root_cause)
+        else:
+            print("Unknown incidents command.", file=sys.stderr)
+            return INCIDENTS_EXIT_USAGE
+        print(
+            json.dumps(
+                view.to_dict(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return INCIDENTS_EXIT_OK
+    except InvalidIncidentTransition as exc:
+        print(f"[incidents] {exc}", file=sys.stderr)
+        return INCIDENTS_EXIT_INVALID_TRANSITION
+    except ResourceNotFound as exc:
+        print(f"[incidents] {exc}", file=sys.stderr)
+        return INCIDENTS_EXIT_NOT_FOUND
+    except Exception as exc:
+        print(f"[incidents] Command failed ({type(exc).__name__}).", file=sys.stderr)
+        return INCIDENTS_EXIT_ERROR
+
+
 def _run_validate(args: argparse.Namespace) -> None:
     """Validate one or more pipeline YAML schema files without Spark."""
     import glob as glob_mod
@@ -409,6 +969,66 @@ def _run_mcp(args: argparse.Namespace) -> None:
             # paths. Only the class name is safe outside the process.
             message = f"MCP startup failed ({type(exc).__name__})."
         print(f"[mcp] {message}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _run_api(args: argparse.Namespace) -> None:
+    """Load and serve the optional API without importing FastAPI eagerly."""
+    command = getattr(args, "api_command", None)
+    if command == "openapi":
+        _run_api_openapi(args)
+        return
+    if command != "serve":
+        print("API command missing. Use 'skifer api --help'.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        from skifer.api.app import create_app
+
+        app = create_app(args.project)
+        import uvicorn
+
+        uvicorn.run(
+            app,
+            host=API_LOOPBACK_HOST,
+            port=args.port,
+            log_config=None,
+        )
+    except Exception as exc:
+        from skifer.api.app import APIDependencyError
+
+        message = (
+            str(exc)
+            if isinstance(exc, APIDependencyError)
+            else f"API startup failed ({type(exc).__name__})."
+        )
+        print(f"[api] {message}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _run_api_openapi(args: argparse.Namespace) -> None:
+    """Print a stable, sorted JSON representation of the OpenAPI document."""
+    try:
+        from skifer.api.app import openapi_document
+
+        with redirect_stdout(StringIO()):
+            document = openapi_document(args.project)
+        print(
+            json.dumps(
+                document,
+                sort_keys=True,
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    except Exception as exc:
+        from skifer.api.app import APIDependencyError
+
+        message = (
+            str(exc)
+            if isinstance(exc, APIDependencyError)
+            else f"OpenAPI export failed ({type(exc).__name__})."
+        )
+        print(f"[api] {message}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -606,52 +1226,6 @@ def _sync_model_key(payload: dict | None) -> str:
     if payload and payload.get("models"):
         return payload["models"][0].get("key", "<unknown>")
     return "<unknown>"
-
-
-def _assert_no_curation_loss(curated_path: Path, payload: dict | None) -> None:
-    """Refuse a promotion that would drop content a human wrote into the curated model.
-
-    The merge in ``semantic.sync`` is supposed to carry curated values forward,
-    but promotion overwrites a human-owned file: a silent regression there costs
-    real work. This is the structural backstop, not a substitute for the merge.
-    """
-    if payload is None or not curated_path.exists():
-        return
-
-    import yaml
-
-    existing = yaml.safe_load(curated_path.read_text(encoding="utf-8")) or {}
-    if not isinstance(existing, dict) or not existing.get("models"):
-        return
-
-    existing_model = existing["models"][0]
-    new_model = (payload.get("models") or [{}])[0]
-    lost: list[str] = []
-
-    for key, value in existing_model.items():
-        if key in ("dimensions", "metrics", "metadata"):
-            continue
-        if value and key not in new_model:
-            lost.append(key)
-
-    for collection in ("dimensions", "metrics"):
-        new_by_name = {item["name"]: item for item in new_model.get(collection, [])}
-        for item in existing_model.get(collection, []):
-            new_item = new_by_name.get(item["name"])
-            if new_item is None:
-                # A removed field is a legitimate sync outcome, reported as a
-                # change — only silent loss of curated attributes is refused.
-                continue
-            for key, value in item.items():
-                if value and key not in new_item:
-                    lost.append(f"{collection}.{item['name']}.{key}")
-
-    if lost:
-        raise ValueError(
-            f"promoting would drop curated content {sorted(lost)} from "
-            f"'{curated_path.name}'. Re-run 'semantic sync --write-draft' and resolve "
-            "the report, or copy the curated values into the pipeline contract."
-        )
 
 
 def _run_hub(args: argparse.Namespace) -> None:

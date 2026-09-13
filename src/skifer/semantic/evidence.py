@@ -55,6 +55,9 @@ class EvidencePolicy:
 
     include_sql: bool = False
     include_filter_values: bool = False
+    # pii/restricted columns: their filter values are ALWAYS redacted, even when
+    # include_filter_values is True. Sensitivity overrides disclosure, never grants it.
+    sensitive_columns: frozenset[str] = frozenset()
 
     @classmethod
     def redacted(cls) -> "EvidencePolicy":
@@ -184,6 +187,7 @@ class SemanticEvidence:
         *,
         include_sql: bool = False,
         include_filter_values: bool = False,
+        sensitive_columns: frozenset[str] = frozenset(),
     ) -> dict:
         """Return an explicit, redacted and JSON-native evidence representation.
 
@@ -215,7 +219,12 @@ class SemanticEvidence:
             ],
             "dimensions": _serialize_value(self.dimensions, "dimensions"),
             "normalized_filters": [
-                self._serialize_filter(filter_def, index, include_filter_values)
+                self._serialize_filter(
+                    filter_def,
+                    index,
+                    include_filter_values,
+                    sensitive_columns,
+                )
                 for index, filter_def in enumerate(self.normalized_filters)
             ],
             "sources": [
@@ -285,7 +294,10 @@ class SemanticEvidence:
 
     @staticmethod
     def _serialize_filter(
-        filter_def: dict, index: int, include_filter_values: bool
+        filter_def: dict,
+        index: int,
+        include_filter_values: bool,
+        sensitive_columns: frozenset[str],
     ) -> dict:
         if not isinstance(filter_def, dict):
             raise _unsupported_type(f"normalized_filters[{index}]", filter_def)
@@ -298,11 +310,15 @@ class SemanticEvidence:
             ),
         }
         if "value" in filter_def:
+            include_value = (
+                include_filter_values
+                and filter_def.get("column") not in sensitive_columns
+            )
             payload["value"] = (
                 _serialize_value(
                     filter_def["value"], f"normalized_filters[{index}].value"
                 )
-                if include_filter_values
+                if include_value
                 else "<redacted>"
             )
         return payload

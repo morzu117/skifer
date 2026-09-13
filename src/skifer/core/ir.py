@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from skifer.core.constants import DEFAULT_CONTRACT_STATUS
+
 VALID_JOIN_TYPES: frozenset[str] = frozenset(
     {"left", "right", "inner", "full", "cross", "left_anti", "left_semi"}
 )
@@ -180,13 +182,50 @@ class ParsedPartial:
 
 
 @dataclass(frozen=True)
+class ParsedOwner:
+    """Structured ownership metadata for one data product (Plan 31.3.2)."""
+
+    team: str | None = None
+    steward: str | None = None
+    domain: str | None = None
+    contact: str | None = None
+
+
+@dataclass(frozen=True)
 class ParsedDataProduct:
     """Versioned ownership metadata for one declarative data product (Plan 29)."""
 
     id: str
     version: str
-    owner: str | None = None
+    owner: str | ParsedOwner | None = None
     description: str | None = None
+    domain: str | None = None
+
+    @property
+    def owner_label(self) -> str | None:
+        """Stable string representation for legacy owner consumers."""
+        if self.owner is None:
+            return None
+        if isinstance(self.owner, str):
+            return self.owner
+        return self.owner.team or self.owner.steward or self.owner.contact
+
+    @property
+    def owner_domain(self) -> str | None:
+        """Effective owner domain: product-level domain first, then owner mapping."""
+        if self.domain:
+            return self.domain
+        return self.owner.domain if isinstance(self.owner, ParsedOwner) else None
+
+
+def _parse_data_product_owner(raw_owner: object) -> str | ParsedOwner | None:
+    if isinstance(raw_owner, str):
+        return raw_owner
+    if isinstance(raw_owner, dict):
+        return ParsedOwner(
+            **{key: raw_owner.get(key) for key in ("team", "steward", "domain", "contact")}
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -200,6 +239,22 @@ class ParsedOutputField:
     classification: str | None = None
     entity: str | None = None
     description: str | None = None
+
+
+@dataclass(frozen=True)
+class ParsedSla:
+    """Contract SLA metadata (Plan 31.3.3)."""
+
+    refresh_frequency: str | None = None
+    max_latency: str | None = None
+
+
+@dataclass(frozen=True)
+class ParsedSecurity:
+    """Contract security metadata (Plan 31.3.3)."""
+
+    level: str | None = None
+    access_policy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -234,6 +289,12 @@ class ParsedSchema:
         data_product: Optional versioned product metadata (Plan 29).
         contract_output: Explicit output-field contracts (Plan 29).
         contract_grain: Optional declared output grain (Plan 29).
+        contract_status: Contract lifecycle status (Plan 31.3.3).
+        contract_reviewers: Human reviewers for lifecycle governance.
+        contract_effective_from: Optional inclusive ISO date lower bound.
+        contract_effective_until: Optional inclusive ISO date upper bound.
+        contract_sla: Optional SLA block.
+        contract_security: Optional security block.
         semantic: Optional seed for a generated semantic model (Plan 29).
         raw: The original normalized schema dict (for callers not yet on IR).
     """
@@ -251,6 +312,12 @@ class ParsedSchema:
     data_product: ParsedDataProduct | None = None
     contract_output: list[ParsedOutputField] = field(default_factory=list)
     contract_grain: list[str] = field(default_factory=list)
+    contract_status: str = DEFAULT_CONTRACT_STATUS
+    contract_reviewers: tuple[str, ...] = field(default_factory=tuple)
+    contract_effective_from: str | None = None
+    contract_effective_until: str | None = None
+    contract_sla: ParsedSla | None = None
+    contract_security: ParsedSecurity | None = None
     semantic: ParsedSemanticSeed | None = None
     raw: dict = field(default_factory=dict)
 
@@ -357,8 +424,9 @@ def parse_to_ir(schema_dict: dict) -> ParsedSchema:
         data_product = ParsedDataProduct(
             id=raw_product["id"],
             version=raw_product["version"],
-            owner=raw_product.get("owner"),
+            owner=_parse_data_product_owner(raw_product.get("owner")),
             description=raw_product.get("description"),
+            domain=raw_product.get("domain"),
         )
 
     raw_contract = schema_dict.get("contract") or {}
@@ -367,6 +435,10 @@ def parse_to_ir(schema_dict: dict) -> ParsedSchema:
         for name, metadata in raw_contract.get("output", {}).items()
     ]
     contract_grain = list(raw_contract.get("grain", []))
+    contract_sla = ParsedSla(**raw_contract["sla"]) if raw_contract.get("sla") else None
+    contract_security = (
+        ParsedSecurity(**raw_contract["security"]) if raw_contract.get("security") else None
+    )
 
     raw_semantic = schema_dict.get("semantic")
     semantic = None
@@ -393,6 +465,12 @@ def parse_to_ir(schema_dict: dict) -> ParsedSchema:
         data_product=data_product,
         contract_output=contract_output,
         contract_grain=contract_grain,
+        contract_status=raw_contract.get("status", DEFAULT_CONTRACT_STATUS),
+        contract_reviewers=tuple(raw_contract.get("reviewers", [])),
+        contract_effective_from=raw_contract.get("effective_from"),
+        contract_effective_until=raw_contract.get("effective_until"),
+        contract_sla=contract_sla,
+        contract_security=contract_security,
         semantic=semantic,
         raw=schema_dict,
     )

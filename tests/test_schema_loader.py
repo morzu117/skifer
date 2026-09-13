@@ -10,8 +10,10 @@ from skifer.core.schema_loader import (
     _normalize_filters,
     _normalize_join,
     _normalize_select_final,
+    _normalize_filter_mapping,
+    _normalize_select_entry_mapping,
 )
-from skifer.core.constants import VALID_SOURCE_TYPES
+from skifer.core.constants import CLASSIFICATION_LEVELS, VALID_SOURCE_TYPES
 from skifer import load_schema as top_level_load_schema, parse_schema as top_level_parse_schema
 
 
@@ -94,6 +96,37 @@ select_final:
     assert "semantic" not in schema
 
 
+def _classification_schema(classification_line: str = "") -> str:
+    return f"""
+data_product: {{id: sales.orders, version: 1.0.0}}
+contract:
+  output:
+    order_id: {{{classification_line}}}
+tables: [{{name: silver.orders}}]
+select_final: [[order_id, order_id]]
+"""
+
+
+def test_classification_unknown_value_refused():
+    with pytest.raises(ValueError, match=r"classification 'secret'.*Allowed:"):
+        parse_schema(_classification_schema("classification: secret"))
+
+
+@pytest.mark.parametrize("classification", CLASSIFICATION_LEVELS)
+def test_classification_all_valid_levels_accepted(classification):
+    schema = parse_schema(
+        _classification_schema(f"classification: {classification}")
+    )
+
+    assert schema["contract"]["output"]["order_id"]["classification"] == classification
+
+
+def test_classification_absent_still_loads():
+    schema = parse_schema(_classification_schema())
+
+    assert "classification" not in schema["contract"]["output"]["order_id"]
+
+
 def test_parse_schema_normalizes_agent_ready_metadata():
     schema = parse_schema(
         """
@@ -132,6 +165,7 @@ select_final:
         "description": "Certified orders",
     }
     assert schema["contract"]["grain"] == ["order_id"]
+    assert schema["contract"]["status"] == "active"
     assert schema["contract"]["output"]["order_id"]["required"] is True
     assert schema["semantic"] == {
         "model_key": "orders",
@@ -164,6 +198,143 @@ select_final:
 
     assert schema["data_product"]["owner"] == "sales-data"
     assert schema["data_product"]["description"] == "Orders for EMEA"
+
+
+def test_owner_mapping_is_normalized_in_place():
+    schema = parse_schema(
+        """
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  owner:
+    team: " sales-data "
+    steward: " jane@example.com "
+    domain: " commerce "
+    contact: " #sales-data "
+contract:
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+    )
+
+    assert schema["data_product"]["owner"] == {
+        "team": "sales-data",
+        "steward": "jane@example.com",
+        "domain": "commerce",
+        "contact": "#sales-data",
+    }
+
+
+def test_owner_unknown_key_refused():
+    with pytest.raises(ValueError, match=r"data_product.owner.*unknown keys.*teem"):
+        parse_schema(
+            """
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  owner:
+    teem: sales-data
+tables:
+  - name: silver.orders
+"""
+        )
+
+
+def test_data_product_domain_is_normalized():
+    schema = parse_schema(
+        """
+data_product:
+  id: sales.orders
+  version: 1.0.0
+  domain: " commerce "
+contract:
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+    )
+
+    assert schema["data_product"]["domain"] == "commerce"
+
+
+def test_contract_lifecycle_metadata_is_normalized():
+    schema = parse_schema(
+        """
+data_product: {id: sales.orders, version: 1.0.0}
+contract:
+  status: deprecated
+  reviewers: [" alice@example.com ", " bob@example.com "]
+  effective_from: "2026-01-01"
+  effective_until: "2026-12-31"
+  sla:
+    refresh_frequency: " 1h "
+    max_latency: " 12h "
+  security:
+    level: " restricted "
+    access_policy: " row_filter:region "
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+    )
+
+    assert schema["contract"]["status"] == "deprecated"
+    assert schema["contract"]["reviewers"] == ["alice@example.com", "bob@example.com"]
+    assert schema["contract"]["effective_from"] == "2026-01-01"
+    assert schema["contract"]["effective_until"] == "2026-12-31"
+    assert schema["contract"]["sla"] == {
+        "refresh_frequency": "1h",
+        "max_latency": "12h",
+    }
+    assert schema["contract"]["security"] == {
+        "level": "restricted",
+        "access_policy": "row_filter:region",
+    }
+
+
+def test_invalid_status_refused():
+    with pytest.raises(ValueError, match=r"contract.status.*retired.*Allowed"):
+        parse_schema(
+            """
+data_product: {id: sales.orders, version: 1.0.0}
+contract:
+  status: retired
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+        )
+
+
+def test_effective_from_after_until_refused():
+    with pytest.raises(ValueError, match="effective_from must be <= effective_until"):
+        parse_schema(
+            """
+data_product: {id: sales.orders, version: 1.0.0}
+contract:
+  effective_from: "2026-12-31"
+  effective_until: "2026-01-01"
+  output:
+    order_id: {}
+tables:
+  - name: silver.orders
+select_final:
+  - [order_id, order_id]
+"""
+        )
 
 
 @pytest.mark.parametrize(
@@ -989,9 +1160,6 @@ select_final:
 # ==============================================================================
 # Plan 18-3.5 — YAML mapping forms for filter and select_final
 # ==============================================================================
-
-from skifer.core.schema_loader import _normalize_filter_mapping, _normalize_select_entry_mapping
-
 
 class TestFilterMappingForm:
     def test_equals_implicit(self):

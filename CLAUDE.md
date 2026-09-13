@@ -41,10 +41,15 @@ src/skifer/
     quarantine.py      # quarantine_staging() + row-level violation tagging (Plan 29)
     odcs.py            # ODCS 3.1 export of a ContractDefinition (Plan 29)
     uc_mirror.py       # Non-blocking Unity Catalog tag mirror for certifications (Plan 29)
+    metadata_store.py  # DatasetRecord registry; SQLite + Delta persistence (Plan 31)
+    metadata_index.py  # Spark-free pipeline indexing and cross-pipeline lineage (Plan 31)
+    incidents.py       # Incident state machine, recovery, owner/downstream routing (Plan 31)
+    audit.py           # Spark-free governance coverage audit (Plan 31)
   lineage/
     tracker.py         # LineageTracker/LineageGraph — static column-level lineage (no Spark)
     dictionary.py      # DataDictionary + FieldEntry
     renderer.py        # LineageRenderer — Mermaid/JSON export
+    classification.py  # public→pii classification propagation over lineage (Plan 31)
   semantic/
     builder.py         # SemanticBuilder — LLM-based YAML model generation
     semantic.py        # SemanticEngine — catalog-first, lazy-load, query/create_view
@@ -96,10 +101,27 @@ src/skifer/
     executor.py        # GovernedExecutor — idempotent writes + compensation (Plan 29)
     history.py         # Append-only capability state journal (Plan 29)
     harness.py         # Adversarial scenario runner + metrics (Plan 29)
+  services/
+    context.py         # RequestContext, named scopes, limits, transport-neutral errors (Plan 31)
+    serialization.py   # Allowlisted JSON-native serialization
+    project.py         # Project, pipeline, metadata index and coverage-audit application service
+    rules.py           # Rule discovery, snippets and guarded persistence
+    governance.py      # Contracts, certification, registry lineage/dictionary/impact
+    quality.py         # Quality history and incident operations
+    semantic.py        # Semantic query/catalog and managed-draft operations
+    agents.py          # Agent façades with allowlisted results
+    identity.py        # LocalIdentity; authority never comes from a request
+    execution.py       # Session, async jobs and bounded ResultView
+    container.py       # Spark-lazy local service composition root
+  api/
+    app.py             # Lazy FastAPI factory; loopback local API over services/
+    security.py        # One named scope dependency per business route
+    errors.py          # Stable service-error to HTTP mapping
+    routes/            # Thin 1:1 adapters; no engine imports
   serving/
     chat_model.py      # SkiferChatModel — mlflow.pyfunc.ChatModel wrapping AgenticHub
     _response_serializer.py  # hub_response_to_text() — HubResponse → str (shared CLI + serving)
-  cli.py               # `skifer` CLI (argparse; subcommand: hub, validate)
+  cli.py               # `skifer` CLI, including Plan 31 index/lineage/dictionary/incidents/api/audit
   spark_factory.py     # get_spark_session() — auto-detects: Databricks notebook > Connect v2 > local[*]
   utils.py             # safe_columns and other helpers
   __init__.py          # Public API: SkiferEngine, RuleRegistry, ConfigurationManager,
@@ -116,8 +138,10 @@ ruff check src/                    # lint
 pip install -e ".[dev]"            # dev mode
 pip install -e ".[llm-anthropic]"  # with LLM support (also: llm-openai, llm-google, semantic-full)
 pip install -e ".[serving]"        # MLflow + OpenAI SDK for Databricks Model Serving deployment
+pip install -e ".[api]"            # FastAPI + Uvicorn for the loopback local API
 pip install -e ".[docs]"           # mkdocs + material theme
 mkdocs build --strict              # build the site; must stay warning-free
+uv run --extra api --extra spark --extra dev pytest  # API + Spark + dev test environment
 ```
 
 ## Mandatory workflow for every change to `src/`
@@ -668,6 +692,37 @@ périmée, état modifié, doublon, timeout, réponse perdue, échec de compensa
 contre les vrais composants et mesure précision, taux d'escalade et effets de bord dupliqués — comptés
 sur le **journal du système externe**, jamais sur ce que le framework croit avoir fait.
 
+### Couche applicative locale gouvernée (Plan 31 — features 1–7)
+
+`services/` est la couche applicative indépendante du transport : projet, règles, gouvernance,
+qualité, sémantique, agents et exécution reçoivent tous un `RequestContext` et exigent l'un des scopes
+nommés de `NAMED_SCOPES`. `LocalIdentity` dérive le sujet de l'OS et accorde l'ensemble local statique,
+jamais une autorité fournie par la requête ; `certification_override` en reste exclu. Les DTO sont
+sérialisés champ par champ. L'index de métadonnées (`DatasetRecord`, SQLite/Delta) est alimenté sans
+Spark par `skifer index` et expose dictionnaire, lineage amont/aval et impact entre pipelines. Les
+hooks d'indexation et d'incident branchés sur la publication restent **non bloquants**.
+
+La gouvernance YAML porte la taxonomie ordonnée `public|internal|confidential|restricted|pii`, sa
+propagation par lineage, un owner structuré (`team`, `steward`, `domain`, `contact`) et le cycle de vie
+du contrat (`status`, `reviewers`, dates d'effet, `sla`, `security`). La canonicalisation est en v2 :
+`sla` et `security` participent au hash ; `status`, `reviewers`, `effective_from` et `effective_until`
+n'y participent pas. ODCS 3.1 est importable par `skifer contract import`; `diff_contracts()` marque
+les suppressions, retypages, durcissements de champ, baisses de classification et relâchements SLA.
+
+Une quarantaine ouvre les incidents critiques ; une publication rétablie résout les incidents ouverts.
+Le routage couvre le propriétaire du dataset et les propriétaires aval, avec webhook générique,
+Slack, e-mail, Microsoft Teams et Google Chat. Les alertes d'incident ne contiennent **aucune valeur de
+donnée**. La divulgation de preuves reste fail-closed : toute colonne placée dans
+`EvidencePolicy.sensitive_columns` (la surface prévue pour `pii`/`restricted`) garde sa valeur de
+filtre rédigée, même quand les autres valeurs ont été explicitement demandées.
+
+`ExecutionService` gère une session lazy et un unique job actif par projet ; `job_id == run_id`, et
+`ResultView` borne et sérialise le résultat, le rapport de qualité et la décision de publication.
+L'extra `[api]` ajoute une API FastAPI loopback dont les routes correspondent aux services : chaque
+route métier déclare exactement son scope et `api/routes/` n'importe jamais le moteur. CLI :
+`skifer api serve|openapi`, `skifer incidents`, et `skifer audit` (audit de couverture Spark-free,
+avec seuil CI optionnel).
+
 ### Filter operators (canonical names — SQL abbreviations are aliases)
 `equals`, `not_equals`, `greater_than`, `less_than`, `greater_than_equal`, `less_than_equal`,  
 `in`, `between`, `not_between`, `not_in`, `contains`, `not_contains`, `starts_with`, `ends_with`,  
@@ -766,6 +821,7 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Tables streaming — Structured Streaming natif (Plan 27)](docs/roadmap/27_streaming_tables_plan.md) | mergé via PR #53 | Implémenté (phases 27.0–27.6) |
 | [Materialized views — SQL natif compilé + agrégations déclaratives (Plan 28)](docs/roadmap/28_materialized_views_plan.md) | mergé via PR #54 | Implémenté (phases 28.0–28.6) |
 | [Agent-ready semantic layer — programme 10 features / 53 slices (Plan 29)](docs/roadmap/29_agent_ready_semantic_layer_program.md) | Toutes mergées : features 1/2/3 (PR #56), 0 (#57), 6 (#58), 4 (#59), 5 (#60), 7 (#62), 8 (#63), 9 (#64) | **53/53 slices — programme complet.** Les 10 features sont implémentées. Plans par feature : [`docs/roadmap/29_agent_ready_semantic_layer/`](docs/roadmap/29_agent_ready_semantic_layer/README.md) |
+| [Scénario de développement de la bibliothèque (Plan 31)](docs/roadmap/31_lib_development_scenario.md) | `feat/plan31-f6-api`, empilée sur f1..f5/f7 | **Implémenté.** Les 7 features sont livrées : services, registre de métadonnées, gouvernance YAML, incidents/alertes, exécution async, API locale et audit de couverture. |
 | [Refonte doc d'appropriation (Plan 33)](docs/roadmap/33_documentation_onboarding_plan.md) | mergé via PR #65 | Implémenté (phases A–D) — parcours d'onboarding exécutable, `examples/` testés, gouvernance transverse, site sans artefact interne |
 | [Un exemple parlant par feature (Plan 34)](docs/roadmap/34_examples_per_feature_plan.md) | mergé via PR #68 | Implémenté (phases 0–6) — 18 exemples sous `examples/`, tous exécutés par la suite, chacun atteignable depuis la doc ; 3 défauts du code livré trouvés en les écrivant |
 

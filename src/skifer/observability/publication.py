@@ -7,6 +7,7 @@ from enum import Enum
 import re
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
+import warnings
 
 from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification_store import RunEvent, StoredCheckResult
@@ -54,10 +55,11 @@ class PublicationResult:
 class PublicationCoordinator:
     """Stage, validate, persist check results, then promote or quarantine."""
 
-    def __init__(self, backend, monitor, store):
+    def __init__(self, backend, monitor, store, metadata_store=None):
         self.backend = backend
         self.monitor = monitor
         self.store = store
+        self.metadata_store = metadata_store
         # Plain getattr, not monitor.__dict__: a monitor exposing `tracer` as a
         # property was silently downgraded to NoOpTracer, i.e. tracing quietly
         # off with no way to notice.
@@ -133,11 +135,14 @@ class PublicationCoordinator:
                 outcome = quarantine_staging(
                     self.backend, run, definition, self.store, results=report.results
                 )
+                if outcome.state == "QUARANTINED":
+                    self._record_incidents(run, definition, report)
                 set_span_attribute(
                     span, "decision", "QUARANTINED", required=self.tracing_required
                 )
                 return PublicationResult(run=run, report=report, state=outcome.state)
             promoted = promote_staging(self.backend, run, definition, self.store)
+            self._resolve_recovered(promoted)
             set_span_attribute(
                 span, "decision", "PROMOTED", required=self.tracing_required
             )
@@ -147,6 +152,8 @@ class PublicationCoordinator:
         """Resume a previously staged/promoting run idempotently."""
         if isinstance(self.tracer, NoOpTracer):
             promoted = promote_staging(self.backend, run, definition, self.store)
+            self._resolve_recovered(promoted)
+            self._index_resumed_metadata(promoted, definition)
             return PublicationResult(run=promoted, report=None, state="PROMOTED")
         attributes = {
             "run_id": run.run_id,
@@ -160,7 +167,67 @@ class PublicationCoordinator:
             required=self.tracing_required,
         ):
             promoted = promote_staging(self.backend, run, definition, self.store)
+        self._resolve_recovered(promoted)
+        self._index_resumed_metadata(promoted, definition)
         return PublicationResult(run=promoted, report=None, state="PROMOTED")
+
+    def _index_resumed_metadata(self, run, definition) -> None:
+        """Index contract metadata recovered without the original pipeline schema."""
+        if self.metadata_store is None:
+            return
+        try:
+            from dataclasses import replace
+
+            from skifer.observability.metadata_index import (
+                dataset_record_from_definition,
+                upsert_index_record,
+            )
+
+            record = dataset_record_from_definition(
+                definition, run.target_fqn, run.run_id
+            )
+            existing = self.metadata_store.get(run.target_fqn)
+            if (
+                existing is not None
+                and existing.definition_hash == definition.definition_hash
+            ):
+                record = replace(existing, last_run_id=run.run_id)
+            upsert_index_record(self.metadata_store, record)
+        except Exception as exc:
+            warnings.warn(
+                f"[Metadata] failed to index resumed publication: {type(exc).__name__}",
+                RuntimeWarning,
+            )
+
+    def _record_incidents(self, run, definition, report) -> None:
+        """Open incidents for failed critical checks without blocking publication."""
+        try:
+            from skifer.observability.incidents import incidents_from_report
+
+            now = datetime.now(timezone.utc)
+            for incident in incidents_from_report(
+                report, run_id=run.run_id, target_fqn=run.target_fqn, at=now
+            ):
+                self.store.open_incident(incident)
+        except Exception as exc:
+            warnings.warn(
+                f"[Incidents] failed to open incident(s): {type(exc).__name__}",
+                RuntimeWarning,
+            )
+
+    def _resolve_recovered(self, run) -> None:
+        """Resolve open incidents as recovered without blocking publication."""
+        try:
+            self.store.resolve_open_incidents(
+                run.target_fqn,
+                root_cause="recovered",
+                resolved_at=datetime.now(timezone.utc),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"[Incidents] failed to resolve incidents: {type(exc).__name__}",
+                RuntimeWarning,
+            )
 
 
 def start_publication_run(target_fqn: str, definition: ContractDefinition, store, run_id: str | None = None) -> PublicationRun:

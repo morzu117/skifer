@@ -3,6 +3,9 @@ Schema loader — loads and normalizes pipeline schemas from YAML files or inlin
 """
 
 from __future__ import annotations
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import date
 import difflib
 import logging
 import re
@@ -10,8 +13,11 @@ import os
 import yaml
 
 from skifer.core.constants import (
+    CLASSIFICATION_LEVELS,
+    DEFAULT_CONTRACT_STATUS,
     DEFAULT_STREAMING_TRIGGER,
     MATERIALIZATION_ALLOWED_KEYS,
+    VALID_CONTRACT_STATUSES,
     VALID_MATERIALIZATION_TYPES,
     VALID_MV_REFRESH_MODES,
     VALID_MV_SCHEDULE_PREFIXES,
@@ -34,14 +40,37 @@ logger = logging.getLogger(__name__)
 VALID_SINK_TYPES: frozenset[str] = frozenset({"delta", "postgres", "jdbc"})
 
 _AGENT_READY_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-_DATA_PRODUCT_ALLOWED_KEYS = frozenset({"id", "version", "owner", "description"})
-_CONTRACT_ALLOWED_KEYS = frozenset({"grain", "output"})
+_DATA_PRODUCT_ALLOWED_KEYS = frozenset({"id", "version", "owner", "description", "domain"})
+_OWNER_ALLOWED_KEYS = frozenset({"team", "steward", "domain", "contact"})
+_CONTRACT_ALLOWED_KEYS = frozenset(
+    {
+        "grain",
+        "output",
+        "status",
+        "reviewers",
+        "effective_from",
+        "effective_until",
+        "sla",
+        "security",
+    }
+)
+_SLA_ALLOWED_KEYS = frozenset({"refresh_frequency", "max_latency"})
+_SECURITY_ALLOWED_KEYS = frozenset({"level", "access_policy"})
 _OUTPUT_FIELD_ALLOWED_KEYS = frozenset(
     {"logical_type", "required", "unique", "classification", "entity", "description"}
 )
 _SEMANTIC_SEED_ALLOWED_KEYS = frozenset(
     {"model_key", "entity", "default_time_dimension", "dimensions"}
 )
+
+
+@dataclass(frozen=True)
+class LocalizedIssue:
+    """One schema validation issue suitable for transport-neutral clients."""
+
+    code: str
+    message: str
+    path: str
 
 
 def _find_file_upwards(filename, start_dir=None):
@@ -55,6 +84,85 @@ def _find_file_upwards(filename, start_dir=None):
         if parent == current_dir:
             return None
         current_dir = parent
+
+
+def _normalize_data_product_owner(owner: object, errors: list[str]) -> str | dict[str, str] | None:
+    if isinstance(owner, str):
+        if owner.strip():
+            return owner.strip()
+        errors.append("  [data_product.owner] must be a non-empty string when provided.")
+        return None
+    if not isinstance(owner, dict):
+        errors.append(
+            "  [data_product.owner] must be a non-empty string or an ownership mapping when provided."
+        )
+        return None
+
+    unknown = set(owner) - _OWNER_ALLOWED_KEYS
+    if unknown:
+        errors.append(
+            f"  [data_product.owner] unknown keys: {sorted(unknown)}. "
+            f"Allowed keys: {sorted(_OWNER_ALLOWED_KEYS)}"
+        )
+
+    normalized: dict[str, str] = {}
+    for key, value in owner.items():
+        if key not in _OWNER_ALLOWED_KEYS:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            errors.append(
+                f"  [data_product.owner.{key}] must be a non-empty string when provided."
+            )
+            continue
+        normalized[key] = value.strip()
+    return normalized
+
+
+def _normalize_string_mapping(
+    value: object,
+    *,
+    location: str,
+    allowed_keys: frozenset[str],
+    errors: list[str],
+) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        errors.append(f"  [{location}] must be a mapping when provided.")
+        return None
+
+    unknown = set(value) - allowed_keys
+    if unknown:
+        errors.append(
+            f"  [{location}] unknown keys: {sorted(unknown)}. "
+            f"Allowed keys: {sorted(allowed_keys)}"
+        )
+
+    normalized: dict[str, str] = {}
+    for key, item in value.items():
+        if key not in allowed_keys:
+            continue
+        if not isinstance(item, str) or not item.strip():
+            errors.append(f"  [{location}.{key}] must be a non-empty string when provided.")
+            continue
+        normalized[key] = item.strip()
+    return normalized
+
+
+def _normalize_contract_date(
+    value: object,
+    *,
+    location: str,
+    errors: list[str],
+) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"  [{location}] must be an ISO date string (YYYY-MM-DD) when provided.")
+        return None
+    normalized = value.strip()
+    try:
+        date.fromisoformat(normalized)
+    except ValueError:
+        errors.append(f"  [{location}] must be an ISO date string (YYYY-MM-DD), got {value!r}.")
+        return None
+    return normalized
 
 
 def _inject_params(yaml_str, params):
@@ -477,7 +585,10 @@ def _normalize_agent_ready_metadata(schema_dict: dict) -> None:
                 errors.append(
                     f"  [data_product.version] '{version}' is not a valid semantic version (expected X.Y.Z)."
                 )
-            for key in ("owner", "description"):
+            normalized_owner: str | dict[str, str] | None = None
+            if "owner" in product:
+                normalized_owner = _normalize_data_product_owner(product["owner"], errors)
+            for key in ("description", "domain"):
                 if key in product and (
                     not isinstance(product[key], str) or not product[key].strip()
                 ):
@@ -485,7 +596,9 @@ def _normalize_agent_ready_metadata(schema_dict: dict) -> None:
 
             if not errors:
                 normalized_product = {"id": product_id, "version": version.strip()}
-                for key in ("owner", "description"):
+                if "owner" in product:
+                    normalized_product["owner"] = normalized_owner
+                for key in ("description", "domain"):
                     if key in product:
                         normalized_product[key] = product[key].strip()
                 schema_dict["data_product"] = normalized_product
@@ -535,7 +648,18 @@ def _normalize_agent_ready_metadata(schema_dict: dict) -> None:
                                     "must be a non-empty string when provided."
                                 )
                             else:
-                                normalized_field[key] = value.strip()
+                                normalized_value = value.strip()
+                                if (
+                                    key == "classification"
+                                    and normalized_value not in CLASSIFICATION_LEVELS
+                                ):
+                                    errors.append(
+                                        f"  [contract.output] field '{field_name}' "
+                                        f"classification '{normalized_value}' is invalid. "
+                                        f"Allowed: {list(CLASSIFICATION_LEVELS)}"
+                                    )
+                                else:
+                                    normalized_field[key] = normalized_value
                     for key in ("required", "unique"):
                         if key in metadata:
                             if not isinstance(metadata[key], bool):
@@ -571,10 +695,95 @@ def _normalize_agent_ready_metadata(schema_dict: dict) -> None:
                         f"  [contract.grain] column '{field_name}' is not declared in contract.output."
                     )
 
+            status = contract.get("status", DEFAULT_CONTRACT_STATUS)
+            normalized_status = DEFAULT_CONTRACT_STATUS
+            if not isinstance(status, str) or not status.strip():
+                errors.append("  [contract.status] must be a non-empty string when provided.")
+            else:
+                normalized_status = status.strip()
+                if normalized_status not in VALID_CONTRACT_STATUSES:
+                    errors.append(
+                        f"  [contract.status] '{normalized_status}' is invalid. "
+                        f"Allowed: {sorted(VALID_CONTRACT_STATUSES)}"
+                    )
+
+            normalized_reviewers: list[str] = []
+            if "reviewers" in contract:
+                reviewers = contract["reviewers"]
+                if not isinstance(reviewers, list):
+                    errors.append("  [contract.reviewers] must be a list of non-empty strings.")
+                else:
+                    for index, reviewer in enumerate(reviewers):
+                        if not isinstance(reviewer, str) or not reviewer.strip():
+                            errors.append(
+                                f"  [contract.reviewers[{index}]] must be a non-empty string."
+                            )
+                        else:
+                            normalized_reviewers.append(reviewer.strip())
+
+            normalized_effective_from = (
+                _normalize_contract_date(
+                    contract["effective_from"],
+                    location="contract.effective_from",
+                    errors=errors,
+                )
+                if "effective_from" in contract
+                else None
+            )
+            normalized_effective_until = (
+                _normalize_contract_date(
+                    contract["effective_until"],
+                    location="contract.effective_until",
+                    errors=errors,
+                )
+                if "effective_until" in contract
+                else None
+            )
+            if normalized_effective_from and normalized_effective_until:
+                if date.fromisoformat(normalized_effective_from) > date.fromisoformat(
+                    normalized_effective_until
+                ):
+                    errors.append("  [contract] effective_from must be <= effective_until.")
+
+            normalized_sla = (
+                _normalize_string_mapping(
+                    contract["sla"],
+                    location="contract.sla",
+                    allowed_keys=_SLA_ALLOWED_KEYS,
+                    errors=errors,
+                )
+                if "sla" in contract
+                else None
+            )
+            normalized_security = (
+                _normalize_string_mapping(
+                    contract["security"],
+                    location="contract.security",
+                    allowed_keys=_SECURITY_ALLOWED_KEYS,
+                    errors=errors,
+                )
+                if "security" in contract
+                else None
+            )
+
             if not errors and isinstance(output, dict):
-                schema_dict["contract"] = {"output": normalized_output}
+                normalized_contract: dict[str, object] = {
+                    "output": normalized_output,
+                    "status": normalized_status,
+                }
                 if "grain" in contract:
-                    schema_dict["contract"]["grain"] = normalized_grain
+                    normalized_contract["grain"] = normalized_grain
+                if "reviewers" in contract:
+                    normalized_contract["reviewers"] = normalized_reviewers
+                if normalized_effective_from is not None:
+                    normalized_contract["effective_from"] = normalized_effective_from
+                if normalized_effective_until is not None:
+                    normalized_contract["effective_until"] = normalized_effective_until
+                if normalized_sla is not None:
+                    normalized_contract["sla"] = normalized_sla
+                if normalized_security is not None:
+                    normalized_contract["security"] = normalized_security
+                schema_dict["contract"] = normalized_contract
 
     # --- semantic seed ---------------------------------------------------
     if "semantic" in schema_dict:
@@ -1423,6 +1632,129 @@ def parse_schema(yaml_str, params=None, *, base_dir=None, _seen_paths=None):
         raise ValueError("Schema must be a YAML mapping (dict) at the top level.")
 
     return _normalize_schema(schema, params=params, base_dir=base_dir, seen_paths=_seen_paths)
+
+
+_LOCALIZED_LINE_RE = re.compile(r"^\s*\[([^]]+)]\s*(.*)$")
+_UNKNOWN_FILTER_RE = re.compile(r"unknown filter operator '([^']+)'")
+_UNKNOWN_JOIN_RE = re.compile(
+    r"'(table_from|table_to)' references unknown alias '([^']+)'"
+)
+_UNKNOWN_CONTRACT_OUTPUT_RE = re.compile(
+    r"column '([^']+)' is not produced by the pipeline"
+)
+
+
+def _filter_operator(item) -> str | None:
+    """Return the operator from any supported pre-normalization filter form."""
+    if isinstance(item, str):
+        parts = item.split(":", 2)
+        return parts[1].strip() if len(parts) >= 2 else None
+    if not isinstance(item, dict):
+        return None
+    if isinstance(item.get("operator"), str):
+        return item["operator"]
+    if len(item) == 1:
+        value = next(iter(item.values()))
+        if isinstance(value, dict) and len(value) == 1:
+            return str(next(iter(value)))
+    return None
+
+
+def _localized_path(location: str, detail: str, schema: dict | None) -> tuple[str, str]:
+    """Map existing human validation locations to stable best-effort paths."""
+    schema = schema or {}
+    unknown_filter = _UNKNOWN_FILTER_RE.search(detail)
+    if unknown_filter and "filter" in location:
+        table_name_match = re.match(r"table '([^']+)'", location)
+        table_name = table_name_match.group(1) if table_name_match else None
+        section = "filter_groups" if "filter_groups" in location else "filter"
+        for table_index, table in enumerate(schema.get("tables", [])):
+            if table_name is not None and table_name not in {
+                table.get("alias"),
+                table.get("name"),
+            }:
+                continue
+            if section == "filter":
+                values = table.get("filter", [])
+                values = (
+                    [{key: value} for key, value in values.items()]
+                    if isinstance(values, dict)
+                    else values
+                )
+                for filter_index, item in enumerate(values or []):
+                    if _filter_operator(item) == unknown_filter.group(1):
+                        return "filter.unknown_operator", (
+                            f"tables[{table_index}].filter[{filter_index}]"
+                        )
+                return "filter.unknown_operator", f"tables[{table_index}].filter"
+            for group_index, group in enumerate(table.get("filter_groups", [])):
+                for filter_index, item in enumerate(group or []):
+                    if _filter_operator(item) == unknown_filter.group(1):
+                        return "filter.unknown_operator", (
+                            f"tables[{table_index}].filter_groups[{group_index}]"
+                            f"[{filter_index}]"
+                        )
+            return "filter.unknown_operator", f"tables[{table_index}].filter_groups"
+        return "filter.unknown_operator", "tables[?].filter"
+
+    unknown_join = _UNKNOWN_JOIN_RE.search(detail)
+    if location == "join" and unknown_join:
+        side, alias = unknown_join.groups()
+        for join_index, join in enumerate(schema.get("join", [])):
+            value = join.get(side)
+            ref = value[0] if isinstance(value, list) and value else value
+            if ref == alias:
+                return "join.unknown_alias", f"join[{join_index}].{side}"
+        return "join.unknown_alias", f"join[?].{side}"
+
+    unknown_contract = _UNKNOWN_CONTRACT_OUTPUT_RE.search(detail)
+    if location == "contract.output" and unknown_contract:
+        column = unknown_contract.group(1)
+        return "contract.output.unknown_column", f"contract.output.{column}"
+
+    return "schema.invalid", location if "." in location else ""
+
+
+def _localized_issues(message: str, schema: dict | None) -> list[LocalizedIssue]:
+    """Split the loader's aggregated text into allowlisted structured issues."""
+    entries: list[tuple[str, list[str]]] = []
+    for line in message.splitlines():
+        match = _LOCALIZED_LINE_RE.match(line)
+        if match:
+            entries.append((match.group(1), [match.group(2)]))
+        elif entries and line.strip():
+            entries[-1][1].append(line.strip())
+
+    if not entries:
+        return [LocalizedIssue(code="schema.invalid", message=message, path="")]
+
+    issues = []
+    for location, detail_lines in entries:
+        detail = "\n".join(detail_lines)
+        code, path = _localized_path(location, detail, schema)
+        issues.append(LocalizedIssue(code=code, message=detail, path=path))
+    return issues
+
+
+def parse_schema_localized(
+    yaml_str: str, params=None, *, base_dir: str | None = None
+) -> tuple[dict | None, list[LocalizedIssue]]:
+    """Parse a schema and return localized validation issues instead of raising."""
+    schema = None
+    original = None
+    try:
+        injected = _inject_params(yaml_str, params or {})
+        try:
+            schema = yaml.safe_load(injected)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Malformed YAML schema: {exc}") from exc
+        if not isinstance(schema, dict):
+            raise ValueError("Schema must be a YAML mapping (dict) at the top level.")
+        original = deepcopy(schema)
+        normalized = _normalize_schema(schema, params=params, base_dir=base_dir)
+    except ValueError as exc:
+        return None, _localized_issues(str(exc), original)
+    return normalized, []
 
 
 def load_schema(path, params=None, *, _seen_paths=None):

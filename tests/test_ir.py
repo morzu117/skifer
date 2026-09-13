@@ -7,16 +7,14 @@ compact ops, when/then/else compact, dict-form ops, filter forms, joins.
 import pytest
 
 from skifer.core.ir import (
-    ParsedColumnSpec,
     ParsedDataProduct,
     ParsedFilter,
     ParsedJoin,
     ParsedOp,
+    ParsedOwner,
     ParsedOutputField,
     ParsedSchema,
     ParsedSemanticSeed,
-    ParsedTable,
-    WhenClause,
     _parse_op,
     parse_to_ir,
 )
@@ -165,6 +163,52 @@ class TestParseToIrSimple:
             dimensions=("order_id",),
         )
         assert isinstance(ir.semantic.dimensions, tuple)
+
+    def test_owner_mapping_fields_parsed(self):
+        schema = {
+            "tables": [],
+            "data_product": {
+                "id": "sales.orders",
+                "version": "1.0.0",
+                "owner": {
+                    "team": "sales-data",
+                    "steward": "jane@example.com",
+                    "domain": "commerce",
+                    "contact": "#sales-data",
+                },
+                "domain": "retail",
+            },
+        }
+
+        ir = parse_to_ir(schema)
+
+        assert ir.data_product == ParsedDataProduct(
+            id="sales.orders",
+            version="1.0.0",
+            owner=ParsedOwner(
+                team="sales-data",
+                steward="jane@example.com",
+                domain="commerce",
+                contact="#sales-data",
+            ),
+            domain="retail",
+        )
+        assert ir.data_product.owner_label == "sales-data"
+        assert ir.data_product.owner_domain == "retail"
+
+    def test_owner_domain_falls_back_to_owner_mapping_domain(self):
+        schema = {
+            "tables": [],
+            "data_product": {
+                "id": "sales.orders",
+                "version": "1.0.0",
+                "owner": {"domain": "commerce"},
+            },
+        }
+
+        ir = parse_to_ir(schema)
+
+        assert ir.data_product.owner_domain == "commerce"
 
 
 # ---------------------------------------------------------------------------

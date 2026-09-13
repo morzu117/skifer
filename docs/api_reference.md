@@ -48,6 +48,75 @@ from skifer import RuleRegistry
 
 ---
 
+## Application Services — Plan 31
+
+The classes in `skifer.services` are transport-neutral and require a
+`RequestContext` on every governed operation. See [Services and local API](services_and_api.md)
+for scopes, HTTP routes, and CLI examples.
+
+### `RequestContext` and `LocalIdentity`
+
+**`skifer.services.context.RequestContext`** carries `subject`, a frozen set of
+named `scopes`, `consumer_class`, and `TraceContext`. `require_scope(ctx, name)`
+refuses an absent exact scope.
+
+**`skifer.services.identity.LocalIdentity`** resolves the local OS identity and
+creates a request context from a static local scope set. It rejects
+`certification_override`; authority is never read from a request body or header.
+
+### Service container
+
+```python
+from skifer.services import local_request_context
+from skifer.services.container import build_services
+
+services = build_services(".")  # does not open Spark
+ctx = local_request_context()
+project = services.project.open(ctx)
+```
+
+`ServiceContainer` exposes `project`, `rules`, `semantic`, `governance`,
+`quality`, `agents`, `execution`, and the shared governed `data_service`.
+
+| Class | Selected operations |
+|---|---|
+| `ProjectService` | `open`, `get_pipeline`, `describe`, `project_output`, `lineage`, `explain_rules`, `json_schema`, `op_catalog`, `write_pipeline`, `audit` |
+| `RuleService` | `scan`, `list`, `dependency_graph`, `generate_snippet`, `write_rule` |
+| `SemanticService` | `list_models`, `get_model`, `check`, `write_draft`, `promote` |
+| `GovernanceService` | contracts, products, certification/history, run/quarantine reads, registry dictionary/upstream/downstream/impact/search, `diff_contracts` |
+| `QualityService` | `checks_from_schema`, `history`, `last_report`, incident list/acknowledge/assign/resolve |
+| `AgentService` | `ask`, `build` |
+| `ExecutionService` | `connect`, `session`, `close`, `submit`, `status`, `cancel`, `logs`, `result` |
+
+### `ExecutionService` result types
+
+`SessionView` describes the current lazy runtime session. `JobStatusView` and
+`LogsView` support polling. `ResultView` is the bounded JSON-native terminal
+result and contains `job_id`, `run_id`, kind/state, rows, total, schema, monitor
+report, publication decision, optional quarantine summary, and error.
+Only one job may be active per service instance, and its `job_id` is the engine
+`run_id`.
+
+### Metadata registry
+
+**`skifer.observability.metadata_store.DatasetRecord`** stores a target FQN,
+pipeline and contract identity, definition hash, owner, `ColumnRecord` entries,
+index time, latest run ID, and serialized lineage.
+
+`SqliteMetadataStore` and `DeltaMetadataStore` implement `MetadataStore`:
+
+| Method | Description |
+|---|---|
+| `upsert(record) → bool` | Idempotently store a changed definition. |
+| `attach_run_id(target_fqn, definition_hash, run_id) → bool` | Attach the latest publication identity without changing definition content. |
+| `get(target_fqn)` / `list_all()` | Read the latest registry records. |
+| `search_columns(text)` | Search column names and descriptions. |
+
+`MetadataRegistryQuery.upstream()`, `.downstream()`, and `.impact()` traverse the
+merged cross-pipeline graph with cycle and depth protection.
+
+---
+
 ## Semantic Layer
 
 ### `SemanticEngine`

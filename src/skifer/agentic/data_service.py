@@ -4,118 +4,44 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from datetime import date, datetime
-from decimal import Decimal
+from datetime import datetime
 import hashlib
 import hmac
 import json
 import re
-import math
 from typing import Any, Generic, TypeVar
 
 from skifer.agentic.resolver import SemanticQuery
 from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification_store import Certification
-from skifer.observability.tracing import TraceContext
 from skifer.semantic.access_policy import ConsumerContext
 from skifer.semantic.evidence import EvidencePolicy, SemanticEvidence
-
-
-HARD_MAX_PAGE_SIZE = 100
-HARD_MAX_QUERY_ROWS = 1_000
-HARD_MAX_FILTERS = 50
-HARD_MAX_FILTER_VALUE_LENGTH = 1_024
+from skifer.services.context import (
+    HARD_MAX_FILTERS,
+    HARD_MAX_FILTER_VALUE_LENGTH,
+    HARD_MAX_PAGE_SIZE,
+    HARD_MAX_QUERY_ROWS,
+    _CONSUMER_SCOPE_ALLOWLIST,
+    AgentReadyDataError,
+    InvalidCursor,
+    InvalidRequest,
+    LimitExceeded,
+    RequestContext,
+    ResourceNotFound,
+    ResourceUnavailable,
+    ScopeDenied,
+    SerializationError,
+    ServiceLimits,
+    require_scope,
+)
+from skifer.services.serialization import row_to_json
 
 _CURSOR_VERSION = 1
 _CURSOR_DOMAIN = b"skifer.agent-ready.models.v1\0"
-_CONSUMER_SCOPE_ALLOWLIST: frozenset[str] = frozenset()
 
 MAX_CONTRACT_ID_LENGTH = 256
 _CONTRACT_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,255}$")
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
-
-
-class AgentReadyDataError(Exception):
-    """Base class for explicit, transport-neutral service refusals."""
-
-
-class ScopeDenied(AgentReadyDataError):
-    """The request context does not carry the exact required scope."""
-
-
-class InvalidRequest(AgentReadyDataError):
-    """The request violates the closed service input contract."""
-
-
-class LimitExceeded(InvalidRequest):
-    """A configured or hard service budget was exceeded."""
-
-
-class InvalidCursor(InvalidRequest):
-    """A pagination cursor is malformed, stale, or outside the result set."""
-
-
-class ResourceNotFound(AgentReadyDataError):
-    """A requested governed resource is not visible to this service."""
-
-
-class ResourceUnavailable(AgentReadyDataError):
-    """A required governance component is not configured."""
-
-
-class SerializationError(AgentReadyDataError):
-    """A query row cannot be represented safely as JSON-native data."""
-
-
-@dataclass(frozen=True)
-class RequestContext:
-    subject: str
-    scopes: frozenset[str]
-    consumer_class: str
-    trace_context: TraceContext
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.subject, str) or not self.subject.strip():
-            raise InvalidRequest("Request subject must be non-empty text.")
-        if not isinstance(self.scopes, frozenset) or not all(
-            isinstance(scope, str) and scope for scope in self.scopes
-        ):
-            raise InvalidRequest("Request scopes must be a frozenset of non-empty text.")
-        if not isinstance(self.consumer_class, str) or not self.consumer_class.strip():
-            raise InvalidRequest("Consumer class must be non-empty text.")
-        if not isinstance(self.trace_context, TraceContext):
-            raise InvalidRequest("trace_context must be a TraceContext instance.")
-
-
-def require_scope(ctx: RequestContext, scope: str) -> None:
-    """Require one exact scope and deny malformed contexts as well as absences."""
-    if not isinstance(ctx, RequestContext) or scope not in ctx.scopes:
-        raise ScopeDenied(f"Scope '{scope}' is required.")
-
-
-@dataclass(frozen=True)
-class ServiceLimits:
-    max_page_size: int = HARD_MAX_PAGE_SIZE
-    max_query_rows: int = HARD_MAX_QUERY_ROWS
-    max_filters: int = HARD_MAX_FILTERS
-    max_filter_value_length: int = HARD_MAX_FILTER_VALUE_LENGTH
-
-    def __post_init__(self) -> None:
-        values = (
-            ("max_page_size", self.max_page_size, HARD_MAX_PAGE_SIZE),
-            ("max_query_rows", self.max_query_rows, HARD_MAX_QUERY_ROWS),
-            ("max_filters", self.max_filters, HARD_MAX_FILTERS),
-            (
-                "max_filter_value_length",
-                self.max_filter_value_length,
-                HARD_MAX_FILTER_VALUE_LENGTH,
-            ),
-        )
-        for name, value, hard_maximum in values:
-            if type(value) is not int or not 1 <= value <= hard_maximum:
-                raise LimitExceeded(
-                    f"{name} must be an integer in 1..{hard_maximum}; got {value!r}."
-                )
 
 
 @dataclass(frozen=True)
@@ -658,44 +584,7 @@ class AgentReadyDataService:
         )
 
     def _row_to_json(self, row: Any, index: int) -> dict[str, Any]:
-        if isinstance(row, dict):
-            values = row
-        else:
-            converter = getattr(row, "asDict", None)
-            if converter is None or not callable(converter):
-                raise SerializationError(f"Query row {index} is not mapping-like.")
-            values = converter(recursive=True)
-        if not isinstance(values, dict) or not all(isinstance(key, str) for key in values):
-            raise SerializationError(f"Query row {index} must have string column names.")
-        return {
-            key: self._json_value(value, f"rows[{index}].{key}")
-            for key, value in values.items()
-        }
-
-    def _json_value(self, value: Any, field_name: str) -> Any:
-        if value is None or isinstance(value, (str, bool, int)):
-            return value
-        if isinstance(value, float):
-            if not math.isfinite(value):
-                raise SerializationError(f"{field_name} must be a finite JSON number.")
-            return value
-        if isinstance(value, Decimal):
-            return str(value)
-        if isinstance(value, (datetime, date)):
-            return value.isoformat()
-        if isinstance(value, (list, tuple)):
-            return [
-                self._json_value(item, f"{field_name}[{index}]")
-                for index, item in enumerate(value)
-            ]
-        if isinstance(value, dict) and all(isinstance(key, str) for key in value):
-            return {
-                key: self._json_value(item, f"{field_name}.{key}")
-                for key, item in value.items()
-            }
-        raise SerializationError(
-            f"{field_name} has unsupported type '{type(value).__name__}'."
-        )
+        return row_to_json(row, index)
 
     @staticmethod
     def _required_text(source: dict, key: str, label: str) -> str:
@@ -733,3 +622,34 @@ class AgentReadyDataService:
         if not isinstance(value, datetime):
             raise ResourceUnavailable(f"Field '{field_name}' must be a datetime or null.")
         return value.isoformat()
+
+
+__all__ = [
+    "HARD_MAX_PAGE_SIZE",
+    "HARD_MAX_QUERY_ROWS",
+    "HARD_MAX_FILTERS",
+    "HARD_MAX_FILTER_VALUE_LENGTH",
+    "_CONSUMER_SCOPE_ALLOWLIST",
+    "AgentReadyDataError",
+    "ScopeDenied",
+    "InvalidRequest",
+    "LimitExceeded",
+    "InvalidCursor",
+    "ResourceNotFound",
+    "ResourceUnavailable",
+    "SerializationError",
+    "RequestContext",
+    "require_scope",
+    "ServiceLimits",
+    "ModelSummary",
+    "GovernedModelView",
+    "ContractFieldView",
+    "ContractSemanticView",
+    "ContractView",
+    "CertificationView",
+    "LineageEdgeView",
+    "LineageView",
+    "Page",
+    "QueryEnvelope",
+    "AgentReadyDataService",
+]

@@ -10,10 +10,12 @@ et la même logique de sauvegarde.
 """
 from __future__ import annotations
 
+import builtins
+from collections import deque
 import json
 import os
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import yaml
 
@@ -162,23 +164,45 @@ class BuilderAgent:
         backend: "SparkBackend",
         catalog: str | None = None,
         llm_provider: "LLMProvider | None" = None,
+        input_provider: Callable[[str], str] | None = None,
     ):
         self._backend = backend
         self._catalog = catalog
         self._inspector = CatalogInspector(backend, catalog)
         self._llm = llm_provider
+        self._input = input_provider or builtins.input
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def wizard(self, output_dir: str = "schemas") -> str:
+    def wizard(
+        self,
+        output_dir: str = "schemas",
+        answers: list[str] | dict[str, list[str]] | None = None,
+    ) -> str:
         """
         Lance le wizard interactif pas-à-pas.
 
         Chaque valeur saisie est validée par le CatalogInspector avant de passer
         à l'étape suivante. Retourne le chemin du fichier sauvegardé.
+
+        ``answers`` may be an ordered response queue, consumed in the exact
+        prompt order (tables, filters, joins, rules, select, options, save), or
+        a mapping from exact prompt text to a response queue. When omitted, the
+        provider configured at construction is used (``builtins.input`` by
+        default).
         """
+        previous_input = self._input
+        if answers is not None:
+            self._input = self._answers_provider(answers)
+        try:
+            return self._run_wizard(output_dir)
+        finally:
+            self._input = previous_input
+
+    def _run_wizard(self, output_dir: str) -> str:
+        """Run the wizard using the currently selected input provider."""
         print("\n SkiferHub — BuilderAgent Wizard")
         print("────────────────────────────────────\n")
 
@@ -230,7 +254,7 @@ class BuilderAgent:
         print(yaml_content)
 
         # Save
-        confirm = input("Sauvegarder ? [O/n] : ").strip().lower()
+        confirm = self._input("Sauvegarder ? [O/n] : ").strip().lower()
         if confirm in ("", "o", "y", "oui", "yes"):
             saved_path = self._save_yaml(yaml_content, output_name)
             print(f"\n✅ Fichier sauvegardé : {saved_path}")
@@ -238,6 +262,35 @@ class BuilderAgent:
         else:
             print("\n⚠️ Sauvegarde annulée.")
             return ""
+
+    @staticmethod
+    def _answers_provider(
+        answers: list[str] | dict[str, list[str]],
+    ) -> Callable[[str], str]:
+        """Build a deterministic provider that never falls back to stdin."""
+        if isinstance(answers, list):
+            queue = deque(answers)
+
+            def ordered_provider(prompt: str) -> str:
+                if not queue:
+                    raise ValueError(f"No programmed answer remains for prompt: {prompt}")
+                return queue.popleft()
+
+            return ordered_provider
+        if isinstance(answers, dict) and all(
+            isinstance(prompt, str) and isinstance(values, list)
+            for prompt, values in answers.items()
+        ):
+            queues = {prompt: deque(values) for prompt, values in answers.items()}
+
+            def prompt_provider(prompt: str) -> str:
+                queue = queues.get(prompt)
+                if not queue:
+                    raise ValueError(f"No programmed answer remains for prompt: {prompt}")
+                return queue.popleft()
+
+            return prompt_provider
+        raise TypeError("answers must be a list of strings or a prompt-to-list mapping")
 
     def ask(self, description: str, output_dir: str = "schemas") -> BuilderResponse:
         """
@@ -333,7 +386,7 @@ class BuilderAgent:
         print("[1/6] Tables sources")
         tables: dict[str, str] = {}
         while True:
-            fqn = input("  Nom de la table (FQN, ex: catalog.silver.orders) : ").strip()
+            fqn = self._input("  Nom de la table (FQN, ex: catalog.silver.orders) : ").strip()
             if not fqn:
                 if not tables:
                     print("  ⚠️  Au moins une table est requise.")
@@ -348,9 +401,9 @@ class BuilderAgent:
                 print(f"  ✗ {exc}")
                 continue
 
-            alias = input("  Alias : ").strip() or fqn.split(".")[-1]
+            alias = self._input("  Alias : ").strip() or fqn.split(".")[-1]
             tables[alias] = fqn
-            more = input("  Ajouter une autre table ? (entrée pour passer) : ").strip()
+            more = self._input("  Ajouter une autre table ? (entrée pour passer) : ").strip()
             if not more:
                 break
         return tables
@@ -363,7 +416,7 @@ class BuilderAgent:
             print(f"  (table {alias})")
             alias_filters: list[str] = []
             while True:
-                f = input("  Filtre (ex: region:equals:EMEA) ou entrée pour passer : ").strip()
+                f = self._input("  Filtre (ex: region:equals:EMEA) ou entrée pour passer : ").strip()
                 if not f:
                     break
                 # Validate column name in filter
@@ -388,13 +441,13 @@ class BuilderAgent:
             print("  (moins de 2 tables — jointures ignorées)")
             return joins
         while True:
-            left_raw = input("  Table de gauche [alias, colonne] ou entrée pour passer : ").strip()
+            left_raw = self._input("  Table de gauche [alias, colonne] ou entrée pour passer : ").strip()
             if not left_raw:
                 break
-            right_raw = input("  Table de droite [alias, colonne] : ").strip()
+            right_raw = self._input("  Table de droite [alias, colonne] : ").strip()
             if not right_raw:
                 break
-            join_type = input("  Type (left/inner/right) [left] : ").strip() or "left"
+            join_type = self._input("  Type (left/inner/right) [left] : ").strip() or "left"
             try:
                 left_alias, left_col = [x.strip() for x in left_raw.split(",", 1)]
                 right_alias, right_col = [x.strip() for x in right_raw.split(",", 1)]
@@ -406,7 +459,7 @@ class BuilderAgent:
                 "table_to": [right_alias, right_col],
                 "type": join_type,
             })
-            more = input("  Ajouter une jointure ? (entrée pour passer) : ").strip()
+            more = self._input("  Ajouter une jointure ? (entrée pour passer) : ").strip()
             if not more:
                 break
         return joins
@@ -416,7 +469,7 @@ class BuilderAgent:
         print("\n[4/6] Business rules")
         rules: list[str] = []
         while True:
-            rule = input("  Règle enregistrée (ex: flag_high_value) ou entrée pour passer : ").strip()
+            rule = self._input("  Règle enregistrée (ex: flag_high_value) ou entrée pour passer : ").strip()
             if not rule:
                 break
             rules.append(rule)
@@ -427,22 +480,22 @@ class BuilderAgent:
         print("\n[5/6] Select final")
         select: list = []
         keep_all = False
-        first = input("  Colonne source (ou entrée pour keep_all_columns) : ").strip()
+        first = self._input("  Colonne source (ou entrée pour keep_all_columns) : ").strip()
         if not first:
             keep_all = True
             return select, keep_all
         # Process first column
-        alias_col = input("  Alias : ").strip() or first
-        ops_raw = input("  Opérations (ex: cast:double, round:2) ou entrée pour aucune : ").strip()
+        alias_col = self._input("  Alias : ").strip() or first
+        ops_raw = self._input("  Opérations (ex: cast:double, round:2) ou entrée pour aucune : ").strip()
         ops = [o.strip() for o in ops_raw.split(",")] if ops_raw else []
         select.append([first, alias_col, ops])
         # Additional columns
         while True:
-            col = input("  Colonne suivante ou entrée pour terminer : ").strip()
+            col = self._input("  Colonne suivante ou entrée pour terminer : ").strip()
             if not col:
                 break
-            alias_col = input("  Alias : ").strip() or col
-            ops_raw = input("  Opérations ou entrée pour aucune : ").strip()
+            alias_col = self._input("  Alias : ").strip() or col
+            ops_raw = self._input("  Opérations ou entrée pour aucune : ").strip()
             ops = [o.strip() for o in ops_raw.split(",")] if ops_raw else []
             select.append([col, alias_col, ops])
         return select, keep_all
@@ -450,10 +503,10 @@ class BuilderAgent:
     def _wizard_options(self, output_dir: str) -> tuple[int | None, str]:
         """Step 6 — dev_limit and output filename."""
         print("\n[6/6] Options")
-        dev_limit_raw = input("  dev_limit (entrée pour aucune limite) : ").strip()
+        dev_limit_raw = self._input("  dev_limit (entrée pour aucune limite) : ").strip()
         dev_limit = int(dev_limit_raw) if dev_limit_raw.isdigit() else None
         default_name = os.path.join(output_dir, "pipeline.yaml")
-        output_name = input(f"  Nom du fichier de sortie [{default_name}] : ").strip() or default_name
+        output_name = self._input(f"  Nom du fichier de sortie [{default_name}] : ").strip() or default_name
         return dev_limit, output_name
 
     # ------------------------------------------------------------------

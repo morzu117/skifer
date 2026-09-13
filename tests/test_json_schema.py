@@ -10,12 +10,12 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 
 import pytest
 
 from skifer.core.json_schema import generate_json_schema
+from skifer.core.constants import CLASSIFICATION_LEVELS, VALID_CONTRACT_STATUSES
 from skifer.core.op_catalog import FILTER_OPERATORS, COLUMN_OPS
 
 
@@ -91,6 +91,38 @@ class TestGenerateJsonSchema:
         assert contract["required"] == ["output"]
         assert semantic["required"] == ["model_key"]
         assert semantic["additionalProperties"] is False
+
+    def test_json_schema_owner_oneof(self):
+        owner = generate_json_schema()["$defs"]["DataProductDef"]["properties"]["owner"]
+
+        assert [shape["type"] for shape in owner["oneOf"]] == ["string", "object"]
+        owner_mapping = owner["oneOf"][1]
+        assert owner_mapping["additionalProperties"] is False
+        assert set(owner_mapping["properties"]) == {"team", "steward", "domain", "contact"}
+
+    def test_json_schema_data_product_domain(self):
+        domain = generate_json_schema()["$defs"]["DataProductDef"]["properties"]["domain"]
+
+        assert domain == {"type": "string", "minLength": 1}
+
+    def test_classification_is_closed_enum(self):
+        classification = generate_json_schema()["$defs"]["OutputFieldDef"][
+            "properties"
+        ]["classification"]
+
+        assert classification["enum"] == list(CLASSIFICATION_LEVELS)
+
+    def test_contract_lifecycle_sla_and_security_schema(self):
+        contract = generate_json_schema()["$defs"]["ContractDef"]["properties"]
+
+        assert contract["status"]["enum"] == sorted(VALID_CONTRACT_STATUSES)
+        assert contract["reviewers"]["items"] == {"type": "string", "minLength": 1}
+        assert contract["effective_from"] == {"type": "string", "format": "date"}
+        assert contract["effective_until"] == {"type": "string", "format": "date"}
+        assert contract["sla"]["additionalProperties"] is False
+        assert set(contract["sla"]["properties"]) == {"refresh_frequency", "max_latency"}
+        assert contract["security"]["additionalProperties"] is False
+        assert set(contract["security"]["properties"]) == {"level", "access_policy"}
 
     def test_table_def_has_streaming_flag(self):
         s = generate_json_schema()
@@ -252,7 +284,15 @@ class TestValidation:
             "tables": [{"name": "silver.orders"}],
             "select_final": [["order_id", "order_id"]],
             "data_product": {"id": "sales.orders", "version": "1.0.0"},
-            "contract": {"output": {"order_id": {"required": True}}},
+            "contract": {
+                "status": "active",
+                "reviewers": ["alice@example.com"],
+                "effective_from": "2026-01-01",
+                "effective_until": "2026-12-31",
+                "sla": {"refresh_frequency": "1h", "max_latency": "12h"},
+                "security": {"level": "restricted", "access_policy": "row_filter:region"},
+                "output": {"order_id": {"required": True}},
+            },
             "semantic": {"model_key": "orders", "dimensions": ["order_id"]},
         })
 

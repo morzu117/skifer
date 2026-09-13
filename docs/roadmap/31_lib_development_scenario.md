@@ -5,7 +5,8 @@
 > [32_skiferui_feature_map.md](32_skiferui_feature_map.md).
 > OpenMetadata est mis de côté ; seules les idées jugées pertinentes du benchmark
 > [30_openmetadata_benchmark.md](30_openmetadata_benchmark.md) sont conservées (§2).
-> Statut : **proposition, à valider avant tout code.** 7 features, 27 slices, une slice = un commit
+> Statut : **arbitrages §7 tranchés le 11 septembre 2026 ; en attente de validation des plans
+> exécutables par feature avant tout code.** 7 features, 27 slices, une slice = un commit
 > `feat(plan31-F.N): …`.
 
 ---
@@ -71,6 +72,10 @@ l'UI.
 
 ---
 
+> **Plans exécutables détaillés par feature** (signatures réelles, cas de test, commit par slice) :
+> [`31_lib_development_scenario/`](31_lib_development_scenario/README.md). Le README y consolide les
+> corrections transverses relevées en confrontant les slices au code réel.
+
 ## 4. Les features
 
 ### Feature 31.1 — Service applicatif transport-neutre `services/`
@@ -123,7 +128,7 @@ avant qu'un consommateur le subisse.
 
 | Slice | Contenu | Fichiers | Tests |
 |---|---|---|---|
-| 3.1 | Taxonomie `classification: public | internal | confidential | restricted | pii` validée au load et dans le JSON Schema ; **propagation** dans `LineageTracker` : une colonne dérivée hérite du niveau le plus haut de ses sources sauf déclaration explicite (abaissement journalisé) ; exposition dans `SourceEvidence`, `EvidencePolicy` (une colonne `pii`/`restricted` retient les valeurs de filtre), ODCS `classification`, `ColumnRecord` (31.2) | `core/schema_loader.py`, `core/json_schema.py`, `lineage/tracker.py`, `semantic/evidence.py`, `observability/odcs.py` | valeur inconnue refusée ; héritage via join et règle ; abaissement explicite |
+| 3.1 | Taxonomie `classification: public | internal | confidential | restricted | pii` validée au load et dans le JSON Schema ; **propagation** dans `LineageTracker` : une colonne dérivée hérite du niveau le plus haut de ses sources sauf déclaration explicite (abaissement journalisé) ; **v1 `warn` sur élévation inférée non déclarée, durcissement `strict` après 31.7 (arbitrage §7.5)** ; exposition dans `SourceEvidence`, `EvidencePolicy` (une colonne `pii`/`restricted` retient les valeurs de filtre), ODCS `classification`, `ColumnRecord` (31.2) | `core/schema_loader.py`, `core/json_schema.py`, `lineage/tracker.py`, `semantic/evidence.py`, `observability/odcs.py` | valeur inconnue refusée ; héritage via join et règle ; abaissement explicite |
 | 3.2 | Ownership : `owner` accepte une chaîne (rétrocompat) ou `{team, steward, domain, contact}` ; `data_product.domain` ; ODCS `team[]` complété ; tags UC `skifer_owner`, `skifer_domain` ; owner toujours hors hash | `core/schema_loader.py`, `core/json_schema.py`, `observability/odcs.py`, `observability/uc_mirror.py` | chaîne et mapping → même `ContractDefinition` |
 | 3.3 | Cycle de vie : `contract.status: draft | active | deprecated` (défaut `active`), `contract.reviewers[]`, `contract.effective_from/until`, `contract.sla: {refresh_frequency, max_latency}`, `contract.security: {level, access_policy}` ; `ContractExtractor` dérive `LoadFreshnessCheck` du SLA ; `access_policy.evaluate()` → `WARN` sur `deprecated`, `DENY` hors fenêtre d'effet, avec raisons dédiées ; **hash** : `sla` et `security` dedans, `status` / `reviewers` / dates dehors ; `canonicalization_version` incrémentée | `core/schema_loader.py`, `core/json_schema.py`, `observability/certification.py`, `observability/contracts.py`, `semantic/access_policy.py`, `observability/odcs.py` | hash stable sur changement de statut ; nouveau hash sur SLA ; gate sur deprecated ; anciens hashs lisibles |
 | 3.4 | Import ODCS 3.1 : `import_odcs_31(doc) -> {data_product, contract, warnings}` symétrique de l'export ; CLI `skifer contract import FILE` qui imprime le bloc YAML | `observability/odcs.py`, `cli.py` | export → import → export idempotent sur les champs mappés |
@@ -202,14 +207,16 @@ Phase 0   commit 7.3 + tests  →  31.1.1 → 31.1.6 → 7.4        (fondation e
 Phase 1   31.1.2 · 31.1.3 · 31.1.4 · 31.1.5                   (services sans Spark)
           31.6.1 dès que 31.1.2 et 31.1.3 existent : une API v0 (projet, pipelines, règles,
           catalogue, sémantique en lecture) suffit pour brancher un premier client
-Phase 2   31.3 (3.1 → 3.5)   ∥   31.2 (2.1 → 2.4)              fichiers disjoints, deux branches
+Phase 2   31.3 (3.1 → 3.5) EN TÊTE  ∥  31.2 (2.1 → 2.4)  ∥  31.7   (gouvernance prioritaire,
+          registre en parallèle, audit remonté pour mesurer la couverture de classification —
+          arbitrage §7.5 : 31.3.1 propage en `warn`, le durcissement `strict` attend 31.7)
 Phase 3   31.5 (5.1 → 5.3)  →  31.6.2 (+ 7.5)                   exécution et packaging
-Phase 4   31.4 (4.1 → 4.3)   ∥   31.7                            incidents et audit
+Phase 4   31.4 (4.1 → 4.3)                                       incidents (routage)
 Phase 5   Plan 29 Feature 8, puis Feature 9
 ```
 
 Dépendances dures : 31.1.1 avant tout autre 31.1 ; 7.4 avant 31.6 ; 31.2.3 et 31.3.2 avant 31.4.2 ;
-31.3.5 avant 31.4.2. Tout le reste est parallélisable.
+31.3.5 avant 31.4.2 ; 31.7 avant le passage de 31.3.1 en `strict`. Tout le reste est parallélisable.
 
 Après la phase 1, un client externe dispose déjà de : ouverture de projet, validation avec erreurs
 localisées, JSON Schema, description, projection de schéma, lineage statique, règles et snippets,
@@ -217,21 +224,34 @@ catalogue sémantique et contrats en lecture. Tout cela sans Spark.
 
 ---
 
-## 7. Décisions à arbitrer avant de démarrer
+## 7. Décisions arbitrées (tranchées le 11 septembre 2026)
 
-1. **API dans ce dépôt** derrière `[api]` (recommandé : lockstep, tests partagés, OpenAPI à la release)
-   ou dans le dépôt UI ?
-2. **Registre** : SQLite local + Delta sur Databricks comme les stores existants (recommandé), ou Delta
-   seul ?
-3. **Hash du contrat** : `sla` et `security` dedans, `status` / `reviewers` / dates dehors (recommandé) ;
-   implique une nouvelle `canonicalization_version`.
-4. **Scopes de l'identité locale** : tout sauf `certification_override` (recommandé), ou lecture seule par
-   défaut ?
-5. **Propagation de classification** : héritage strict du niveau le plus haut (recommandé) ou simple
-   avertissement en v1, refus après mesure par `skifer audit` ?
-6. **Ordre 31.2 / 31.3** : 31.3 d'abord si l'éditeur de contrat est l'écran prioritaire, 31.2 d'abord si
-   c'est le lineage. Indépendantes.
-7. **Un seul job actif par projet** en v1 (recommandé) ou file d'attente ?
+1. **API dans ce dépôt** derrière l'extra `[api]`. Raison : versions en lockstep avec la lib, les
+   tests de la lib couvrent l'API, OpenAPI publiée à chaque release, aucun client ne réimplémente un
+   appel. Cohérent avec `[mcp]` / `[tracing]` (cœur importable sans l'extra).
+2. **Registre : SQLite local + Delta sur Databricks**, derrière le `Protocol MetadataStore`, comme
+   `Sqlite*`/`Delta*History`/`Certification`. Delta seul casserait le mode local, cas de première classe.
+3. **Hash du contrat : `sla` et `security` dedans, `status` / `reviewers` / `effective_from/until`
+   dehors.** Le hash identifie ce que le contrat promet *sur la donnée* ; un changement de statut ou de
+   reviewer ne change pas la donnée. Implique une nouvelle `canonicalization_version` et un test de
+   **non-régression sur les hashs des fixtures existantes** (déjà exigé par l'acceptation de 31.3).
+   *Précision découverte à la rédaction du plan détaillé* : `classification` est **déjà** dans le payload
+   de hash (niveau champ), `owner`/`description` **déjà** exclus. Donc **31.3.1 ne bump pas** la version ;
+   seule **31.3.3** la passe de 1 → 2 en y ajoutant `sla` et `security`.
+4. **Identité locale : tous les scopes sauf `certification_override`.** En local l'utilisateur est le
+   propriétaire du projet ; le break-glass reste hors de portée par défaut. Jamais un scope venant du
+   client (aligné 7.4).
+5. **Classification : `warn` en v1, puis `strict` après mesure.** La propagation (héritage du niveau le
+   plus haut, abaissement explicite journalisé) est livrée d'emblée, mais une élévation inférée non
+   déclarée **avertit** en v1 au lieu d'échouer au load. Le refus dur n'est activé qu'une fois la
+   couverture réelle mesurée par `skifer audit` (31.7). **Conséquence d'ordonnancement : 31.7 est
+   remontée en phase 1/2, avant le durcissement de 31.3.1.**
+6. **31.3 (gouvernance) avant 31.2 (registre).** L'écran prioritaire de SkiferUI est le Pipeline Builder
+   (M3) couplé à l'éditeur de contrat / data product (M8) — cœur du no-code ; le lineage/impact (M6,
+   alimenté par 31.2) est un écran d'exploration secondaire. Les deux restent parallélisables (fichiers
+   disjoints) ; seule dépendance dure conservée : 31.2.3 et 31.3.2 avant 31.4.2, 31.3.5 avant 31.4.2.
+7. **Un seul job actif par projet en v1.** Simple, testable, suffisant pour l'usage mono-utilisateur ;
+   la concurrence est refusée proprement (testé en 5.2). Une file d'attente est un ajout non cassant.
 
 ---
 
@@ -252,7 +272,7 @@ idempotent par FQN et hash ; même redaction que les preuves (jamais de SQL ni d
 
 ## 9. Definition of Done
 
-- [ ] arbitrages de la section 7 tranchés ;
+- [x] arbitrages de la section 7 tranchés (11 septembre 2026) ;
 - [ ] pour chaque feature, plan exécutable (fichiers exacts, cas de tests) validé avant le premier commit ;
 - [ ] chaque slice = un commit `feat(plan31-F.N): …` avec tests et entrée `CHANGELOG.md` ;
 - [ ] aucune version `pyproject.toml` modifiée ;

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 import logging
 import re
+
+from skifer.core.constants import VALID_CONTRACT_STATUSES
 
 
 MAX_OVERRIDE_WINDOW = timedelta(hours=4)
@@ -20,6 +22,12 @@ class CertificationDecision(str, Enum):
     WARN = "WARN"
     DENY = "DENY"
     REQUIRE_HUMAN = "REQUIRE_HUMAN"
+
+
+class LifecycleReason(str, Enum):
+    DEPRECATED = "DEPRECATED"
+    NOT_YET_EFFECTIVE = "NOT_YET_EFFECTIVE"
+    EXPIRED_WINDOW = "EXPIRED_WINDOW"
 
 
 @dataclass(frozen=True)
@@ -128,6 +136,56 @@ def _parse_duration(value: str) -> timedelta:
     if unit == "d":
         return timedelta(days=amount)
     return timedelta(seconds=amount)
+
+
+def _parse_lifecycle_date(value: str | None, location: str) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{location} must be an ISO date string (YYYY-MM-DD).") from exc
+
+
+def evaluate_lifecycle(
+    *,
+    status: str,
+    effective_from: str | None,
+    effective_until: str | None,
+    now: datetime,
+) -> PolicyEvaluation:
+    """Evaluate lifecycle metadata without touching the certification gate."""
+    normalized_status = status.strip() if isinstance(status, str) else ""
+    if normalized_status not in VALID_CONTRACT_STATUSES:
+        raise ValueError(f"Invalid contract lifecycle status: {status!r}")
+
+    comparable_now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    today = comparable_now.astimezone(timezone.utc).date()
+    start = _parse_lifecycle_date(effective_from, "effective_from")
+    end = _parse_lifecycle_date(effective_until, "effective_until")
+
+    reasons: list[str] = []
+    if start is not None and today < start:
+        reasons.append(LifecycleReason.NOT_YET_EFFECTIVE.value)
+    if end is not None and today > end:
+        reasons.append(LifecycleReason.EXPIRED_WINDOW.value)
+    if normalized_status == "deprecated":
+        reasons.append(LifecycleReason.DEPRECATED.value)
+
+    if any(
+        reason
+        in {
+            LifecycleReason.NOT_YET_EFFECTIVE.value,
+            LifecycleReason.EXPIRED_WINDOW.value,
+        }
+        for reason in reasons
+    ):
+        decision = CertificationDecision.DENY
+    elif LifecycleReason.DEPRECATED.value in reasons:
+        decision = CertificationDecision.WARN
+    else:
+        decision = CertificationDecision.ALLOW
+    return PolicyEvaluation(decision, tuple(reasons), now)
 
 
 def _reason_for(

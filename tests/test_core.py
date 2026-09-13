@@ -1,14 +1,18 @@
 import pytest
 from unittest.mock import MagicMock
+from datetime import datetime
+from functools import reduce
+from uuid import UUID, uuid4
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, TimestampType, DoubleType, FloatType
 
-from functools import reduce
-
 from skifer.core.spark_backend import SparkBackend
 from skifer.core.ir import ParsedFilter, _parse_op
+from skifer.core.context import ExecutionContext
 from skifer.core.core import SkiferEngine
+from skifer.core.registry import RuleRegistry
 from skifer.observability.certification_store import SqliteCertificationStore
+from skifer.observability.tracing import NoOpTracer
 
 # Adapters over the live SparkBackend IR path (the legacy string-op module
 # core/operations.py was removed by Plan 26) — keeps the operator semantics
@@ -33,11 +37,6 @@ def _build_filter_expression(filter_list, allow_raw_sql=True):
         for r in filter_list
     ]
     return reduce(lambda a, b: a & b, conds) if conds else F.lit(True)
-
-# Mock registry for testing purposes
-from skifer.core.registry import RuleRegistry
-from datetime import datetime
-
 # ==============================================================================
 # TESTS FOR HELPERS
 # ==============================================================================
@@ -134,6 +133,18 @@ def test_build_filter_expression_various(spark, filters, expected_count):
 # ==============================================================================
 # TESTS FOR ENGINE METHODS (VIA A MOCKED ENGINE)
 # ==============================================================================
+
+
+def test_explain_rules_report_is_silent(capsys):
+    engine = object.__new__(SkiferEngine)
+
+    report = engine.explain_rules_report({})
+
+    assert report == {"profiles": [], "warnings": []}
+    assert capsys.readouterr().out == ""
+
+    assert engine.explain_rules({}) == ([], [])
+    assert "Rule Analysis Report" in capsys.readouterr().out
 
 @pytest.fixture
 def mock_engine(spark, mocker):
@@ -766,6 +777,77 @@ def test_run_process_to_table_survives_failed_process(mock_engine, mocker, spark
 
     # _write_dataframe must NOT have been called — the table was never touched
     mock_engine._write_dataframe.assert_not_called()
+
+
+def _engine_for_run_id_tests(mocker):
+    engine = object.__new__(SkiferEngine)
+    object.__setattr__(engine, "_context", ExecutionContext(env="test", is_local=True))
+    engine._tracer = NoOpTracer()
+    engine._patterns = mocker.Mock()
+    return engine
+
+
+def test_run_process_to_table_accepts_and_returns_injected_run_id(mocker):
+    engine = _engine_for_run_id_tests(mocker)
+    run_id = str(uuid4())
+    spy = engine._patterns.run_process_to_table
+
+    returned = engine.run_process_to_table(
+        schema_dict={"tables": []},
+        target_layer="gold",
+        target_table_name="orders",
+        run_id=run_id,
+    )
+
+    assert returned == run_id
+    spy.assert_called_once_with(
+        {"tables": []},
+        "gold",
+        "orders",
+        intermediate_mode="inline",
+        run_id=run_id,
+    )
+
+
+def test_run_from_yaml_mints_and_returns_same_run_id(mocker):
+    engine = _engine_for_run_id_tests(mocker)
+    spy = engine._patterns.run_from_yaml
+
+    returned = engine.run_from_yaml(
+        "schemas/gold/orders.yaml",
+        "gold",
+        "orders",
+        {"region": "EMEA"},
+    )
+
+    UUID(returned)
+    spy.assert_called_once_with(
+        "schemas/gold/orders.yaml",
+        "gold",
+        "orders",
+        {"region": "EMEA"},
+        run_id=returned,
+    )
+
+
+def test_full_refresh_accepts_and_returns_correlation_run_id(mocker, tmp_path):
+    engine = _engine_for_run_id_tests(mocker)
+    engine.get_target_schema = lambda layer: layer
+    engine._build_fqn = lambda schema, table: f"{schema}.{table}"
+    engine._drop_table_if_exists = mocker.Mock()
+    run_id = str(uuid4())
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+
+    returned = engine.full_refresh(
+        "gold",
+        "orders",
+        checkpoint=str(checkpoint),
+        run_id=run_id,
+    )
+
+    assert returned == run_id
+    engine._drop_table_if_exists.assert_called_once_with("gold.orders")
 
 
 # ==============================================================================

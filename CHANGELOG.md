@@ -6,6 +6,162 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Fixed
+
+- Cached preview DataFrames across exact counting and bounded collection, made
+  service lineage share one lazy memoized metadata-registry graph, and added
+  real local Delta coverage for Spark-backed incident persistence and escaping.
+- Restricted rule writes to Python files under `rules/`, made index/incident and
+  malformed contract-import failures return their documented CLI exit codes,
+  and made OpenAPI export avoid creating local SQLite store files.
+- **Metadata registry** — Crash-recovered certified publications now reconstruct
+  and index contract metadata after promotion, while normal promoted publications
+  inherit undeclared output classifications from already-indexed upstream columns.
+
+### Added
+
+- **Plan 31 (6.2)** — CLI `skifer api serve --project DIR [--port]` (fixed
+  loopback bind and lazy imports) and `skifer api openapi` (deterministic JSON
+  export). Added a Spark-free `/health` check and a normalized OpenAPI contract
+  snapshot with fixed `info.version = "0"`. Finalized packaged availability of
+  `skifer mcp serve` (Plan 29 slice 7.5, `[mcp]` extra).
+- **Plan 31 (6.1)** — New optional `api/` package (`[api]`: FastAPI and
+  Uvicorn, strictly lazy imports) providing a thin, scoped local HTTP surface
+  over `services/`, uniform `{code, message, path}` errors, and localhost-only
+  CORS. Service wiring lives in `services/container.py`; `api/` imports no
+  engine or store.
+- **Plan 31 (5.3)** — `ExecutionService.result` returns a bounded, JSON-native
+  `ResultView` with exact totals, schema, monitor summary, publication decision,
+  and bounded quarantine rows. Publication outcomes are resolved by `run_id`
+  through `GovernanceService.get_run`; no Spark object crosses `services/`.
+- **Plan 31 (5.2)** — `ExecutionService.submit/status/cancel/logs` :
+  background pipeline jobs (`preview|run|full_refresh|check`) with a single
+  active job per project; concurrent submit is refused with `JobConflict`.
+  Cancellation flips logical state immediately and best-effort cancels the
+  Spark job group; logs are cursor-based and session close cancels an active
+  job. `SkiferEngine.run_process_to_table`/`run_from_yaml` accept and return
+  `run_id`, and the service uses `job_id` as that audit identity end to end.
+- **Plan 31 (5.1)** — `services/execution.py` :
+  `ExecutionService.connect/session/close` and `SessionView(session_id, mode, env,
+  catalog, user, sandbox_suffix, is_production, state, cause)`. A single session
+  is kept per active config and recreated when `config_path`/`force_env` changes;
+  TTL is lazy with an injected clock, and close only stops Spark in local mode.
+  Session construction failures are exposed as `state="failed"` plus `cause`,
+  never raised, under scope `execute:run`.
+- **Plan 31 (4.1)** — Incidents in the certification store (SQLite + Delta):
+  automatically open one incident per failed critical check on quarantine,
+  deduplicate while open, stay idempotent under `resume()`, and auto-resolve
+  open incidents as `recovered` on the next `PROMOTED`. Incident hooks are
+  non-blocking and persist no data values.
+- **Plan 31 (4.2)** — Alert routing now targets the structured dataset owner
+  plus downstream consumer owners through bounded registry lineage. MS Teams and
+  Google Chat channels were added to `AlertDispatcher`; channel failures remain
+  warnings. `ContractDiff.breaking` is the only contract-diff alert trigger, and
+  incident/breaking alert messages use a separate redacted payload with no data
+  values.
+- **Plan 31 (4.3)** — Incident transitions are exposed through
+  `QualityService` and `skifer incidents list|ack|assign|resolve`: writes require
+  `incidents:write`, reads require `contracts:read`, and invalid transitions use
+  stable CLI exit codes (`3` invalid transition, `4` not found).
+- Coverage audit (`skifer.observability.audit`): pure, deterministic
+  `audit_project(paths) -> AuditReport` measuring, across a project's pipeline
+  YAMLs, the share declaring `data_product`, `contract`, a structured owner, a
+  per-output-field description, and a declared classification. New CLI
+  `skifer audit PATHS [--json] [--min-coverage N]` exits 2 when
+  `overall_coverage_pct` is below the threshold and emits stable sorted-key JSON
+  for CI diffing. Exposed transport-neutrally via `ProjectService.audit()`;
+  this is the measurement gate before hardening classification propagation
+  (31.3.1) from `warn` to `strict`.
+- `skifer lineage FQN[.column] --direction up|down --format mermaid|json`
+  and `skifer dictionary FQN` now read the persistent metadata registry
+  without Spark or pipeline re-parsing. Mermaid uses the existing
+  `LineageRenderer`, JSON output is deterministic, and both commands use the
+  metadata CLI exit-code contract (`0/1/2/3`).
+- `observability/metadata_index.py`: pure `index_schema(schema_dict, path)`
+  builds a `DatasetRecord` from `OutputProjector`, `LineageTracker.from_schema`
+  and contract output, with the Spark-free `skifer index PATHS` CLI.
+- `LineageGraph.from_dict` and bounded, cycle-safe transitive traversal
+  (`upstream_closure`/`downstream_closure`/`has_cycle`); `MetadataRegistryQuery`
+  merges every record's lineage into one graph and exposes
+  `upstream`/`downstream`/`impact`/`search_columns` through `GovernanceService`.
+  Cyclic lineage is refused and traversal depth is bounded.
+- `observability/metadata_store.py`: `DatasetRecord`/`ColumnRecord`, the `MetadataStore`
+  Protocol and its `SqliteMetadataStore` (`.skifer_metadata.db`) /
+  `DeltaMetadataStore` (`_skifer_metadata`) backends. Upsert is idempotent by
+  `(target_fqn, definition_hash)`: re-indexing an unchanged definition writes nothing.
+- `diff_contracts(a, b)` reports contract deltas (added/removed/retyped/required/classification/SLA)
+  and flags breaking changes (column removal, retype, `required` hardening, classification downgrade,
+  SLA relaxation or any non-comparable SLA change). It is surfaced in `semantic sync` reporting and
+  exposed by `GovernanceService`.
+- `import_odcs_31(doc)` reconstructs the Skifer `data_product:`/`contract:` YAML blocks from an ODCS
+  3.1 DataContract (symmetric to the export, loss-aware: unmapped fields are reported, never
+  dropped), exposed through the new `skifer contract import FILE` command.
+- The `contract:` block gains lifecycle metadata (`status`: draft/active/deprecated,
+  `reviewers[]`, `effective_from`/`effective_until`), an `sla`
+  (`refresh_frequency`/`max_latency`) and a `security` (`level`/`access_policy`) block. A
+  `LoadFreshnessCheck` is derived from the SLA, and `access_policy.evaluate_lifecycle()` warns on
+  deprecated contracts and denies reads outside the effective window.
+- `data_product.owner` now accepts a structured mapping (`team`/`steward`/`domain`/`contact`) in
+  addition to a plain string, plus a top-level `data_product.domain`. Ownership flows into the ODCS
+  `team[]` block and the Unity Catalog `skifer_owner`/`skifer_domain` tags. Ownership stays excluded
+  from the contract hash, so a string and an equivalent mapping produce the same definition hash.
+- Field-level data classification (`public|internal|confidential|restricted|pii`) is now validated
+  at load and in the JSON Schema, propagated along column lineage (a derived column inherits the
+  highest source level; inferred elevation warns, explicit lowering is logged). Filter values on
+  sensitive (`pii`/`restricted`) columns are ALWAYS redacted in query evidence, even when
+  `include_filter_values` is set — sensitivity overrides disclosure, never grants it.
+
+### Changed
+
+- Certified publication now triggers a non-blocking metadata-index hook after
+  `PROMOTED`; store failures only log a warning, and promoted records retain the
+  pipeline `run_id`. `SkiferEngine` accepts `metadata_store=`.
+- The contract canonicalization version moved from 1 to 2: `sla` and `security` are now part of the
+  contract hash, while `status`, `reviewers` and the effective dates are deliberately excluded.
+  Version-1 definition hashes remain readable; a documentation- or lifecycle-only change never
+  invalidates a certification.
+- **Plan 31 (1.6)** — `services/identity.py` :
+  `LocalIdentity`/`LOCAL_DEFAULT_SCOPES`/`local_request_context` pour le MCP stdio
+  et tout client local. Tous les scopes nommés sauf `certification_override`
+  (arbitrage §7.4) ; escalade impossible, sujet toujours non vide, aucun scope
+  venu du client.
+- **Plan 31 (1.5)** — `services/semantic.py` (`check/write_draft/promote`, mêmes
+  codes que le CLI 0/2/3, refus de promotion si perte de contenu humain ;
+  `list_models/get_model` délégués) et `services/agents.py` (`ask` via
+  `AgenticHub` + `hub_response_to_text`, `build` via `BuilderAgent.ask`).
+  `BuilderAgent.wizard` est pilotable par une liste ordonnée, un dict de réponses
+  ou un fournisseur d'entrées, sans dépendance à stdin.
+- **Plan 31 (1.4)** — `services/governance.py` (contrats/versions, certification,
+  data products, lecture bornée de quarantaine) et `services/quality.py` (checks
+  dérivés d'un YAML, historique, dernier rapport) sur les stores existants. Vues
+  allowlistées JSON-native ; aucun DataFrame ne franchit `services/` ; lecture sous
+  scope `contracts:read`.
+- **Plan 31 (1.3)** — `services/rules.py` :
+  `RuleService.scan/list/dependency_graph/generate_snippet/write_rule`. Découverte par
+  `importlib` (jamais `exec`), module invalide isolé, snippets déterministes byte-for-byte
+  (constant/cast/when-otherwise/withColumn), écriture sous `rules:write` après `ast.parse`.
+  Ajout `RuleAnalyzer.analyze_source`.
+- **Plan 31 (1.2)** — `services/project.py` :
+  `ProjectService.open/get_pipeline/json_schema/op_catalog/describe/project_output/lineage/explain_rules/write_pipeline`.
+  Erreurs de schéma localisées `{code, message, path}` (`parse_schema_localized`),
+  `explain_rules` disponible en structure (`SkiferEngine.explain_rules_report`), écriture
+  de pipeline atomique sous scope `pipelines:write`, refus des chemins hors projet. Sans Spark.
+- **Plan 31 (1.1)** — Nouveau package `services/` transport-neutre : `RequestContext`,
+  `require_scope`, `ServiceLimits`, hiérarchie d'erreurs et sérialisation JSON-native
+  extraites d'`agentic/data_service.py` (re-exports rétrocompatibles). Scopes nommés
+  (`NAMED_SCOPES`, sans `certification_override`). `mcp/` n'importe plus
+  `agentic.data_service`.
+
+### Fixed
+
+- Delta metadata SQL literals now reuse the shared Spark SQL escaper so
+  backslashes in dataset keys and serialized JSON cannot corrupt statements.
+- Bounded lineage closure re-expands nodes reached at a shallower depth, keeping
+  in-budget descendants complete regardless of edge insertion order.
+
+
 ## [2.1.0] - 2026-09-10
 
 ### Added
