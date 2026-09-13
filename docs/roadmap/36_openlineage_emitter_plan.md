@@ -7,6 +7,11 @@
 > **Changement d'agent (13 septembre 2026, 17:47)** : limite d'usage Codex atteinte au lancement de 36.1 (retour annoncé
 > 20:20) ; décision humaine « Passe avec claude » — le dev bascule sur l'adaptateur `claude-dev` à partir de 36.1
 > (36.0 a été développé par Codex). La review reste Claude sans outil : même fournisseur, repli déclaré par le noyau.
+> **Implémenté (13 septembre 2026)** — 36.0 `fbb316c` · 36.1 `2916a08` + `710e472` + `7333860` (avec 36.1b `609ba0c`) ·
+> 36.2 `22dce2e` + `498a5c6` + `7efbbbe` · 36.3 `e2ea53b` + `3268b87` + `72c6a85` + `d3d58ca` (redev 3 exceptionnel autorisé par
+> l'humain après escalade : allowlist du nom d'hôte) · 36.4 `1035d2e` + `9118ecd` + `a1f1e56`. Gate Windows vert à chaque commit (248
+> échecs connus de la base, aucun nouveau) ; rejeux orchestrateur du vrai chemin (lineage, émetteur, câblage, namespace, doc) verts.
+> CI Linux à confirmer à la PR.
 
 ## 1. Contexte
 
@@ -119,6 +124,13 @@ résumé des livrables (leçon du Plan 35).
 | Exemple 11 plante sous Windows (`re.error: bad escape \U` dans `_inject_params` sur un chemin Windows) | pré-existant, dans la base | échapper le remplacement (`re.sub` avec fonction) |
 | Lineage colonne OpenLineage : une vraie colonne dont le nom n'est pas un identifiant ASCII (accent, espace, chiffre en tête) est exclue sans avertissement | limite assumée de 36.1 (fail-safe) | documentée en 36.4 ; lever la limite demanderait un nom canonique fourni par le tracker |
 | Arêtes de règle du tracker attribuées à la table primaire (étape 4 de `from_schema`) | pré-existant, hors 36.1b | même résolution que 36.1b quand l'analyse AST rend des colonnes qualifiées |
+| `LineageTracker.from_schema` ne produit aucune arête pour un pipeline `aggregate:` déclaratif, et les arêtes `join` visent une table source : `DIRECT/AGGREGATION` et `INDIRECT/JOIN` ne sont jamais émis ; un pipeline agrégé n'a ni `columnLineage` ni `inputs` (registre, dictionnaire et impact muets aussi) | pré-existant (Plans 28/31), constaté au rejeu 36.4 | plan dédié au tracker (arêtes `metric` depuis `aggregate:`, clés de jointure vers la sortie) ; limite documentée en 36.4 |
+| Deux événements terminaux pour un même `run_id` (FAIL quand la publication lève, puis COMPLETE au `resume()`) | conséquence de D2/D3 | documenté en 36.4 ; un rattachement explicite relèverait d'une révision de D2 |
+| Pas de FAIL côté écriture batch non certifiée quand le monitor post-écriture lève (aucun événement) | hors D3 | extension possible de D3 |
+| Avec un émetteur réel, le `DatasetRecord` est reconstruit à chaque événement (deux fois par publication certifiée) ; coût résiduel à vide (uuid4, closure) | review 36.3 (MINEUR) | mémoïser par run si le coût devient mesurable |
+| `DATABRICKS_HOST` : identifiants bien formés → `skifer://local` (rejet, pas nettoyage) ; hôte terminé par un point rejeté ; nom à un seul label accepté (`dapi0123abcd` deviendrait le namespace) ; IPvFuture sans crochets | décision humaine (redev 3) + review d3d58ca | exiger au moins un point si l'humain le décide ; `dataset_namespace` explicite comme contournement |
+| Docstring de `_resolve_lineage_dataset_namespace` : exemple de fuite inexact (`svc:secret@host` bien formé ne fuit pas ; la fuite vient d'un `/`, `?` ou `#` avant `@`) ; aucun test « zéro warning » pour valeur vide / hôte vide | review d3d58ca (MINEUR) | corriger le docstring, ajouter les deux cas |
+| Doc OpenLineage : « no snapshot is guaranteed » pour `CHECK_ERROR` alors qu'aucun snapshot n'est jamais écrit ; la phrase sur les assertions d'un `aggregate:` certifié ne rappelle pas l'exception de la publication qui lève (FAIL sans assertions) | review a1f1e56 (MINEUR) | resserrer les deux formulations |
 
 ## Sources
 
