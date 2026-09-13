@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a pure, deterministic OpenLineage `RunEvent` builder (`observability/openlineage.py`):
+  schema/columnLineage/dataQualityAssertions facets and an allowlisted `skifer`
+  custom facet, redacted so no SQL, filter value, or check message ever leaves
+  the pipeline. (Plan 36.1)
 - Added validated global `observability.lineage` settings for the planned
   OpenLineage emitter, with environment-only API key handling. (Plan 36.0)
 - Documented publication alert routing and the warn-to-strict classification
