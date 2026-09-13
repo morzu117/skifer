@@ -1,8 +1,10 @@
 # Plan 35 — Câblage de la gouvernance : routage d'alertes et classification stricte
 
 > Rédigé le 13 septembre 2026. Premier cycle de la chaîne agent-kernel sur skifer (rodage).
-> Statut : **D1–D4 validés et GO donné le 13 septembre 2026. D5–D8 validés le même jour.**
-> 35.0 (`677d6b1`) et 35.1 livrés ; 35.2 découpée en 35.2a / 35.2b (D6).
+> Statut : **Implémenté le 13 septembre 2026** (D1–D8 validés). Commits locaux, branche non poussée ;
+> la CI Linux fait encore foi pour les tests Spark.
+> 35.0 `677d6b1` · 35.1 `c980f53` · 35.2a `03f777e` · 35.2b `805dd52` + `b8e2dda` (redev 1) ·
+> 35.3 `afe89d7` + `ffeec3b` (redev 1) · 35.4 `69c9293`. Suivi hors plan en §8.
 > Tâche mémoire : `skifer:plan:governance-wiring`.
 
 ## 1. Contexte
@@ -123,3 +125,15 @@ effort de raisonnement selon la difficulté — trivial `low`, standard `medium`
   - `mkdocs build --strict` pour 35.4 (vert sur la base).
 - Périmètre : `git --no-pager show <COMMIT> | grep -E "^-" | grep -vE "^---" | wc -l` proche de zéro.
 - Review : diff comparé au rayon d'impact du §2, tests affectés via `codegraph affected`.
+
+## 8. Suivi hors plan (constaté pendant le cycle)
+
+| Sujet | Nature | Suite proposée |
+|---|---|---|
+| `run_process_and_split` et `run_union_sources_to_table` ignorent `data_product` : ni publication certifiée ni contrôle `strict` sur ces chemins | trou de conception pré-existant | décision humaine : refuser `data_product` sur ces patterns, ou les router vers la publication certifiée |
+| URLs de webhook et identifiants SMTP dans un `config.yaml` versionné, sans interpolation d'environnement | conséquence de D2 non instruite | plan dédié (source de secrets) |
+| Doc 35.4 : « without echoing the value » inexact pour `min_severity` (énumération citée) ; exemple `email: {}` qui ne compte pas comme canal | imprécisions mineures | correction de doc |
+| `run_index_command` ne ferme pas son `SqliteMetadataStore` (fichier verrouillé sous Windows) | pré-existant | correctif isolé |
+| `metadata_index` importe la fonction privée `_inherit_registry_classifications` ; message CLI `--strict` sans sources amont | MINEUR de review reporté | extraction d'une fonction publique |
+| Une lecture `get_run` par événement de run (coût Delta) ; incidents suivants abandonnés après un échec au milieu de la boucle | MINEUR de review reporté | à mesurer avant d'agir |
+| 248 échecs de la suite propres au poste Windows (winutils, `:` dans des noms de fichiers) | environnement | la CI Linux fait foi ; `ProposalGenerator` à rendre portable |
