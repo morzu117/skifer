@@ -111,15 +111,16 @@ class PublicationCoordinator:
             # Observed, never altered: the original exception propagates unchanged.
             self._emit_lineage("FAIL", run.run_id, lineage_record)
             raise
+        check_results = getattr(result.report, "results", None)
         if result.state == "PROMOTED":
             self._emit_lineage(
                 "COMPLETE", run.run_id, lineage_record,
-                check_results=result.report.results, certification_status="CERTIFIED",
+                check_results=check_results, certification_status="CERTIFIED",
             )
         else:
             self._emit_lineage(
                 "FAIL", run.run_id, lineage_record,
-                check_results=result.report.results, certification_status="UNCERTIFIED",
+                check_results=check_results, certification_status="UNCERTIFIED",
             )
         return result
 

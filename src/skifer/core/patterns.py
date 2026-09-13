@@ -241,10 +241,6 @@ class PipelinePatterns:
                 } if uses_jdbc_sink else sink_config,
                 materialization=materialization,
             )
-            # Batch only in v1 (Plan 36 D3): streaming and JDBC sinks emit nothing.
-            if not is_streaming and not uses_jdbc_sink:
-                _emit_batch_lineage(e, schema_dict, fqn, run_id)
-
             # With trigger available_now the streaming write has terminated here
             # (awaitTermination inside write_stream_table) — the monitor reads
             # complete data. interval: triggers block above and never reach this.
@@ -257,6 +253,13 @@ class PipelinePatterns:
                     "   -> [Monitor] %s — %s/%s checks passed.",
                     status, summary["passed"], summary["total_checks"],
                 )
+
+            # Batch only in v1 (Plan 36 D3): streaming and JDBC sinks emit nothing.
+            # Emitted only once the post-write monitor has returned (or was not
+            # run) — a raised DataQualityError must not be preceded by a COMPLETE
+            # event describing a run the pipeline failed (Plan 36 review).
+            if not is_streaming and not uses_jdbc_sink:
+                _emit_batch_lineage(e, schema_dict, fqn, run_id)
 
         logger.info("--- Pattern 'process_to_table' completed. ---")
 

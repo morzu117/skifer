@@ -9,6 +9,7 @@ import yaml
 from dotenv import load_dotenv
 import os
 from contextlib import nullcontext
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from skifer.core.rule_analyzer import RuleAnalyzer
@@ -47,9 +48,10 @@ def _resolve_lineage_dataset_namespace(lineage_config, *, is_local, environ) -> 
         return lineage_config.dataset_namespace
     host = None if is_local else environ.get("DATABRICKS_HOST")
     if host:
-        host = host.strip().split("://", 1)[-1].rstrip("/")
-        if host:
-            return f"unitycatalog://{host}"
+        host = host.strip()
+        netloc = urlsplit(host if "://" in host else f"https://{host}").netloc.lower()
+        if netloc:
+            return f"unitycatalog://{netloc}"
     return _LOCAL_LINEAGE_DATASET_NAMESPACE
 
 # ==============================================================================
@@ -314,7 +316,8 @@ class SkiferEngine:
         """OpenLineage emitter; the zero-cost `NoOpEmitter` unless configured (Plan 36.3)."""
         from skifer.observability.openlineage import NoOpEmitter
 
-        return getattr(self, "_lineage_emitter", None) or NoOpEmitter()
+        emitter = getattr(self, "_lineage_emitter", None)
+        return emitter if emitter is not None else NoOpEmitter()
 
     @property
     def lineage_context(self):

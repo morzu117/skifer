@@ -41,8 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emits `START` then `COMPLETE` (promoted, with assertions and `CERTIFIED`) or `FAIL` (quarantined
   or check error, `UNCERTIFIED`) on the same `run_id`, a publication that raises emits `FAIL` and
   re-raises the original exception, `resume()` emits `COMPLETE`, and a non-certified batch write of
-  `run_process_to_table` emits `COMPLETE`; streaming, materialized views, JDBC sinks, split and union
-  emit nothing. Every emission is best-effort: with `emitter: none` no record is built, and any
+  `run_process_to_table` emits `COMPLETE` after the post-write monitor has returned — nothing if it
+  raises; streaming, materialized views, JDBC sinks, split and union emit nothing. Every emission is
+  best-effort: with `emitter: none` no record is built, and any
   failure is one `RuntimeWarning` naming only the exception class, safe under warnings-as-errors.
   (Plan 36.3)
 - Added OpenLineage emitters (`observability/openlineage.py`): `NoOpEmitter` (default),

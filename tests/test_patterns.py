@@ -816,6 +816,46 @@ def test_run_process_to_table_batch_write_emits_one_complete_event_after_write()
     assert "certification" not in output["facets"]["skifer"]
 
 
+def test_run_process_to_table_batch_write_monitor_failure_emits_nothing():
+    from skifer.observability.checks import DataQualityError
+    from skifer.observability.monitor import MonitorReport
+
+    engine, patterns = _lineage_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.monitor.check_from_schema.side_effect = DataQualityError(
+        MonitorReport(table="`gold_schema`.`fact_orders`", results=[])
+    )
+    schema = {"tables": [{"name": "silver.orders", "alias": "ord"}]}
+
+    with pytest.raises(DataQualityError):
+        patterns.run_process_to_table(schema, "gold", "fact_orders", run_id=_LINEAGE_RUN_ID)
+
+    engine._write_dataframe.assert_called_once()
+    assert engine.lineage_emitter.events == []
+
+
+def test_run_process_to_table_batch_write_emits_complete_after_monitor():
+    engine, patterns = _lineage_patterns_engine()
+    call_log = []
+    engine._write_dataframe.side_effect = lambda *a, **k: call_log.append("write")
+    report = MagicMock()
+    report.summary.return_value = {"status": "PASS", "passed": 1, "total_checks": 1}
+
+    def _check_from_schema(*a, **k):
+        call_log.append("monitor")
+        return report
+
+    engine.monitor = MagicMock()
+    engine.monitor.check_from_schema.side_effect = _check_from_schema
+    schema = {"tables": [{"name": "silver.orders", "alias": "ord"}]}
+
+    patterns.run_process_to_table(schema, "gold", "fact_orders", run_id=_LINEAGE_RUN_ID)
+
+    assert call_log == ["write", "monitor"]
+    events = engine.lineage_emitter.events
+    assert [event["eventType"] for event in events] == ["COMPLETE"]
+
+
 def test_run_process_to_table_failed_batch_write_emits_nothing():
     engine, patterns = _lineage_patterns_engine()
     engine._write_dataframe.side_effect = RuntimeError("write failed")

@@ -7,6 +7,7 @@ from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification_store import RunEvent, SqliteCertificationStore, StoredCheckResult
 from skifer.observability.monitor import MonitorReport
 from skifer.observability.publication import PublicationCoordinator, PublicationResult
+from skifer.observability.publication import PublicationRun
 from skifer.observability.publication import RunState
 from skifer.observability.publication import start_publication_run
 from skifer.observability.publication import stage_dataframe
@@ -1251,3 +1252,22 @@ def test_lineage_enabled_builds_record_through_patched_index_schema(monkeypatch)
 
     assert calls == ["gold.orders", "gold.orders"]
     assert _event_types(emitter) == ["START", "COMPLETE"]
+
+
+def test_lineage_publish_tolerates_a_promoted_result_without_report(monkeypatch):
+    """`_publish_run` returning `report=None` must not raise when reading check
+    results for the COMPLETE event — a defensive `getattr` guards a future
+    path, not the current `_publish_run` (Plan 36 review)."""
+    store, backend, emitter = SqliteCertificationStore(":memory:"), FakeBackend(), InMemoryEmitter()
+    coordinator = _lineage_coordinator(backend, _Monitor(_pass_result), store, emitter)
+    run = PublicationRun(_LINEAGE_RUN_ID, "gold.orders", "_skifer_staging.gold_orders", RunState.PROMOTED)
+    stub_result = PublicationResult(run, None, "PROMOTED")
+    monkeypatch.setattr(coordinator, "_publish_run", lambda *a, **k: stub_result)
+
+    result = coordinator.publish(
+        FakeDataFrame([{"id": 1}]), "gold.orders", _lineage_schema(), _definition()
+    )
+
+    assert result is stub_result
+    assert _event_types(emitter) == ["START", "COMPLETE"]
+    assert "dataQualityAssertions" not in emitter.events[1]["outputs"][0]["facets"]

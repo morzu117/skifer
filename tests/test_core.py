@@ -2077,3 +2077,39 @@ def test_engine_without_init_exposes_default_lineage_properties():
     assert engine.lineage_context == LineageContext(
         job_namespace="skifer", dataset_namespace="skifer://local"
     )
+
+
+def test_engine_lineage_emitter_property_keeps_falsy_but_real_emitter():
+    """A configured emitter that is falsy (e.g. defines __len__) must not be
+    silently swapped for NoOpEmitter — the property must check identity with
+    None, not truthiness (Plan 36 review)."""
+    engine = object.__new__(SkiferEngine)
+
+    class _FalsyEmitter:
+        def __len__(self):
+            return 0
+
+    falsy_emitter = _FalsyEmitter()
+    engine._lineage_emitter = falsy_emitter
+
+    assert engine.lineage_emitter is falsy_emitter
+
+
+@pytest.mark.parametrize(
+    "host, expected",
+    [
+        ("https://adb-1.azuredatabricks.net/?o=123", "unitycatalog://adb-1.azuredatabricks.net"),
+        ("HTTPS://ADB-1.azuredatabricks.net", "unitycatalog://adb-1.azuredatabricks.net"),
+        ("adb-1.azuredatabricks.net", "unitycatalog://adb-1.azuredatabricks.net"),
+    ],
+    ids=["path-and-query-dropped", "lower-cased", "bare-host-no-scheme"],
+)
+def test_resolve_lineage_dataset_namespace_normalizes_host(host, expected):
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    namespace = _resolve_lineage_dataset_namespace(
+        LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": host}
+    )
+
+    assert namespace == expected
