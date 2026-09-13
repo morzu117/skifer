@@ -13,16 +13,28 @@ Most observability tools (Great Expectations, Soda, Monte Carlo) require you to 
 ## Contract identity and ODCS export
 
 `canonicalize_contract(parse_to_ir(schema))` creates the stable identity used by
-the certification registry: data-product ID/version, output fields, grain and
-semantic seed are rendered as canonical JSON and hashed with SHA-256. Field
-order is preserved; JSON object keys are sorted. Ownership and descriptions are
-kept with the definition but deliberately excluded from the hash, so a
-documentation-only edit does not invalidate a certification.
+the certification registry. Canonicalization version 2 hashes the data-product
+ID/version, output fields, grain, semantic seed, SLA, and security with SHA-256.
+Field order is preserved and JSON object keys are sorted. Ownership,
+descriptions, lifecycle status, reviewers, and effective dates are deliberately
+excluded, so workflow or documentation edits do not invalidate certification.
 
 `export_odcs_31(schema, definition)` exports the supported surface to an ODCS
 3.1-shaped document: fundamentals, output properties, required/unique quality
 rules, owner team and a read role. It returns warnings for metadata that has no
 portable ODCS mapping rather than dropping it silently.
+
+`import_odcs_31(document)` performs the supported reverse mapping; the CLI
+prints the resulting `data_product` and `contract` blocks with explicit warning
+comments:
+
+```bash
+skifer contract import contract.odcs.yaml
+```
+
+`diff_contracts(old, new)` detects additions and breaking removals, retypes,
+required hardening, classification downgrades, and SLA relaxation. The complete
+YAML surface is in [Pipeline governance metadata](yaml_spec.md#pipeline-governance-metadata-plan-31).
 
 Certification persistence is append-only. `SqliteCertificationStore` is the
 local implementation; `DeltaCertificationStore` uses the same event IDs to
@@ -79,6 +91,10 @@ observability/
   history.py     # HistoryStore Protocol + SqliteHistoryStore + DeltaHistoryStore
   reporter.py    # MonitorReporter — JSON / text / HTML
   alerts.py      # AlertDispatcher — webhook, Slack, email
+  metadata_store.py # DatasetRecord registry — SQLite and Delta
+  metadata_index.py # Spark-free definition indexing
+  incidents.py   # NEW/ACKNOWLEDGED/ASSIGNED/RESOLVED state machine and routing
+  audit.py       # Spark-free governance coverage metrics
 ```
 
 ---
@@ -245,6 +261,8 @@ dispatcher = AlertDispatcher()
 dispatcher.dispatch(report, {
     "webhook_url":   "https://myserver.com/hooks/skifer",
     "slack_webhook": "https://hooks.slack.com/services/...",
+    "msteams_webhook": "https://example.webhook.office.com/...",
+    "google_chat_webhook": "https://chat.googleapis.com/v1/spaces/...",
     "email": {
         "host": "smtp.company.com",
         "port": 587,
@@ -257,6 +275,35 @@ dispatcher.dispatch(report, {
 ```
 
 All channels are best-effort — a send failure logs a warning but does not raise.
+
+## Incidents and governed alert routing — Plan 31
+
+A quarantined run opens one `NEW` incident for each distinct failed critical
+check. The allowed state transitions are `NEW → ACKNOWLEDGED|ASSIGNED|RESOLVED`,
+`ACKNOWLEDGED → ASSIGNED|RESOLVED`, and `ASSIGNED → ASSIGNED|RESOLVED`.
+A later successful promotion automatically resolves open incidents for the
+dataset with root cause `recovered`. Incident persistence and recovery hooks are
+best-effort and cannot change the publication decision.
+
+```bash
+skifer incidents list --status NEW --target catalog.gold.orders
+skifer incidents ack RUN_ID:NullCheck:customer_id
+skifer incidents assign RUN_ID:NullCheck:customer_id --assignee alice@example.com
+skifer incidents resolve RUN_ID:NullCheck:customer_id --root-cause upstream-fixed
+```
+
+`AlertRouter` starts with the governed owner of the affected dataset and adds
+owners of downstream datasets found through the metadata registry, bounded by
+depth and deduplicated by contact/channel. Incident alerts support generic
+webhook, Slack, email, Microsoft Teams, and Google Chat.
+
+Incident payloads are built from an explicit redacted shape: dataset, incident
+ID, check type/column, severity, contract-version change when relevant, and
+routing metadata. They never copy check messages, actual values, or expected
+values. Separately, semantic evidence always redacts filter values whose columns
+are in `EvidencePolicy.sensitive_columns`, even when disclosure of ordinary
+filter values was requested; callers use that set for `restricted` and `pii`
+fields.
 
 ---
 

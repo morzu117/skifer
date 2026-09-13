@@ -54,6 +54,7 @@ nav:
       - Agentic Layer: agentic.md
   - Governance:
       - End-to-end Governance: governance.md
+      - Services and Local API: services_and_api.md
       - Read-only MCP: mcp.md
       - Supervised Adaptive Gold: adaptive.md
       - Governed Capabilities: capabilities.md

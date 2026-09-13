@@ -16,6 +16,12 @@ src/skifer/
                 # core/spark_backend.py — SparkBackend, the single runtime backend (Plan 26)
   observability/ # checks, monitor, contracts, alerts, history, reporter
                 # certification{,_store}.py, publication.py, quarantine.py, odcs.py, uc_mirror.py — Plan 29
+                # metadata_store.py, metadata_index.py, incidents.py, audit.py — Plan 31
+  lineage/      # tracker, dictionary, renderer, classification.py — Plan 31 propagation
+  services/     # transport-neutral application layer (Plan 31):
+                # context.py, serialization.py, project.py, rules.py, governance.py, quality.py,
+                # semantic.py, agents.py, identity.py, execution.py, container.py
+  api/          # optional local FastAPI: app.py, security.py, errors.py, routes/ — Plan 31
   mcp/          # Read-only MCP server: server/resources/tools/auth/config/runtime — Plan 29 feature 7
   adaptive/     # Usage events -> patterns -> explainable proposals -> human review — Plan 29 feature 8
   capabilities/ # Governed write-back: validator, registry, preconditions, autonomy,
@@ -29,8 +35,10 @@ Public API exported from `__init__.py`: `SkiferEngine`, `RuleRegistry`, `Configu
 ## Essential commands
 ```bash
 pip install -e ".[dev]"            # dev install
+pip install -e ".[api]"            # FastAPI + Uvicorn local API
 pytest                             # full test suite (no live cluster or API key needed)
 pytest tests/test_core.py          # single module
+uv run --extra api --extra spark --extra dev pytest  # API + Spark + dev test environment
 ruff check src/                    # lint
 pip install -e ".[docs]"           # mkdocs + material theme
 mkdocs build --strict              # build the site; must stay warning-free
@@ -483,6 +491,37 @@ enforcement is server-side. Envelope status: proposed | pending | executed | ref
 **Harness**: replays an adversarial dataset against the real components and reports decision
 precision, escalation rate and duplicate side effects — counted from the external system's own call
 log, never from what the framework believes it did.
+
+## Governed local application layer (Plan 31 — features 1–7)
+
+`services/` is the transport-neutral application boundary. Project, rule, governance, quality,
+semantic, agent, and execution operations receive a `RequestContext` and require an exact scope from
+`NAMED_SCOPES`. `LocalIdentity` derives its subject locally and uses a static authority set; request
+payloads cannot grant scopes and `certification_override` is excluded. DTOs are serialized field by
+field. The `DatasetRecord` registry has SQLite and Delta stores; `skifer index`, `lineage`, and
+`dictionary` provide Spark-free cross-pipeline upstream/downstream/impact metadata. Publication
+metadata and incident hooks are **non-blocking**.
+
+Pipeline governance uses the ordered `public|internal|confidential|restricted|pii` taxonomy with
+lineage propagation, structured owners (`team`, `steward`, `domain`, `contact`), and contract
+`status`, `reviewers`, effective dates, `sla`, and `security`. Canonicalization v2 hashes `sla` and
+`security`, but excludes status, reviewers, and effective dates. ODCS 3.1 import and
+`diff_contracts()` breaking-change detection are implemented. Quarantine opens critical incidents;
+recovery resolves them; routing includes the dataset owner and downstream owners. Alert payloads
+for incidents contain no data values. Filter values named in `EvidencePolicy.sensitive_columns`
+(the `pii`/`restricted` surface) remain redacted even when ordinary values are disclosed.
+
+`ExecutionService` keeps one lazy session and **one active job per project**; `job_id == run_id`, and
+`ResultView` is bounded and JSON-native. The optional `[api]` FastAPI surface maps routes 1:1 to
+services on loopback. Every business route declares one named scope, and `api/routes/` must never
+import the engine. CLI surfaces: `skifer api serve|openapi`, incident management, and the Spark-free
+`skifer audit` coverage report.
+
+**Active plans:**
+
+| Plan | Branch | Status |
+|---|---|---|
+| [Library development scenario (Plan 31)](docs/roadmap/31_lib_development_scenario.md) | `feat/plan31-f6-api`, stacked on f1..f5/f7 | **Implemented.** All 7 features are complete. |
 
 ## Key files
 | File | Purpose |

@@ -49,6 +49,7 @@ lineage/
   tracker.py     # LineageTracker — builds the graph from YAML schemas
   dictionary.py  # DataDictionary — per-column metadata and glossary enrichment
   renderer.py    # LineageRenderer — Mermaid, JSON, HTML export
+  classification.py # ordered sensitivity propagation over column lineage
 ```
 
 ---
@@ -113,6 +114,37 @@ tables = graph.tables()
 # Export to dict (JSON-serialisable)
 data = graph.to_dict()  # {"edges": [...], "tables": [...], "summary": {...}}
 ```
+
+## Persisted metadata registry — Plan 31
+
+`DatasetRecord` persists a pipeline's physical target, definition hash, product
+and contract identity, owner, output columns, latest run ID, and serialized
+lineage. Local projects use `SqliteMetadataStore`; Databricks integrations can
+use `DeltaMetadataStore`. Re-indexing an unchanged definition is idempotent.
+
+```bash
+skifer index schemas/silver/fact_orders.yaml --db .skifer_metadata.db
+skifer dictionary silver.fact_orders --format json
+skifer lineage silver.fact_orders.amount_eur --direction up --format mermaid
+skifer lineage silver.fact_orders --direction down --format json
+```
+
+`MetadataRegistryQuery` merges every stored graph, refuses a cycle, and computes
+upstream and downstream closures across pipeline boundaries. Its impact report
+contains impacted datasets and columns, traversed edges, and a `truncated` flag
+when the depth limit is reached. Certified publication also updates the registry
+with its run ID; this hook is non-blocking and cannot reverse a promotion.
+
+### Classification propagation
+
+The ordered levels are `public`, `internal`, `confidential`, `restricted`, and
+`pii`. `resolve_field_classifications()` selects the strongest upstream level
+for each target column. The default `warn` mode warns when a non-public inferred
+level was not declared; `strict` raises. An explicitly lower declaration is
+retained and logged rather than silently rewritten.
+
+See [Services and local API](services_and_api.md#metadata-registry-and-cross-pipeline-lineage)
+for the service boundary and HTTP access.
 
 ---
 

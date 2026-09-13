@@ -12,6 +12,11 @@ identifies the product and version, defines its output and grain, and supplies t
 that later certification decisions refer to. The same pipeline can project a managed semantic draft,
 so the table contract and the business names used to query it do not evolve independently.
 
+Plan 31 adds structured ownership, the ordered field-classification taxonomy, lifecycle status and
+reviewers, effective dates, SLA, and security. Canonicalization v2 includes SLA and security in the
+definition hash while leaving workflow metadata outside it. See
+[Pipeline governance metadata](yaml_spec.md#pipeline-governance-metadata-plan-31).
+
 The detailed authoring surfaces are documented in [Core Engine](core.md) and
 [Projected semantic models](semantic.md#projected-semantic-models-plan-29).
 
@@ -86,3 +91,11 @@ idempotent replay, and compensation as a separately audited external action.
 Usage may also inform [supervised adaptive Gold](adaptive.md), which turns recurring query patterns
 into validated, reviewable proposals. It never edits a production schema, deploys an asset, or rolls
 one back. In every direction, a model may propose or explain; it never grants itself authority.
+
+## Local application and API boundary
+
+The transport-neutral `services/` layer applies the same named scopes and safe serialization to the
+local UI/API use case. Its optional FastAPI adapter is loopback-only and delegates route-for-route to
+those services; each business route declares its scope and route modules do not import the engine.
+The same layer exposes async sessions/jobs, metadata registry navigation, incidents, and governance
+coverage audit. See [Services and local API](services_and_api.md).

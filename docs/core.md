@@ -445,9 +445,18 @@ Python business rules:
 data_product:
   id: sales.orders
   version: 1.0.0
-  owner: analytics@company.example
+  owner:
+    team: sales-analytics
+    steward: alice@company.example
+    domain: commerce
+    contact: analytics@company.example
   description: Curated orders for analytics
 contract:
+  status: active
+  reviewers: [alice@company.example]
+  effective_from: 2026-01-01
+  sla: {refresh_frequency: daily, max_latency: 2h}
+  security: {level: internal, access_policy: role:sales-analytics}
   grain: [order_id]
   output:
     order_id: {logical_type: identifier, required: true, unique: true}
@@ -467,6 +476,15 @@ name. `contract.grain`, `semantic.dimensions`, and
 accepted in `semantic`. This metadata is projected into a draft semantic model
 without starting Spark or calling an LLM — see
 [Semantic Layer → Projected semantic models](semantic.md#projected-semantic-models-plan-29).
+
+Plan 31 keeps the legacy string owner valid and adds the structured
+`team`/`steward`/`domain`/`contact` form shown above. Contract lifecycle status
+is `draft`, `active` (the default), or `deprecated`; reviewers and inclusive ISO
+effective dates are validated at load time. The ordered output classification
+taxonomy is `public`, `internal`, `confidential`, `restricted`, `pii`, and the
+strongest upstream classification can be propagated through static lineage.
+See the [pipeline governance metadata reference](yaml_spec.md#pipeline-governance-metadata-plan-31)
+for lifecycle, SLA/security, canonical hash v2, ODCS import, and breaking diffs.
 
 The pure `OutputProjector` consumes the parsed schema and produces the planned
 output fields plus a stable definition hash. It infers only deterministic cases
