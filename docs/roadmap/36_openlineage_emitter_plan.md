@@ -4,6 +4,9 @@
 > l'annexe différée du [Plan 31](31_lib_development_scenario.md) (§8), après le [Plan 35](35_governance_wiring_plan.md).
 > Statut : **D1–D6 adoptées telles que recommandées et GO donné par délégation le 13 septembre 2026** (« je te laisse dérouler »). Branche `feat/plan36-openlineage`, partie de `feat/plan35-governance-wiring` (dépend de 35.2a).
 > Tâche mémoire : `skifer:plan:openlineage-emitter`.
+> **Changement d'agent (13 septembre 2026, 17:47)** : limite d'usage Codex atteinte au lancement de 36.1 (retour annoncé
+> 20:20) ; décision humaine « Passe avec claude » — le dev bascule sur l'adaptateur `claude-dev` à partir de 36.1
+> (36.0 a été développé par Codex). La review reste Claude sans outil : même fournisseur, repli déclaré par le noyau.
 
 ## 1. Contexte
 
