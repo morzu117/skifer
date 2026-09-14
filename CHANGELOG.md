@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- `run_process_and_split` and `run_union_sources_to_table` now refuse schemas declaring `data_product` before any processing, reads, or writes, directing certified publication through `run_process_to_table` or `run_from_yaml`. (Plan 35.5)
+## [2.2.0] - 2026-09-14
 
 ### Fixed
 
@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Metadata registry** — Crash-recovered certified publications now reconstruct
   and index contract metadata after promotion, while normal promoted publications
   inherit undeclared output classifications from already-indexed upstream columns.
+- Delta metadata SQL literals now reuse the shared Spark SQL escaper so
+  backslashes in dataset keys and serialized JSON cannot corrupt statements.
+- Bounded lineage closure re-expands nodes reached at a shallower depth, keeping
+  in-budget descendants complete regardless of edge insertion order.
 
 ### Added
 
@@ -181,6 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `run_process_and_split` and `run_union_sources_to_table` now refuse schemas declaring `data_product` before any processing, reads, or writes, directing certified publication through `run_process_to_table` or `run_from_yaml`. (Plan 35.5)
 - Certified publication now triggers a non-blocking metadata-index hook after
   `PROMOTED`; store failures only log a warning, and promoted records retain the
   pipeline `run_id`. `SkiferEngine` accepts `metadata_store=`.
@@ -219,13 +224,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extraites d'`agentic/data_service.py` (re-exports rétrocompatibles). Scopes nommés
   (`NAMED_SCOPES`, sans `certification_override`). `mcp/` n'importe plus
   `agentic.data_service`.
-
-### Fixed
-
-- Delta metadata SQL literals now reuse the shared Spark SQL escaper so
-  backslashes in dataset keys and serialized JSON cannot corrupt statements.
-- Bounded lineage closure re-expands nodes reached at a shallower depth, keeping
-  in-budget descendants complete regardless of edge insertion order.
 
 
 ## [2.1.0] - 2026-09-10
