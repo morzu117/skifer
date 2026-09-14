@@ -3,7 +3,9 @@
 > Rédigé le 14 septembre 2026, après la fusion des Plans 35 (#2) et 36 (#3) sur `main`.
 > Reprend trois points du §8 du [Plan 36](36_openlineage_emitter_plan.md) ; le plan dédié au tracker de lineage
 > (`aggregate:` et colonnes de jointure) suit celui-ci.
-> Statut : **en attente de validation humaine** (D1–D3). Branche `fix/plan37-best-effort-hardening`, partie de `main` (`f7e9735`).
+> Statut : **validé le 14 septembre 2026** — D1 et D3 telles que recommandées ; D2 discutée puis adoptée en option A
+> (refus avec indice), la substitution après lecture du YAML (option C, §4) étant retenue comme candidate à un plan dédié.
+> Branche `fix/plan37-best-effort-hardening`, partie de `main` (`f7e9735`).
 > Tâche mémoire : `skifer:plan:best-effort-hardening`.
 
 ## 1. Contexte
@@ -81,6 +83,11 @@ Review Claude sans outil, `claude-sonnet-5`, consignes portant les faits vérifi
   réécrire silencieusement une valeur métier est pire que refuser avec un indice.
 - **Échapper la valeur pour YAML** : le moteur ne sait pas si le placeholder est entre guillemets doubles,
   apostrophes ou non quoté ; un échappement juste dans un cas corrompt les autres.
+- **Substituer les placeholders après lecture du YAML** (option C de D2) : correct par construction — la valeur arrive
+  intacte quel que soit le quoting — mais change le modèle de templating (plus d'injection de structure YAML ni de
+  scalaire typé non quoté ; `{{ x }}` non quoté devient un refus explicite) et touche tout chargement de schéma,
+  partials et chargement localisé compris. **Retenue comme candidate à un plan dédié** (décision humaine du
+  14 septembre 2026). Constat pour ce plan futur : aucun placeholder non quoté dans le repo (exemples, doc, tests).
 - **Traiter ici les MINEURs du Plan 36** (docstring du namespace, formulations de la doc OpenLineage, nom d'hôte à un
   label) : restent au §8 du Plan 36 ; le nom d'hôte à un label est une décision humaine distincte.
 
