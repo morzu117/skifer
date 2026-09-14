@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Failed alert sends are no longer reported as notified, and their warnings include
+  only the exception class rather than potentially secret exception text. (Plan 37.2)
 - Certified-publication alerts, incident hooks, resumed metadata indexing, and
   alert-router construction remain non-blocking when warnings are errors. (Plan 37.1)
 - Template parameter injection now preserves backslashes literally and adds a key-only hint

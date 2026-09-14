@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import smtplib
+import warnings
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from urllib.error import URLError
@@ -29,6 +31,162 @@ def _report(*, message: str = "amount failed", actual_value=None) -> MonitorRepo
         ],
         datetime(2026, 9, 11, tzinfo=timezone.utc),
     )
+
+
+class _SuccessfulResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+
+def _incident():
+    return incidents_from_report(
+        _report(),
+        run_id="run-1",
+        target_fqn="gold.orders",
+        at=datetime(2026, 9, 11, tzinfo=timezone.utc),
+    )[0]
+
+
+@pytest.mark.parametrize(
+    ("config_key", "channel"),
+    [("webhook_url", "webhook"), ("slack_webhook", "slack")],
+)
+def test_webhook_sender_failure_is_not_notified_or_leaked(
+    monkeypatch, config_key, channel
+):
+    secret = "https://hooks.example/SECRET-TOKEN-123"
+
+    def fail(_request, timeout):
+        raise URLError(secret)
+
+    monkeypatch.setattr(
+        "skifer.observability.alerts.urllib_request.urlopen", fail
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        notified = AlertDispatcher().dispatch(_report(), {config_key: secret})
+
+    messages = [str(item.message) for item in caught]
+    assert notified == []
+    assert messages == [f"[AlertDispatcher] {channel} send failed: URLError"]
+    assert all("SECRET-TOKEN-123" not in message for message in messages)
+    assert all("hooks.example" not in message for message in messages)
+
+
+def test_email_sender_failure_is_not_notified_or_leaked(monkeypatch):
+    secret = "secret-account"
+
+    def fail(_host, _port):
+        raise smtplib.SMTPAuthenticationError(
+            535, f"bad password for user {secret}".encode()
+        )
+
+    monkeypatch.setattr("skifer.observability.alerts.smtplib.SMTP", fail)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        notified = AlertDispatcher().dispatch(
+            _report(), {"email": {"to": ["owner@example.com"]}}
+        )
+
+    messages = [str(item.message) for item in caught]
+    assert notified == []
+    assert messages == [
+        "[AlertDispatcher] email send failed: SMTPAuthenticationError"
+    ]
+    assert all(secret not in message for message in messages)
+
+
+def test_incident_email_sender_failure_is_not_notified_or_leaked(monkeypatch):
+    secret = "secret-account"
+
+    def fail(_host, _port):
+        raise smtplib.SMTPAuthenticationError(
+            535, f"bad password for user {secret}".encode()
+        )
+
+    monkeypatch.setattr("skifer.observability.alerts.smtplib.SMTP", fail)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        notified = AlertDispatcher().dispatch_incident(
+            target_fqn="gold.orders",
+            incidents=[_incident()],
+            recipients=[Recipient(contact="owner@example.com", team="data-team")],
+            config={"email": {"to": ["fallback@example.com"]}},
+        )
+
+    messages = [str(item.message) for item in caught]
+    assert notified == []
+    assert messages == [
+        "[AlertDispatcher] email send failed: SMTPAuthenticationError"
+    ]
+    assert all(secret not in message for message in messages)
+
+
+def test_failing_webhook_does_not_hide_successful_slack(monkeypatch):
+    def open_by_url(request, timeout):
+        if request.full_url == "http://bad":
+            raise URLError("failed webhook")
+        return _SuccessfulResponse()
+
+    monkeypatch.setattr(
+        "skifer.observability.alerts.urllib_request.urlopen", open_by_url
+    )
+
+    with pytest.warns(RuntimeWarning, match="webhook send failed: URLError"):
+        notified = AlertDispatcher().dispatch(
+            _report(),
+            {"webhook_url": "http://bad", "slack_webhook": "http://good"},
+        )
+
+    assert notified == ["slack"]
+
+
+def test_dispatch_continues_when_warnings_are_errors(monkeypatch):
+    def open_by_url(request, timeout):
+        if request.full_url == "http://bad":
+            raise URLError("failed webhook")
+        return _SuccessfulResponse()
+
+    monkeypatch.setattr(
+        "skifer.observability.alerts.urllib_request.urlopen", open_by_url
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        notified = AlertDispatcher().dispatch(
+            _report(),
+            {"webhook_url": "http://bad", "slack_webhook": "http://good"},
+        )
+
+    assert notified == ["slack"]
+
+
+def test_dispatch_incident_continues_when_warnings_are_errors(monkeypatch):
+    def open_by_url(request, timeout):
+        if request.full_url == "http://bad":
+            raise URLError("failed webhook")
+        return _SuccessfulResponse()
+
+    monkeypatch.setattr(
+        "skifer.observability.alerts.urllib_request.urlopen", open_by_url
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        notified = AlertDispatcher().dispatch_incident(
+            target_fqn="gold.orders",
+            incidents=[_incident()],
+            recipients=[],
+            config={"webhook_url": "http://bad", "slack_webhook": "http://good"},
+        )
+
+    assert notified == ["slack"]
 
 
 def test_msteams_channel_notified():
