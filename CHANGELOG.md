@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Example schemas now receive POSIX-form paths on Windows, avoiding invalid backslashes
+  in double-quoted YAML parameter values. (Plan 37.4)
+- Failed alert sends are no longer reported as notified, and their warnings include
+  only the exception class rather than potentially secret exception text. (Plan 37.2)
+- Certified-publication alerts, incident hooks, resumed metadata indexing, and
+  alert-router construction remain non-blocking when warnings are errors. (Plan 37.1)
+- Template parameter injection now preserves backslashes literally and adds a key-only hint
+  when a backslash makes a double-quoted YAML scalar invalid. (Plan 37.3)
+- Added a shared standard-library-only best-effort warning helper that cannot
+  raise under warnings-as-errors filters. (Plan 37.0)
 - `LineageTracker.from_schema` now resolves alias- and FQN-qualified `select_final`/`add_columns`
   sources (e.g. `o.amount`, `silver.customers.name`) to the table they actually belong to, instead
   of attributing every such column to the primary table with the alias prefix left in the column

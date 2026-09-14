@@ -24,7 +24,7 @@ def load_segment_labels(config, *, backend, **kwargs):
 
 def main() -> None:
     engine = SkiferEngine(force_env="LOCAL")
-    params = {**engine.default_params, "example_dir": str(EXAMPLE_DIR)}
+    params = {**engine.default_params, "example_dir": EXAMPLE_DIR.as_posix()}
     engine.run_from_yaml(
         str(EXAMPLE_DIR / "monthly_events.yaml"),
         "gold",

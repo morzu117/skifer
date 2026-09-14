@@ -27,7 +27,7 @@ def classify_order(df):
 
 def main() -> None:
     engine = SkiferEngine(force_env="LOCAL")
-    params = {**engine.default_params, "example_dir": str(EXAMPLE_DIR)}
+    params = {**engine.default_params, "example_dir": EXAMPLE_DIR.as_posix()}
 
     # `aggregate` is terminal, so the stage before it is a pipeline of its own.
     engine.run_from_yaml(

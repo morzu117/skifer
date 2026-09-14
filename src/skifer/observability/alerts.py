@@ -15,9 +15,8 @@ import smtplib
 from email.mime.text import MIMEText
 from typing import Any
 from urllib import request as urllib_request
-from urllib.error import URLError
-import warnings
 
+from skifer.observability.best_effort import warn_best_effort
 from skifer.observability.monitor import MonitorReport
 
 
@@ -218,12 +217,8 @@ class AlertDispatcher:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        try:
-            with urllib_request.urlopen(req, timeout=10):
-                pass
-        except (URLError, Exception) as exc:
-            # Best-effort — log but do not raise
-            warnings.warn(f"[AlertDispatcher] webhook POST failed: {exc}", RuntimeWarning)
+        with urllib_request.urlopen(req, timeout=10):
+            pass
 
     # ------------------------------------------------------------------
     # Slack
@@ -286,14 +281,11 @@ class AlertDispatcher:
         msg["From"] = cfg.get("user", "skifer@noreply.local")
         msg["To"] = ", ".join(recipients)
 
-        try:
-            with smtplib.SMTP(cfg.get("host", "localhost"), cfg.get("port", 587)) as server:
-                if cfg.get("user") and cfg.get("password"):
-                    server.starttls()
-                    server.login(cfg["user"], cfg["password"])
-                server.sendmail(msg["From"], recipients, msg.as_string())
-        except Exception as exc:
-            warnings.warn(f"[AlertDispatcher] email send failed: {exc}", RuntimeWarning)
+        with smtplib.SMTP(cfg.get("host", "localhost"), cfg.get("port", 587)) as server:
+            if cfg.get("user") and cfg.get("password"):
+                server.starttls()
+                server.login(cfg["user"], cfg["password"])
+            server.sendmail(msg["From"], recipients, msg.as_string())
 
     def _send_redacted_email(
         self,
@@ -312,22 +304,19 @@ class AlertDispatcher:
         msg["From"] = cfg.get("user", "skifer@noreply.local")
         msg["To"] = ", ".join(targets)
 
-        try:
-            with smtplib.SMTP(cfg.get("host", "localhost"), cfg.get("port", 587)) as server:
-                if cfg.get("user") and cfg.get("password"):
-                    server.starttls()
-                    server.login(cfg["user"], cfg["password"])
-                server.sendmail(msg["From"], targets, msg.as_string())
-        except Exception as exc:
-            warnings.warn(f"[AlertDispatcher] email send failed: {exc}", RuntimeWarning)
+        with smtplib.SMTP(cfg.get("host", "localhost"), cfg.get("port", 587)) as server:
+            if cfg.get("user") and cfg.get("password"):
+                server.starttls()
+                server.login(cfg["user"], cfg["password"])
+            server.sendmail(msg["From"], targets, msg.as_string())
 
     def _notify_channel(self, channel: str, send) -> bool:
+        # Keep one capture point: swallowed sender errors look successfully notified.
         try:
             send()
         except Exception as exc:  # noqa: BLE001 - alerting is best-effort.
-            warnings.warn(
-                f"[AlertDispatcher] {channel} send failed: {type(exc).__name__}",
-                RuntimeWarning,
+            warn_best_effort(
+                f"[AlertDispatcher] {channel} send failed: {type(exc).__name__}"
             )
             return False
         return True

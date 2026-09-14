@@ -23,7 +23,7 @@ def main() -> None:
         str(EXAMPLE_DIR / "silver_orders.yaml"),
         "silver",
         "orders",
-        params={**engine.default_params, "example_dir": str(EXAMPLE_DIR)},
+        params={**engine.default_params, "example_dir": EXAMPLE_DIR.as_posix()},
     )
 
     # Interactively, the engine writes to your personal sandbox schema

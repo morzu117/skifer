@@ -32,7 +32,7 @@ def main() -> None:
         str(GOLD_SCHEMA),
         "gold",
         "fact_orders",
-        params={**engine.default_params, "example_dir": str(GOLD_SCHEMA.parent)},
+        params={**engine.default_params, "example_dir": GOLD_SCHEMA.parent.as_posix()},
     )
 
     semantic = SemanticEngine(

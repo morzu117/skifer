@@ -31,7 +31,7 @@ def _print_rows(engine: SkiferEngine, table_name: str) -> None:
 
 def main() -> None:
     engine = SkiferEngine(force_env="LOCAL")
-    base_params = {**engine.default_params, "example_dir": str(EXAMPLE_DIR)}
+    base_params = {**engine.default_params, "example_dir": EXAMPLE_DIR.as_posix()}
     yaml_path = str(EXAMPLE_DIR / "customer_orders.yaml")
     suffix = engine.schema_suffix or ""
     view_name = f"prepared_orders_{suffix}" if suffix else "prepared_orders"

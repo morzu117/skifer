@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import logging
 import pytest
 from unittest.mock import MagicMock, patch
+import warnings
 
 
 def _make_patterns_engine(table_exists_map: dict | None = None):
@@ -392,6 +393,19 @@ def test_build_alert_router_failure_is_non_blocking_and_redacted():
     assert [str(item.message) for item in caught] == [
         "[Alerts] failed to build alert router: RuntimeError"
     ]
+
+
+def test_build_alert_router_failure_is_non_blocking_when_warnings_are_errors():
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.context.alerts_config.side_effect = RuntimeError("secret config value")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = _build_alert_router(engine)
+
+    assert result == (None, {})
 
 
 def test_promoted_publication_indexes_metadata_and_attaches_latest_run_id():

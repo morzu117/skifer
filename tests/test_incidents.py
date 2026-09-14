@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from datetime import datetime, timezone
 from types import SimpleNamespace
+import warnings
 
 import pytest
 
@@ -251,6 +252,35 @@ def test_incident_hook_is_non_blocking():
     assert result.state == "QUARANTINED"
 
 
+def test_incident_hook_is_non_blocking_when_warnings_are_errors():
+    def publish_with_filter(action):
+        store, backend = _BrokenIncidentStore(":memory:"), FakeBackend()
+        coordinator = PublicationCoordinator(
+            backend, _Monitor([_null_result("staging.orders")]), store
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter(action)
+            result = coordinator.publish(
+                FakeDataFrame([{"id": None}]), "gold.orders", {}, _definition()
+            )
+
+        states = [
+            row[0]
+            for row in store._conn.execute(
+                "SELECT state FROM materialization_runs WHERE run_id = ? ORDER BY rowid",
+                (result.run.run_id,),
+            ).fetchall()
+        ]
+        return result, states
+
+    baseline_result, baseline_states = publish_with_filter("ignore")
+    result, states = publish_with_filter("error")
+
+    assert baseline_result.state == result.state == "QUARANTINED"
+    assert states == baseline_states
+
+
 def test_incident_resolve_hook_is_non_blocking():
     store, backend = _BrokenResolveStore(":memory:"), FakeBackend()
     coordinator = PublicationCoordinator(
@@ -258,6 +288,22 @@ def test_incident_resolve_hook_is_non_blocking():
     )
 
     with pytest.warns(RuntimeWarning, match="failed to resolve incidents"):
+        result = coordinator.publish(
+            FakeDataFrame([{"id": 1}]), "gold.orders", {}, _definition()
+        )
+
+    assert result.state == "PROMOTED"
+    assert backend._written["gold.orders"] == [{"id": 1}]
+
+
+def test_incident_resolve_hook_is_non_blocking_when_warnings_are_errors():
+    store, backend = _BrokenResolveStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(
+        backend, _Monitor([_null_result("staging.orders", status=CheckStatus.PASS)]), store
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         result = coordinator.publish(
             FakeDataFrame([{"id": 1}]), "gold.orders", {}, _definition()
         )

@@ -5,6 +5,7 @@ import pytest
 
 from skifer.core.schema_loader import (
     parse_schema,
+    parse_schema_localized,
     load_schema,
     _normalize_filter_string,
     _normalize_filters,
@@ -15,6 +16,48 @@ from skifer.core.schema_loader import (
 )
 from skifer.core.constants import CLASSIFICATION_LEVELS, VALID_SOURCE_TYPES
 from skifer import load_schema as top_level_load_schema, parse_schema as top_level_parse_schema
+
+
+@pytest.mark.parametrize("value", [r"C:\Users\h", r"\1", r"\g<0>", r"a\\b"])
+@pytest.mark.parametrize("template", ["name: '{{ p }}/data'", "name: {{ p }}/data"])
+def test_parse_schema_injects_backslash_params_literally(value, template):
+    schema = parse_schema(template, params={"p": value})
+
+    assert schema["name"] == f"{value}/data"
+
+
+def test_parse_schema_double_quoted_backslash_param_has_key_only_hint():
+    yaml_str = 'name: "{{ example_dir }}/{{ z_dir }}/data"'
+
+    with pytest.raises(ValueError) as exc_info:
+        parse_schema(
+            yaml_str,
+            params={
+                "z_dir": r"\other",
+                "example_dir": r"C:\Users\h",
+                "unrelated": r"C:\Secret",
+            },
+        )
+
+    message = str(exc_info.value)
+    assert "Malformed YAML schema" in message
+    assert "Template parameter(s) <'example_dir', 'z_dir'>" in message
+    assert "Path.as_posix()" in message
+    assert "unrelated" not in message
+    hint = message.split("Template parameter(s)", 1)[1]
+    assert "Users" not in hint
+
+
+def test_parse_schema_localized_double_quoted_backslash_param_has_hint():
+    schema, issues = parse_schema_localized(
+        'name: "{{ example_dir }}/data"',
+        params={"example_dir": r"C:\Users\h"},
+    )
+
+    assert schema is None
+    assert len(issues) == 1
+    assert "'example_dir'" in issues[0].message
+    assert "Path.as_posix()" in issues[0].message
 
 
 # ==============================================================================

@@ -32,7 +32,7 @@ def main() -> None:
         str(EXAMPLE_DIR / "gold_orders.yaml"),
         "gold",
         "fact_orders",
-        params={**engine.default_params, "example_dir": str(EXAMPLE_DIR)},
+        params={**engine.default_params, "example_dir": EXAMPLE_DIR.as_posix()},
     )
 
     schema = engine.get_target_schema("gold")

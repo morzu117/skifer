@@ -276,6 +276,34 @@ def test_resume_metadata_store_failure_is_non_blocking():
     ]
 
 
+def test_resume_metadata_failure_is_non_blocking_when_warnings_are_errors():
+    class _FailingMetadataStore:
+        def get(self, target_fqn):
+            return None
+
+        def upsert(self, record):
+            raise RuntimeError("metadata unavailable")
+
+    definition = _metadata_definition()
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(
+        backend, _Monitor(_pass_result), store, metadata_store=_FailingMetadataStore()
+    )
+    run = stage_dataframe(
+        backend,
+        start_publication_run("gold.orders", definition, store),
+        definition,
+        store,
+        FakeDataFrame([{"customer_email": "person@example.com"}]),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = coordinator.resume(run, definition)
+
+    assert result.state == "PROMOTED"
+
+
 def test_promotion_fast_path_drops_orphaned_staging_without_rewriting_target(monkeypatch):
     definition = _definition()
     store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
@@ -501,6 +529,24 @@ def test_quarantine_router_failure_is_non_blocking_and_redacted():
     ]
 
 
+def test_quarantine_alert_failure_is_non_blocking_when_warnings_are_errors():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_fail_result),
+        store,
+        alert_router=_CapturingAlertRouter(RuntimeError("secret webhook failure")),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = coordinator.publish(
+            FakeDataFrame([{"id": None}]), "gold.orders", {}, _definition()
+        )
+
+    assert result.state == "QUARANTINED"
+
+
 def test_first_promotion_does_not_alert_breaking_change():
     store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
     router = _CapturingAlertRouter()
@@ -696,6 +742,29 @@ def test_breaking_change_router_failure_is_non_blocking_and_redacted():
     ]
 
 
+def test_breaking_change_alert_failure_is_non_blocking_when_warnings_are_errors():
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=_CapturingAlertRouter(RuntimeError("secret webhook failure")),
+    )
+    original = _contract_definition(
+        "1.0.0",
+        "hash-v1",
+        {"id": {"logical_type": "integer", "required": True}},
+    )
+    changed = _contract_definition("2.0.0", "hash-v2", {})
+    coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, original)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = coordinator.publish(FakeDataFrame([{}]), "gold.orders", {}, changed)
+
+    assert result.state == "PROMOTED"
+
+
 def test_previous_promotion_read_failure_is_non_blocking_and_redacted(monkeypatch):
     store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
     router = _CapturingAlertRouter()
@@ -727,6 +796,29 @@ def test_previous_promotion_read_failure_is_non_blocking_and_redacted(monkeypatc
     assert [str(item.message) for item in caught] == [
         "[Alerts] failed to read previous publication: RuntimeError"
     ]
+
+
+def test_previous_read_failure_is_non_blocking_when_warnings_are_errors(monkeypatch):
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = PublicationCoordinator(
+        backend,
+        _Monitor(_pass_result),
+        store,
+        alert_router=_CapturingAlertRouter(),
+    )
+    monkeypatch.setattr(
+        store,
+        "get_latest_promoted",
+        lambda target_fqn: (_ for _ in ()).throw(RuntimeError("secret store error")),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = coordinator.publish(
+            FakeDataFrame([{"id": 1}]), "gold.orders", {}, _definition()
+        )
+
+    assert result.state == "PROMOTED"
 
 
 def test_resume_with_router_emits_no_alerts():
