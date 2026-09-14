@@ -824,6 +824,10 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Scénario de développement de la bibliothèque (Plan 31)](docs/roadmap/31_lib_development_scenario.md) | `feat/plan31-f6-api`, empilée sur f1..f5/f7 | **Implémenté.** Les 7 features sont livrées : services, registre de métadonnées, gouvernance YAML, incidents/alertes, exécution async, API locale et audit de couverture. |
 | [Refonte doc d'appropriation (Plan 33)](docs/roadmap/33_documentation_onboarding_plan.md) | mergé via PR #65 | Implémenté (phases A–D) — parcours d'onboarding exécutable, `examples/` testés, gouvernance transverse, site sans artefact interne |
 | [Un exemple parlant par feature (Plan 34)](docs/roadmap/34_examples_per_feature_plan.md) | mergé via PR #68 | Implémenté (phases 0–6) — 18 exemples sous `examples/`, tous exécutés par la suite, chacun atteignable depuis la doc ; 3 défauts du code livré trouvés en les écrivant |
+| [Câblage de la gouvernance : alertes et classification stricte (Plan 35)](docs/roadmap/35_governance_wiring_plan.md) | mergé via PR #2 | Implémenté (35.0–35.5) — registre des définitions de contrat, routage d'alertes à la publication, propagation de classification fail-closed |
+| [Émetteur OpenLineage (Plan 36)](docs/roadmap/36_openlineage_emitter_plan.md) | mergé via PR #3 | Implémenté (36.0–36.4) — événements `RunEvent` allowlistés, émetteurs NoOp/InMemory/HTTP, émission best-effort à la publication et à l'écriture batch |
+| [Durcissement best-effort et injection de paramètres (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implémenté (37.0–37.4) — chemins best-effort jamais bloquants sous `-W error`, `\` préservé à l'injection, exemples portables Windows |
+| [Lineage du tracker : agrégats, jointures, intermédiaires (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | `feat/plan38-tracker-lineage` | Plan finalisé, non démarré |
 
 ## Key files
 

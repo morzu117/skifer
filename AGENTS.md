@@ -522,6 +522,10 @@ import the engine. CLI surfaces: `skifer api serve|openapi`, incident management
 | Plan | Branch | Status |
 |---|---|---|
 | [Library development scenario (Plan 31)](docs/roadmap/31_lib_development_scenario.md) | `feat/plan31-f6-api`, stacked on f1..f5/f7 | **Implemented.** All 7 features are complete. |
+| [Governance wiring: alert routing and strict classification (Plan 35)](docs/roadmap/35_governance_wiring_plan.md) | merged via PR #2 | Implemented (35.0–35.5) |
+| [OpenLineage emitter (Plan 36)](docs/roadmap/36_openlineage_emitter_plan.md) | merged via PR #3 | Implemented (36.0–36.4) |
+| [Best-effort hardening and parameter injection (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implemented (37.0–37.4) |
+| [Tracker lineage: aggregates, join keys, intermediates (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | `feat/plan38-tracker-lineage` | Plan finalised, not started |
 
 ## Key files
 | File | Purpose |
