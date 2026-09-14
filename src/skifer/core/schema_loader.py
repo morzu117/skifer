@@ -170,7 +170,8 @@ def _inject_params(yaml_str, params):
     if params:
         for key, value in params.items():
             pattern = r'\{\{\s*' + re.escape(str(key)) + r'\s*\}\}'
-            yaml_str = re.sub(pattern, str(value) if value is not None else "", yaml_str)
+            text = str(value) if value is not None else ""
+            yaml_str = re.sub(pattern, lambda _match, text=text: text, yaml_str)
     # Always check for remaining unresolved placeholders
     remaining = re.findall(r'\{\{\s*(\w+)\s*\}\}', yaml_str)
     if remaining:
@@ -179,6 +180,30 @@ def _inject_params(yaml_str, params):
             f"Pass them via params={{'{remaining[0]}': ...}}"
         )
     return yaml_str
+
+
+def _backslash_param_hint(yaml_str, params) -> str:
+    """Return a key-only hint for injected parameter values containing backslashes."""
+    keys = sorted(
+        (
+            key
+            for key, value in params.items()
+            if "\\" in (str(value) if value is not None else "")
+            and re.search(
+                r'\{\{\s*' + re.escape(str(key)) + r'\s*\}\}',
+                yaml_str,
+            )
+        ),
+        key=repr,
+    )
+    if not keys:
+        return ""
+    key_list = ", ".join(repr(key) for key in keys)
+    return (
+        f" Template parameter(s) <{key_list}> contain a backslash: inside a "
+        "double-quoted YAML string, use forward slashes (e.g. Path.as_posix()) or a "
+        "single-quoted string."
+    )
 
 
 def _normalize_filter_string(filter_str):
@@ -1626,7 +1651,8 @@ def parse_schema(yaml_str, params=None, *, base_dir=None, _seen_paths=None):
     try:
         schema = yaml.safe_load(injected)
     except yaml.YAMLError as e:
-        raise ValueError(f"Malformed YAML schema: {e}")
+        hint = _backslash_param_hint(yaml_str, params or {})
+        raise ValueError(f"Malformed YAML schema: {e}{hint}")
 
     if not isinstance(schema, dict):
         raise ValueError("Schema must be a YAML mapping (dict) at the top level.")
@@ -1747,7 +1773,8 @@ def parse_schema_localized(
         try:
             schema = yaml.safe_load(injected)
         except yaml.YAMLError as exc:
-            raise ValueError(f"Malformed YAML schema: {exc}") from exc
+            hint = _backslash_param_hint(yaml_str, params or {})
+            raise ValueError(f"Malformed YAML schema: {exc}{hint}") from exc
         if not isinstance(schema, dict):
             raise ValueError("Schema must be a YAML mapping (dict) at the top level.")
         original = deepcopy(schema)

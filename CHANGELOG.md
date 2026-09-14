@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Template parameter injection now preserves backslashes literally and adds a key-only hint
+  when a backslash makes a double-quoted YAML scalar invalid. (Plan 37.3)
 - Added a shared standard-library-only best-effort warning helper that cannot
   raise under warnings-as-errors filters. (Plan 37.0)
 - `LineageTracker.from_schema` now resolves alias- and FQN-qualified `select_final`/`add_columns`
