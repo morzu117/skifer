@@ -376,12 +376,27 @@ class LineageTracker:
         def _source_table_for(column: str | None) -> str:
             return RULE_ORIGIN if column in rule_outputs else primary_table
 
+        def _resolve_source(source: str | None) -> tuple[str, str]:
+            # Resolves an alias- or FQN-qualified select/add_columns source
+            # (e.g. "o.amount", "silver.customers.name") to its real table.
+            # Unqualified names, and prefixes that don't match a known
+            # alias/table, fall back to the historical primary-table/rule
+            # attribution untouched.
+            if source is None:
+                return primary_table, "<literal>"
+            if "." in source:
+                prefix, _, col = source.rpartition(".")
+                if prefix in alias_to_table:
+                    return alias_to_table[prefix], col
+            return _source_table_for(source), source
+
         # 1. select_final
         for cs in ps.select_final:
             transformations = ["conditional"] if cs.is_conditional else [_op_str(op) for op in cs.ops]
+            source_table, source_column = _resolve_source(cs.source)
             graph.add_edge(LineageEdge(
-                source_table=_source_table_for(cs.source),
-                source_column=cs.source if cs.source is not None else "<literal>",
+                source_table=source_table,
+                source_column=source_column,
                 target_table=target,
                 target_column=cs.target,
                 transformations=transformations,
@@ -391,9 +406,10 @@ class LineageTracker:
         # 2. add_columns (same structure as select_final)
         for cs in ps.add_columns:
             transformations = ["conditional"] if cs.is_conditional else [_op_str(op) for op in cs.ops]
+            source_table, source_column = _resolve_source(cs.source)
             graph.add_edge(LineageEdge(
-                source_table=_source_table_for(cs.source),
-                source_column=cs.source if cs.source is not None else "<literal>",
+                source_table=source_table,
+                source_column=source_column,
                 target_table=target,
                 target_column=cs.target,
                 transformations=transformations,

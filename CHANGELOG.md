@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `LineageTracker.from_schema` now resolves alias- and FQN-qualified `select_final`/`add_columns`
+  sources (e.g. `o.amount`, `silver.customers.name`) to the table they actually belong to, instead
+  of attributing every such column to the primary table with the alias prefix left in the column
+  name. (Plan 36.1b)
+- OpenLineage `build_run_event` now allowlists source columns as plain identifiers instead of
+  blacklisting known synthetic markers, so a literal shorthand copied verbatim by the tracker on a
+  raw, un-normalised schema dict (`literal:ERP`, `lit:SECRET`) can never reach `inputs` or
+  `columnLineage` as a value. (Plan 36.1 redev)
 - Reserved index exit code 3 for classification violations via `ClassificationViolationError`.
 - Made certified-publication run events strictly ordered within each run and
   deterministic under identical SQLite timestamps.
@@ -27,6 +35,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Documented the OpenLineage emitter (`docs/observability.md#openlineage`: configuration,
+  event timing per code path, dataset-namespace resolution, the edge-type-to-facet mapping, the
+  column-lineage allowlist's honest limits, and HTTP-vs-OpenMetadata compatibility) and added
+  `examples/23_openlineage/`, a Spark-free example building `START`/`COMPLETE` events from a
+  pipeline with a `pii` column and proving a check-result secret never reaches the emitted JSON.
+  (Plan 36.4)
+- Wired OpenLineage emission into the engine: `SkiferEngine` builds the configured emitter and
+  resolves the dataset namespace (configured value, else `unitycatalog://<DATABRICKS_HOST>` off
+  local, else `skifer://local` — environment only, no SDK or network call). Certified publication
+  emits `START` then `COMPLETE` (promoted, with assertions and `CERTIFIED`) or `FAIL` (quarantined
+  or check error, `UNCERTIFIED`) on the same `run_id`, a publication that raises emits `FAIL` and
+  re-raises the original exception, `resume()` emits `COMPLETE`, and a non-certified batch write of
+  `run_process_to_table` emits `COMPLETE` after the post-write monitor has returned — nothing if it
+  raises; streaming, materialized views, JDBC sinks, split and union emit nothing. Every emission is
+  best-effort: with `emitter: none` no record is built, and any
+  failure is one `RuntimeWarning` naming only the exception class, safe under warnings-as-errors.
+  `DATABRICKS_HOST` may be a bare host or a full workspace URL (port, path, query and fragment are
+  ignored); a value containing `@` or whose host is not a plain DNS name is treated as unparseable
+  and falls back to `skifer://local` with a warning. (Plan 36.3)
+- Added OpenLineage emitters (`observability/openlineage.py`): `NoOpEmitter` (default),
+  `InMemoryEmitter` (tests/examples) and a standard-library-only `HttpEmitter` that POSTs
+  `RunEvent`s, adds `Authorization: Bearer` only when `OPENLINEAGE_API_KEY` is set, and
+  never raises out of `emit` — a failure logs one rate-limited `RuntimeWarning` per
+  instance and failure kind, naming only the exception class, never the url, endpoint,
+  event body or API key. `create_lineage_emitter()` builds the configured emitter from
+  `LineageConfig`, itself falling back to `NoOpEmitter` on any construction error. (Plan 36.2)
+- Added a pure, deterministic OpenLineage `RunEvent` builder (`observability/openlineage.py`):
+  schema/columnLineage/dataQualityAssertions facets and an allowlisted `skifer`
+  custom facet, redacted so no SQL, filter value, or check message ever leaves
+  the pipeline. Synthetic lineage markers (`<rule>`, `<literal>`, `<unknown>`)
+  never reach `inputs` or `columnLineage`, on either side of the edge. (Plan 36.1)
+- Added validated global `observability.lineage` settings for the planned
+  OpenLineage emitter, with environment-only API key handling. (Plan 36.0)
 - Documented publication alert routing and the warn-to-strict classification
   propagation migration path.
 - Added fail-closed strict classification propagation before certified writes

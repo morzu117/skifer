@@ -102,6 +102,120 @@ def parse_tracing_config(config: dict | None) -> TracingConfig:
         mlflow_tracking_uri=mlflow_tracking_uri,
     )
 
+
+VALID_LINEAGE_EMITTERS = ("none", "http")
+
+
+@dataclass(frozen=True)
+class LineageConfig:
+    """Validated global lineage configuration from ``config.yaml``."""
+
+    emitter: str = "none"
+    url: str | None = field(default=None, repr=False)
+    endpoint: str = "/api/v1/lineage"
+    job_namespace: str = "skifer"
+    dataset_namespace: str | None = None
+    timeout_seconds: float = 5.0
+
+    def __repr__(self) -> str:
+        """Never disclose credentials embedded in the lineage URL."""
+        url = "<configured>" if self.url else None
+        return (
+            "LineageConfig("
+            f"emitter={self.emitter!r}, url={url!r}, endpoint={self.endpoint!r}, "
+            f"job_namespace={self.job_namespace!r}, "
+            f"dataset_namespace={self.dataset_namespace!r}, "
+            f"timeout_seconds={self.timeout_seconds!r})"
+        )
+
+
+def parse_lineage_config(config: dict | None) -> LineageConfig:
+    """Return validated global lineage settings without loading emitter code."""
+    if not config:
+        return LineageConfig()
+    observability = config.get("observability", {})
+    if observability is None:
+        observability = {}
+    if not isinstance(observability, dict):
+        raise ValueError("Global 'observability' configuration must be a mapping.")
+    raw = observability.get("lineage", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("Global 'observability.lineage' configuration must be a mapping.")
+
+    allowed_keys = {
+        "emitter",
+        "url",
+        "endpoint",
+        "job_namespace",
+        "dataset_namespace",
+        "timeout_seconds",
+    }
+    for key in raw:
+        if key not in allowed_keys:
+            message = f"Unknown configuration key observability.lineage.{key}."
+            if key in {"api_key", "apiKey", "token"}:
+                message += (
+                    " The API key is read only from the OPENLINEAGE_API_KEY "
+                    "environment variable."
+                )
+            raise ValueError(message)
+
+    emitter = raw.get("emitter", "none")
+    if emitter not in VALID_LINEAGE_EMITTERS:
+        raise ValueError(
+            f"Unsupported observability.lineage.emitter {emitter!r}. Valid values: "
+            f"{', '.join(VALID_LINEAGE_EMITTERS)}."
+        )
+    url = raw.get("url")
+    if url is not None and (
+        not isinstance(url, str)
+        or not url.startswith(("http://", "https://"))
+    ):
+        raise ValueError(
+            "observability.lineage.url must be a string starting with http:// or https://, or null."
+        )
+    if emitter == "http" and url is None:
+        raise ValueError(
+            "observability.lineage.url is required when observability.lineage.emitter is 'http'."
+        )
+    endpoint = raw.get("endpoint", "/api/v1/lineage")
+    if not isinstance(endpoint, str) or not endpoint or not endpoint.startswith("/"):
+        raise ValueError(
+            "observability.lineage.endpoint must be a non-empty string starting with '/'."
+        )
+    job_namespace = raw.get("job_namespace", "skifer")
+    if not isinstance(job_namespace, str) or not job_namespace:
+        raise ValueError(
+            "observability.lineage.job_namespace must be a non-empty string."
+        )
+    dataset_namespace = raw.get("dataset_namespace")
+    if dataset_namespace is not None and (
+        not isinstance(dataset_namespace, str) or not dataset_namespace
+    ):
+        raise ValueError(
+            "observability.lineage.dataset_namespace must be a non-empty string or null."
+        )
+    timeout_seconds = raw.get("timeout_seconds", 5.0)
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not 0 < timeout_seconds <= 60
+    ):
+        raise ValueError(
+            "observability.lineage.timeout_seconds must be a number greater than 0 and at most 60."
+        )
+    return LineageConfig(
+        emitter=emitter,
+        url=url,
+        endpoint=endpoint,
+        job_namespace=job_namespace,
+        dataset_namespace=dataset_namespace,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 class ConfigurationManager:
     """
     Manages the loading and retrieval of configuration from a YAML file.
@@ -191,6 +305,7 @@ class ConfigurationManager:
                 )
             self.config = loaded
             parse_tracing_config(self.config)
+            parse_lineage_config(self.config)
             envs = self.config.get("environments", {})
             if isinstance(envs, dict):
                 valid_policies = {"off", "warn", "enforce", "supervised"}

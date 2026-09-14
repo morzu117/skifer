@@ -773,3 +773,171 @@ def test_alert_router_without_metadata_store_still_dispatches_to_channel():
         recipients=[],
         config=config,
     )
+
+
+# ---------------------------------------------------------------------------
+# OpenLineage emission (Plan 36.3)
+# ---------------------------------------------------------------------------
+
+_LINEAGE_RUN_ID = "6c1f2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
+
+
+def _lineage_patterns_engine():
+    from skifer.observability.openlineage import InMemoryEmitter, LineageContext
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.lineage_emitter = InMemoryEmitter()
+    engine.lineage_context = LineageContext(
+        job_namespace="skifer", dataset_namespace="skifer://local"
+    )
+    return engine, patterns
+
+
+def test_run_process_to_table_batch_write_emits_one_complete_event_after_write():
+    engine, patterns = _lineage_patterns_engine()
+    events_at_write = []
+    engine._write_dataframe.side_effect = (
+        lambda *a, **k: events_at_write.append(len(engine.lineage_emitter.events))
+    )
+    schema = {"tables": [{"name": "silver.orders", "alias": "ord"}]}
+
+    patterns.run_process_to_table(schema, "gold", "fact_orders", run_id=_LINEAGE_RUN_ID)
+
+    assert events_at_write == [0]
+    events = engine.lineage_emitter.events
+    assert [event["eventType"] for event in events] == ["COMPLETE"]
+    event = events[0]
+    assert event["run"]["runId"] == _LINEAGE_RUN_ID
+    assert event["job"] == {"namespace": "skifer", "name": "gold_schema.fact_orders"}
+    output = event["outputs"][0]
+    assert output["namespace"] == "skifer://local"
+    assert output["name"] == "gold_schema.fact_orders"
+    assert "dataQualityAssertions" not in output["facets"]
+    assert "certification" not in output["facets"]["skifer"]
+
+
+def test_run_process_to_table_batch_write_monitor_failure_emits_nothing():
+    from skifer.observability.checks import DataQualityError
+    from skifer.observability.monitor import MonitorReport
+
+    engine, patterns = _lineage_patterns_engine()
+    engine.monitor = MagicMock()
+    err = DataQualityError(MonitorReport(table="`gold_schema`.`fact_orders`", results=[]))
+    engine.monitor.check_from_schema.side_effect = err
+    schema = {"tables": [{"name": "silver.orders", "alias": "ord"}]}
+
+    with pytest.raises(DataQualityError) as excinfo:
+        patterns.run_process_to_table(schema, "gold", "fact_orders", run_id=_LINEAGE_RUN_ID)
+
+    assert excinfo.value is err
+    engine._write_dataframe.assert_called_once()
+    assert engine.lineage_emitter.events == []
+
+
+def test_run_process_to_table_batch_write_emits_complete_after_monitor():
+    engine, patterns = _lineage_patterns_engine()
+    call_log = []
+    engine._write_dataframe.side_effect = lambda *a, **k: call_log.append("write")
+    report = MagicMock()
+    report.summary.return_value = {"status": "PASS", "passed": 1, "total_checks": 1}
+
+    def _check_from_schema(*a, **k):
+        call_log.append("monitor")
+        return report
+
+    engine.monitor = MagicMock()
+    engine.monitor.check_from_schema.side_effect = _check_from_schema
+    original_emit = engine.lineage_emitter.emit
+
+    def _emit(event):
+        call_log.append("emit")
+        return original_emit(event)
+
+    engine.lineage_emitter.emit = _emit
+    schema = {"tables": [{"name": "silver.orders", "alias": "ord"}]}
+
+    patterns.run_process_to_table(schema, "gold", "fact_orders", run_id=_LINEAGE_RUN_ID)
+
+    assert call_log == ["write", "monitor", "emit"]
+    events = engine.lineage_emitter.events
+    assert [event["eventType"] for event in events] == ["COMPLETE"]
+
+
+def test_run_process_to_table_failed_batch_write_emits_nothing():
+    engine, patterns = _lineage_patterns_engine()
+    engine._write_dataframe.side_effect = RuntimeError("write failed")
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        patterns.run_process_to_table(
+            {"tables": [{"name": "silver.orders", "alias": "ord"}]},
+            "gold",
+            "fact_orders",
+            run_id=_LINEAGE_RUN_ID,
+        )
+
+    assert engine.lineage_emitter.events == []
+
+
+@pytest.mark.parametrize(
+    "extra, branch_call",
+    [
+        ({"materialization": {"type": "streaming_table"}}, "_write_dataframe"),
+        ({"materialization": {"type": "materialized_view"}}, "_create_materialized_view"),
+        ({"sink": {"type": "jdbc"}}, "_write_dataframe"),
+    ],
+    ids=["streaming", "materialized_view", "jdbc"],
+)
+def test_run_process_to_table_streaming_mv_and_jdbc_emit_no_lineage(extra, branch_call):
+    engine, patterns = _lineage_patterns_engine()
+    schema = {"tables": [{"name": "silver.orders", "alias": "ord"}], **extra}
+
+    patterns.run_process_to_table(schema, "gold", "fact_orders", run_id=_LINEAGE_RUN_ID)
+
+    getattr(engine, branch_call).assert_called_once()
+    assert engine.lineage_emitter.events == []
+
+
+def test_run_process_to_table_certified_schema_forwards_lineage_emitter_and_context():
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, patterns = _lineage_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    run = PublicationRun("run-1", "gold_schema.fact_orders", "staging.fact_orders", RunState.PROMOTED)
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    kwargs = coordinator.call_args.kwargs
+    assert kwargs["lineage_emitter"] is engine.lineage_emitter
+    assert kwargs["lineage_context"] is engine.lineage_context
+    # The coordinator owns certified emission; patterns adds no batch COMPLETE.
+    assert engine.lineage_emitter.events == []
+
+
+def test_run_process_to_table_engine_double_without_lineage_attributes_still_works():
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    del engine.lineage_emitter
+    del engine.lineage_context
+
+    patterns.run_process_to_table(
+        {"tables": [{"name": "silver.orders", "alias": "ord"}]}, "gold", "fact_orders"
+    )
+    engine._write_dataframe.assert_called_once()
+
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    run = PublicationRun("run-1", "gold_schema.fact_orders", "staging.fact_orders", RunState.PROMOTED)
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    assert coordinator.call_args.kwargs["lineage_emitter"] is None
+    assert coordinator.call_args.kwargs["lineage_context"] is None

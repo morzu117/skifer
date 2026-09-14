@@ -1978,3 +1978,303 @@ def test_engine_exposes_a_public_backend():
     engine._backend = sentinel
 
     assert engine.backend is sentinel
+
+
+# ==============================================================================
+# OPENLINEAGE EMITTER CONSTRUCTION (Plan 36.3)
+# ==============================================================================
+
+_LINEAGE_ENVIRONMENTS = {"dev": {"catalog": "dev_catalog"}, "local": {"catalog": None}}
+
+
+def _lineage_engine(mocker, config, *, force_env=None):
+    from unittest.mock import MagicMock
+
+    def mock_load_config(instance, config_path):
+        instance.config = config
+        instance.env = "DEV"
+        instance.db = "dev_catalog"
+
+    mocker.patch.object(SkiferEngine, "_load_config_from_yaml", side_effect=mock_load_config, autospec=True)
+    mocker.patch.object(SkiferEngine, "_get_clean_username", return_value="test_user")
+    mocker.patch.object(SkiferEngine, "_find_file_upwards", return_value=None)
+    mocker.patch("skifer.core.spark_backend.SparkBackend")
+    return SkiferEngine(spark=MagicMock(), config_path="dummy/config.yaml", force_env=force_env)
+
+
+def test_engine_lineage_dataset_namespace_prefers_explicit_config(mocker, monkeypatch):
+    from skifer.observability.openlineage import LineageContext
+
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-1.azuredatabricks.net")
+    engine = _lineage_engine(mocker, {
+        "environments": _LINEAGE_ENVIRONMENTS,
+        "observability": {"lineage": {"dataset_namespace": "hive://metastore:9083", "job_namespace": "etl"}},
+    })
+
+    assert engine.lineage_context == LineageContext(
+        job_namespace="etl", dataset_namespace="hive://metastore:9083"
+    )
+
+
+def test_engine_lineage_dataset_namespace_uses_databricks_host_when_not_local(mocker, monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net/")
+    urlopen = mocker.patch("urllib.request.urlopen")
+
+    engine = _lineage_engine(mocker, {"environments": _LINEAGE_ENVIRONMENTS})
+
+    assert engine.is_local is False
+    assert engine.lineage_context.dataset_namespace == "unitycatalog://adb-123.azuredatabricks.net"
+    assert engine.lineage_context.job_namespace == "skifer"
+    urlopen.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "force_env, host",
+    [("local", "https://adb-123.azuredatabricks.net"), (None, None)],
+    ids=["local-ignores-host", "no-host"],
+)
+def test_engine_lineage_dataset_namespace_defaults_to_local(mocker, monkeypatch, force_env, host):
+    from skifer.observability.openlineage import NoOpEmitter
+
+    if host is None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    else:
+        monkeypatch.setenv("DATABRICKS_HOST", host)
+
+    engine = _lineage_engine(mocker, {"environments": _LINEAGE_ENVIRONMENTS}, force_env=force_env)
+
+    assert engine.lineage_context.dataset_namespace == "skifer://local"
+    assert isinstance(engine.lineage_emitter, NoOpEmitter)
+
+
+def test_engine_http_lineage_config_builds_http_emitter_without_network(mocker):
+    from skifer.observability.openlineage import HttpEmitter
+
+    urlopen = mocker.patch("urllib.request.urlopen")
+    engine = _lineage_engine(mocker, {
+        "environments": _LINEAGE_ENVIRONMENTS,
+        "observability": {"lineage": {"emitter": "http", "url": "https://lineage.example.test"}},
+    })
+
+    assert isinstance(engine.lineage_emitter, HttpEmitter)
+    urlopen.assert_not_called()
+
+
+def test_engine_invalid_lineage_config_fails_init(mocker):
+    with pytest.raises(ValueError, match="observability.lineage.emitter"):
+        _lineage_engine(mocker, {
+            "environments": _LINEAGE_ENVIRONMENTS,
+            "observability": {"lineage": {"emitter": "kafka"}},
+        })
+
+
+def test_engine_without_init_exposes_default_lineage_properties():
+    from skifer.observability.openlineage import LineageContext, NoOpEmitter
+
+    engine = object.__new__(SkiferEngine)
+
+    assert isinstance(engine.lineage_emitter, NoOpEmitter)
+    assert engine.lineage_context == LineageContext(
+        job_namespace="skifer", dataset_namespace="skifer://local"
+    )
+
+
+def test_engine_lineage_emitter_property_keeps_falsy_but_real_emitter():
+    """A configured emitter that is falsy (e.g. defines __len__) must not be
+    silently swapped for NoOpEmitter — the property must check identity with
+    None, not truthiness (Plan 36 review)."""
+    engine = object.__new__(SkiferEngine)
+
+    class _FalsyEmitter:
+        def __len__(self):
+            return 0
+
+    falsy_emitter = _FalsyEmitter()
+    engine._lineage_emitter = falsy_emitter
+
+    assert engine.lineage_emitter is falsy_emitter
+
+
+@pytest.mark.parametrize(
+    "host, expected",
+    [
+        ("https://adb-1.azuredatabricks.net/?o=123", "unitycatalog://adb-1.azuredatabricks.net"),
+        ("HTTPS://ADB-1.azuredatabricks.net", "unitycatalog://adb-1.azuredatabricks.net"),
+        ("adb-1.azuredatabricks.net", "unitycatalog://adb-1.azuredatabricks.net"),
+        ("https://adb-1.net:abc", "unitycatalog://adb-1.net"),
+        ("https://adb-1.net:99999", "unitycatalog://adb-1.net"),
+        ("adb-1.net:443", "unitycatalog://adb-1.net"),
+        ("https://adb-1.net#frag", "unitycatalog://adb-1.net"),
+    ],
+    ids=[
+        "path-and-query-dropped",
+        "lower-cased",
+        "bare-host-no-scheme",
+        "non-numeric-port-dropped",
+        "out-of-range-port-dropped",
+        "bare-host-with-port-dropped",
+        "fragment-dropped",
+    ],
+)
+def test_resolve_lineage_dataset_namespace_normalizes_host(host, expected):
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    namespace = _resolve_lineage_dataset_namespace(
+        LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": host}
+    )
+
+    assert namespace == expected
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://user:s3cret@adb-1.azuredatabricks.net/",
+        "https://token:dapiXXXX@adb-1.azuredatabricks.net",
+    ],
+    ids=["userinfo-with-password", "userinfo-with-token"],
+)
+def test_resolve_lineage_dataset_namespace_strips_credentials(host):
+    """A DATABRICKS_HOST with an '@' anywhere is unparseable on sight (Plan 36 D6 review):
+    a well-formed userinfo section is not an exception, since ``urlsplit`` cuts the netloc
+    before '@' and a malformed userinfo (e.g. a password containing '#') would otherwise leak
+    its prefix as a plausible-looking hostname."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": host}
+        )
+
+    assert namespace == "skifer://local"
+    assert "s3cret" not in namespace
+    assert "user" not in namespace
+    runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+    assert len(runtime_warnings) == 1
+    assert host not in str(runtime_warnings[0].message)
+
+
+def test_resolve_lineage_dataset_namespace_falls_back_on_unparseable_host():
+    """An unparseable DATABRICKS_HOST must never raise out of the engine (Plan 36 review)."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": "http://[::1"}
+        )
+
+    assert namespace == "skifer://local"
+    runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+    assert len(runtime_warnings) == 1
+    assert "[::1" not in str(runtime_warnings[0].message)
+
+
+def test_resolve_lineage_dataset_namespace_falls_back_under_warnings_as_errors():
+    """The best-effort warning must never turn into an exception under -W error (Plan 36 review)."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": "http://[::1"}
+        )
+
+    assert namespace == "skifer://local"
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://svc:Pa#ss@adb-1.azuredatabricks.net",
+        "https://s3cr?et@adb-1.azuredatabricks.net",
+        "https://user:pa/ss@adb-1.azuredatabricks.net",
+        "svc:Pa#ss@adb-1.azuredatabricks.net",
+        "adb-1.net x",
+        "https://adb-1.net\x00a",
+        "https://[::1]:443",
+    ],
+    ids=[
+        "at-hash-in-userinfo",
+        "at-question-mark-in-userinfo",
+        "at-slash-in-userinfo",
+        "at-no-scheme",
+        "space-in-host",
+        "nul-byte-in-host",
+        "ipv6-literal",
+    ],
+)
+def test_resolve_lineage_dataset_namespace_never_leaks_secret_prefix(host):
+    """None of these must leak a userinfo/secret prefix, nor any other unparseable value, as if
+    it were a real hostname (Plan 36 D6 fix — allowlist, not urlsplit-parseability, decides)."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": host}
+        )
+
+    assert namespace == "skifer://local"
+    runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+    assert len(runtime_warnings) == 1
+    assert host not in str(runtime_warnings[0].message)
+
+
+def test_resolve_lineage_dataset_namespace_at_sign_falls_back_under_warnings_as_errors():
+    """The '@' short-circuit warning must never turn into an exception under -W error."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(),
+            is_local=False,
+            environ={"DATABRICKS_HOST": "https://svc:Pa#ss@adb-1.azuredatabricks.net"},
+        )
+
+    assert namespace == "skifer://local"
+
+
+def test_resolve_lineage_dataset_namespace_allowlist_rejection_falls_back_under_warnings_as_errors():
+    """The allowlist-rejection warning (a hostname that parses but is not a plain DNS name) must
+    never turn into an exception under -W error."""
+    import warnings
+
+    from skifer.core.config import LineageConfig
+    from skifer.core.core import _resolve_lineage_dataset_namespace
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        namespace = _resolve_lineage_dataset_namespace(
+            LineageConfig(), is_local=False, environ={"DATABRICKS_HOST": "https://[::1]:443"}
+        )
+
+    assert namespace == "skifer://local"
+
+
+def test_engine_lineage_dataset_namespace_falls_back_when_host_unparseable(mocker, monkeypatch):
+    """SkiferEngine.__init__ must not fail because DATABRICKS_HOST is unparseable (Plan 36 review)."""
+    monkeypatch.setenv("DATABRICKS_HOST", "http://[::1")
+
+    engine = _lineage_engine(mocker, {"environments": _LINEAGE_ENVIRONMENTS})
+
+    assert engine.is_local is False
+    assert engine.lineage_context.dataset_namespace == "skifer://local"
