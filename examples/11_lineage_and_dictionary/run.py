@@ -42,7 +42,7 @@ def main() -> None:
     runpy.run_path(str(EXAMPLE_05 / "run.py"))
     schema = load_schema(
         str(EXAMPLE_05 / "joined_orders.yaml"),
-        params={"example_dir": str(EXAMPLE_05)},
+        params={"example_dir": EXAMPLE_05.as_posix()},
     )
     graph = LineageTracker.from_schema(schema, target_name=TARGET)
 

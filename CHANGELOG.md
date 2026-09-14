@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Example schemas now receive POSIX-form paths on Windows, avoiding invalid backslashes
+  in double-quoted YAML parameter values. (Plan 37.4)
 - Failed alert sends are no longer reported as notified, and their warnings include
   only the exception class rather than potentially secret exception text. (Plan 37.2)
 - Certified-publication alerts, incident hooks, resumed metadata indexing, and
