@@ -6,6 +6,10 @@
 > Statut : **validé le 14 septembre 2026** — D1 et D3 telles que recommandées ; D2 discutée puis adoptée en option A
 > (refus avec indice), la substitution après lecture du YAML (option C, §4) étant retenue comme candidate à un plan dédié.
 > Branche `fix/plan37-best-effort-hardening`, partie de `main` (`f7e9735`).
+> **Implémenté (14 septembre 2026)** — 37.0 `ff3253d` · 37.1 `c0b5842` · 37.2 `3f8760c` · 37.3 `8b6b459` · 37.4 `1647044`.
+> Dev Codex `gpt-5.6-sol`, review Claude sans outil : cinq ACCEPT sans redev. Gate Windows vert à chaque commit contre une
+> base réenregistrée sur `main` (248 échecs connus ; 244 après 37.4, exemples 11 et 21 réparés). Contre-preuve sur
+> instantané figé pour chaque test de protection ; rejeu sans mock des alertes sous `python -W error`. CI Linux à confirmer à la PR.
 > Tâche mémoire : `skifer:plan:best-effort-hardening`.
 
 ## 1. Contexte
@@ -120,3 +124,14 @@ Review Claude sans outil, `claude-sonnet-5`, consignes portant les faits vérifi
   suppressions déclarées (D1 ; ligne `re.sub` de 37.3 ; 8 lignes d'exemple en 37.4 ; corps de `_warn_best_effort` en 37.0 ;
   7 appels `warnings.warn` en 37.1).
 - CI Linux à la PR.
+
+## 8. Suivi hors plan (constaté pendant le cycle)
+
+| Sujet | Nature | Suite proposée |
+|---|---|---|
+| 4 tests `*_when_warnings_are_errors` de `test_certified_publication.py` vérifient l'état retourné mais pas les événements persistés | review 37.1 (MINEUR) | ajouter l'assertion sur les événements de run si ces chemins évoluent |
+| `_backslash_param_hint` trie les clés sur `repr` ; motif du placeholder dupliqué avec `_inject_params` | review 37.3 (MINEUR) | factoriser le motif ; trier sur la clé |
+| La réponse d'un `HTTPError` levé par `urlopen` n'est pas fermée explicitement → `ResourceWarning: unclosed socket` au ramasse-miettes (jamais propagé) | rejeu 37.2, pré-existant | fermer `exc` dans `_notify_channel` ou dans `_send_webhook` |
+| Substitution des placeholders après lecture du YAML (option C de D2) | décision humaine | plan dédié ; aucun placeholder non quoté dans le repo |
+| Exemples encore rouges sous Windows (winutils, `:` dans des noms de fichiers) ; exemple 20 : sortie README avec antislashs | pré-existant, hors Plan 37 | à traiter si le poste Windows doit devenir un environnement de validation complet |
+| Pendant `codex exec`, le `gbrain serve` MCP de la session Codex tient le verrou PGLite : `gbrain put` en CLI échoue ; `codegraph.ps1` bloqué par la politique d'exécution PowerShell côté Codex | outillage | écrire la mémoire entre deux runs de dev ; invoquer codegraph via `codegraph.cmd` ou ajuster la politique |
