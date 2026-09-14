@@ -12,12 +12,12 @@ import json
 import os
 import re
 import threading
-import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence
 
 from skifer.lineage.tracker import LineageGraph, RULE_ORIGIN
+from skifer.observability.best_effort import warn_best_effort
 from skifer.observability.checks import CheckStatus
 
 if TYPE_CHECKING:
@@ -281,10 +281,7 @@ def _warn_best_effort(message: str) -> None:
     only reason these emitters exist: a catalog being down must never crash the
     pipeline it only observes.
     """
-    try:
-        warnings.warn(message, RuntimeWarning, stacklevel=3)
-    except Exception:
-        pass
+    warn_best_effort(message, stacklevel=3)
 
 
 class LineageEmitter(Protocol):

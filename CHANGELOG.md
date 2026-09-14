@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Added a shared standard-library-only best-effort warning helper that cannot
+  raise under warnings-as-errors filters. (Plan 37.0)
 - `LineageTracker.from_schema` now resolves alias- and FQN-qualified `select_final`/`add_columns`
   sources (e.g. `o.amount`, `silver.customers.name`) to the table they actually belong to, instead
   of attributing every such column to the primary table with the alias prefix left in the column
