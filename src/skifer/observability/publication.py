@@ -10,7 +10,8 @@ from uuid import UUID, uuid4
 import warnings
 
 from skifer.observability.certification import ContractDefinition
-from skifer.observability.certification_store import RunEvent, StoredCheckResult
+from skifer.observability.certification import diff_contracts, schema_from_definition
+from skifer.observability.certification_store import RunEvent, StoredCheckResult, next_run_event_time
 from skifer.observability.checks import CheckStatus
 from skifer.observability.quarantine import quarantine_staging
 from skifer.observability.tracing import (
@@ -52,14 +53,23 @@ class PublicationResult:
     state: str
 
 
+@dataclass(frozen=True)
+class _BreakingChangeView:
+    breaking: bool
+    from_version: str
+    to_version: str
+
+
 class PublicationCoordinator:
     """Stage, validate, persist check results, then promote or quarantine."""
 
-    def __init__(self, backend, monitor, store, metadata_store=None):
+    def __init__(self, backend, monitor, store, metadata_store=None, alert_router=None, alert_config=None):
         self.backend = backend
         self.monitor = monitor
         self.store = store
         self.metadata_store = metadata_store
+        self.alert_router = alert_router
+        self.alert_config = alert_config if isinstance(alert_config, dict) else {}
         # Plain getattr, not monitor.__dict__: a monitor exposing `tracer` as a
         # property was silently downgraded to NoOpTracer, i.e. tracing quietly
         # off with no way to notice.
@@ -136,13 +146,69 @@ class PublicationCoordinator:
                     self.backend, run, definition, self.store, results=report.results
                 )
                 if outcome.state == "QUARANTINED":
-                    self._record_incidents(run, definition, report)
+                    incidents = self._record_incidents(run, definition, report)
+                    if self.alert_router is not None and incidents:
+                        try:
+                            self.alert_router.alert_incident(
+                                None,
+                                target_fqn=run.target_fqn,
+                                incidents=incidents,
+                                config=self.alert_config,
+                            )
+                        except Exception as exc:
+                            warnings.warn(
+                                f"[Alerts] failed to alert incident: {type(exc).__name__}",
+                                RuntimeWarning,
+                            )
                 set_span_attribute(
                     span, "decision", "QUARANTINED", required=self.tracing_required
                 )
                 return PublicationResult(run=run, report=report, state=outcome.state)
+            previous = None
+            if self.alert_router is not None:
+                try:
+                    previous = self.store.get_latest_promoted(run.target_fqn)
+                except Exception as exc:
+                    warnings.warn(
+                        f"[Alerts] failed to read previous publication: {type(exc).__name__}",
+                        RuntimeWarning,
+                    )
             promoted = promote_staging(self.backend, run, definition, self.store)
             self._resolve_recovered(promoted)
+            if self.alert_router is not None:
+                try:
+                    previous_definition = (
+                        self.store.get_contract_by_hash(
+                            previous.contract_id,
+                            previous.definition_hash,
+                        )
+                        if (
+                            previous is not None
+                            and previous.definition_hash != definition.definition_hash
+                        )
+                        else None
+                    )
+                    if previous_definition is not None:
+                        diff = diff_contracts(
+                            schema_from_definition(previous_definition),
+                            schema_from_definition(definition),
+                        )
+                        if diff.breaking:
+                            self.alert_router.alert_breaking_change(
+                                None,
+                                target_fqn=run.target_fqn,
+                                diff=_BreakingChangeView(
+                                    breaking=diff.breaking,
+                                    from_version=previous.contract_version,
+                                    to_version=definition.contract_version,
+                                ),
+                                config=self.alert_config,
+                            )
+                except Exception as exc:
+                    warnings.warn(
+                        f"[Alerts] failed to alert breaking change: {type(exc).__name__}",
+                        RuntimeWarning,
+                    )
             set_span_attribute(
                 span, "decision", "PROMOTED", required=self.tracing_required
             )
@@ -199,8 +265,9 @@ class PublicationCoordinator:
                 RuntimeWarning,
             )
 
-    def _record_incidents(self, run, definition, report) -> None:
+    def _record_incidents(self, run, definition, report):
         """Open incidents for failed critical checks without blocking publication."""
+        opened = []
         try:
             from skifer.observability.incidents import incidents_from_report
 
@@ -208,12 +275,16 @@ class PublicationCoordinator:
             for incident in incidents_from_report(
                 report, run_id=run.run_id, target_fqn=run.target_fqn, at=now
             ):
-                self.store.open_incident(incident)
+                opened_incident = self.store.open_incident(incident)
+                if opened_incident is not None:
+                    opened.append(opened_incident)
         except Exception as exc:
             warnings.warn(
                 f"[Incidents] failed to open incident(s): {type(exc).__name__}",
                 RuntimeWarning,
             )
+            return opened
+        return opened
 
     def _resolve_recovered(self, run) -> None:
         """Resolve open incidents as recovered without blocking publication."""
@@ -244,9 +315,10 @@ def start_publication_run(target_fqn: str, definition: ContractDefinition, store
     prefix = parts[:1] if len(parts) == 3 else []
     staging = ".".join(prefix + ["_skifer_staging", f"{parts[-1]}_{run_id.replace('-', '')}"])
     run = PublicationRun(run_id, target_fqn, staging, RunState.STARTED)
+    store.register_contract(definition)
     store.append_run_event(RunEvent(f"{run_id}:STARTED", run_id, target_fqn, run.state.value,
                                     definition.contract_id, definition.contract_version, definition.definition_hash,
-                                    datetime.now(timezone.utc), target_fqn=target_fqn, staging_fqn=staging))
+                                    next_run_event_time(store, run_id), target_fqn=target_fqn, staging_fqn=staging))
     return run
 
 
@@ -254,10 +326,10 @@ def stage_dataframe(backend, run: PublicationRun, definition: ContractDefinition
     """Persist STAGING/STAGED transitions around one exact staging write."""
     for state in (RunState.STAGING, RunState.STAGED):
         if state is RunState.STAGING:
-            store.append_run_event(RunEvent(f"{run.run_id}:STAGING", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, datetime.now(timezone.utc), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
+            store.append_run_event(RunEvent(f"{run.run_id}:STAGING", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, next_run_event_time(store, run.run_id), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
             backend.write_staging(df, run.staging_fqn)
         else:
-            store.append_run_event(RunEvent(f"{run.run_id}:STAGED", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, datetime.now(timezone.utc), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
+            store.append_run_event(RunEvent(f"{run.run_id}:STAGED", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, next_run_event_time(store, run.run_id), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
     return PublicationRun(run.run_id, run.target_fqn, run.staging_fqn, RunState.STAGED)
 
 
@@ -278,7 +350,7 @@ def promote_staging(backend, run: PublicationRun, definition: ContractDefinition
             f"Cannot promote run {run.run_id}: recorded critical check failures block promotion."
         )
     for state in (RunState.PROMOTING, RunState.PROMOTED):
-        store.append_run_event(RunEvent(f"{run.run_id}:{state.value}", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, datetime.now(timezone.utc), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
+        store.append_run_event(RunEvent(f"{run.run_id}:{state.value}", run.run_id, run.target_fqn, state.value, definition.contract_id, definition.contract_version, definition.definition_hash, next_run_event_time(store, run.run_id), target_fqn=run.target_fqn, staging_fqn=run.staging_fqn))
         if state is RunState.PROMOTING:
             backend.write_table(backend.read_staging(run.staging_fqn), run.target_fqn)
     backend.drop_staging(run.staging_fqn)

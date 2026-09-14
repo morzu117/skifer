@@ -117,6 +117,7 @@ def index_from_path(
     *,
     target_fqn: str | None = None,
     last_run_id: str | None = None,
+    classification_mode: str | None = None,
 ) -> bool:
     """Load one pipeline YAML with sentinel params, build a record, and upsert it."""
     yaml_path = Path(path)
@@ -132,6 +133,14 @@ def index_from_path(
         target_fqn=target_fqn,
         last_run_id=last_run_id,
     )
+    if classification_mode is not None:
+        from skifer.core.patterns import _inherit_registry_classifications
+
+        record = _inherit_registry_classifications(
+            store,
+            record,
+            mode=classification_mode,
+        )
     return upsert_index_record(store, record)
 
 

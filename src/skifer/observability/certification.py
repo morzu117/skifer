@@ -9,6 +9,7 @@ import re
 
 from skifer.core.constants import CLASSIFICATION_RANK
 from skifer.core.ir import ParsedSchema
+from skifer.core.ir import ParsedOutputField, ParsedSla
 from skifer.observability.checks import FreshnessCheck
 
 
@@ -121,6 +122,52 @@ def canonicalize_contract(schema: ParsedSchema) -> ContractDefinition:
         owner=schema.data_product.owner_label,
         created_at=datetime.now(timezone.utc),
     )
+
+
+def schema_from_definition(definition: ContractDefinition) -> ParsedSchema:
+    """Rebuild the contract fields needed for governance comparisons."""
+    try:
+        payload = json.loads(definition.canonical_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("Contract definition canonical JSON must be valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Contract definition payload must be an object.")
+    contract = payload.get("contract")
+    if not isinstance(contract, dict) or not isinstance(contract.get("output"), list):
+        raise ValueError("Contract definition must contain a contract.output list.")
+
+    output = []
+    for index, field in enumerate(contract["output"]):
+        if not isinstance(field, dict):
+            raise ValueError(f"Contract output field at index {index} must be an object.")
+        name = field.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(
+                f"Contract output field at index {index} must have a non-empty string name."
+            )
+        output.append(
+            ParsedOutputField(
+                name=name,
+                logical_type=field.get("logical_type"),
+                required=field.get("required"),
+                unique=field.get("unique"),
+                classification=field.get("classification"),
+                entity=field.get("entity"),
+            )
+        )
+
+    raw_sla = contract.get("sla")
+    if raw_sla is not None and not isinstance(raw_sla, dict):
+        raise ValueError("Contract definition contract.sla must be an object or null.")
+    sla = (
+        ParsedSla(
+            refresh_frequency=raw_sla.get("refresh_frequency"),
+            max_latency=raw_sla.get("max_latency"),
+        )
+        if raw_sla is not None
+        else None
+    )
+    return ParsedSchema(contract_output=output, contract_sla=sla)
 
 
 def diff_contracts(a: ParsedSchema, b: ParsedSchema) -> ContractDiff:

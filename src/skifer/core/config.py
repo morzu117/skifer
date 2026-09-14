@@ -205,6 +205,84 @@ class ConfigurationManager:
                                 f"'{env_name}': {policy!r}. Expected one of "
                                 f"{sorted(valid_policies)}."
                             )
+                    if "classification_propagation" in env_config:
+                        propagation = env_config["classification_propagation"]
+                        valid_propagation = {"warn", "strict"}
+                        if (
+                            not isinstance(propagation, str)
+                            or propagation not in valid_propagation
+                        ):
+                            raise ValueError(
+                                "Invalid classification_propagation for environment "
+                                f"'{env_name}': {propagation!r}. Expected one of "
+                                f"{sorted(valid_propagation)}."
+                            )
+                    if "alerts" in env_config:
+                        alerts = env_config["alerts"]
+                        if not isinstance(alerts, dict):
+                            raise ValueError(
+                                f"Invalid alerts for environment '{env_name}': "
+                                "alerts must be a mapping."
+                            )
+                        allowed_alert_keys = {
+                            "webhook_url",
+                            "slack_webhook",
+                            "msteams_webhook",
+                            "google_chat_webhook",
+                            "email",
+                            "min_severity",
+                            "max_depth",
+                        }
+                        for alert_key in alerts:
+                            if alert_key not in allowed_alert_keys:
+                                raise ValueError(
+                                    f"Invalid alerts for environment '{env_name}': "
+                                    f"unknown key {alert_key!r}."
+                                )
+                        webhook_keys = {
+                            "webhook_url",
+                            "slack_webhook",
+                            "msteams_webhook",
+                            "google_chat_webhook",
+                        }
+                        for webhook_key in webhook_keys:
+                            if webhook_key in alerts and (
+                                not isinstance(alerts[webhook_key], str)
+                                or not alerts[webhook_key]
+                            ):
+                                raise ValueError(
+                                    f"Invalid alerts.{webhook_key} for environment "
+                                    f"'{env_name}': expected a non-empty string."
+                                )
+                        if "email" in alerts and not isinstance(alerts["email"], dict):
+                            raise ValueError(
+                                f"Invalid alerts.email for environment '{env_name}': "
+                                "expected a mapping."
+                            )
+                        if "min_severity" in alerts:
+                            severity = alerts["min_severity"]
+                            valid_severities = {"info", "warning", "critical"}
+                            if (
+                                not isinstance(severity, str)
+                                or severity not in valid_severities
+                            ):
+                                raise ValueError(
+                                    f"Invalid alerts.min_severity for environment "
+                                    f"'{env_name}': {severity!r}. Expected one of "
+                                    f"{sorted(valid_severities)}."
+                                )
+                        if "max_depth" in alerts:
+                            max_depth = alerts["max_depth"]
+                            if (
+                                isinstance(max_depth, bool)
+                                or not isinstance(max_depth, int)
+                                or max_depth < 0
+                            ):
+                                raise ValueError(
+                                    f"Invalid alerts.max_depth for environment "
+                                    f"'{env_name}': expected an integer greater than "
+                                    "or equal to 0."
+                                )
                     if "capability_autonomy" in env_config:
                         autonomy = env_config["capability_autonomy"]
                         if autonomy not in {"shadow", "supervised"}:

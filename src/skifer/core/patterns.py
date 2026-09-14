@@ -9,11 +9,59 @@ from __future__ import annotations
 import logging
 import os
 from typing import TYPE_CHECKING, Any
+import warnings
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _build_alert_router(e):
+    try:
+        config = e.context.alerts_config()
+        if not isinstance(config, dict):
+            config = {}
+        channel_keys = (
+            "webhook_url",
+            "slack_webhook",
+            "msteams_webhook",
+            "google_chat_webhook",
+            "email",
+        )
+        if not any(config.get(key) for key in channel_keys):
+            return None, {}
+
+        from skifer.observability.alerts import AlertDispatcher
+        from skifer.observability.incidents import AlertRouter, MetadataStoreGovernance
+
+        metadata_store = getattr(e, "metadata_store", None)
+        governance = (
+            MetadataStoreGovernance(metadata_store)
+            if metadata_store is not None
+            else object()
+        )
+        max_depth = config.get("max_depth", 3)
+        if (
+            not isinstance(max_depth, int)
+            or isinstance(max_depth, bool)
+            or max_depth < 0
+        ):
+            max_depth = 3
+        return (
+            AlertRouter(
+                governance,
+                AlertDispatcher(),
+                max_depth=max_depth,
+            ),
+            config,
+        )
+    except Exception as exc:
+        warnings.warn(
+            f"[Alerts] failed to build alert router: {type(exc).__name__}",
+            RuntimeWarning,
+        )
+        return None, {}
 
 
 class PipelinePatterns:
@@ -76,6 +124,39 @@ class PipelinePatterns:
                     "Schema declares 'data_product' but SkiferEngine was built without "
                     "certification_store and/or monitor — pass both to enable certified publication."
                 )
+            if e.context.classification_propagation() == "strict":
+                store = getattr(e, "metadata_store", None)
+                if store is None:
+                    raise ValueError(
+                        "classification_propagation: strict requires "
+                        "SkiferEngine(metadata_store=...) — without a metadata registry "
+                        "no source classification can be checked."
+                    )
+                from skifer.lineage.classification import ClassificationViolationError
+                from skifer.lineage.tracker import LineageGraph
+                from skifer.observability.metadata_index import index_schema
+
+                record = index_schema(
+                    schema_dict,
+                    _schema_path_hint(schema_dict, fqn),
+                    target_fqn=fqn,
+                )
+                try:
+                    _inherit_registry_classifications(store, record, mode="strict")
+                except ClassificationViolationError as exc:
+                    graph = LineageGraph.from_dict(record.lineage)
+                    target_column = exc.column
+                    sources = sorted(
+                        {
+                            f"{edge.source_table}.{edge.source_column}"
+                            for edge in graph.upstream(record.target_fqn, target_column)
+                        }
+                    )
+                    raise ClassificationViolationError(
+                        f"Classification violation for target column '{target_column}' "
+                        f"from upstream source(s): {', '.join(sources)}. {exc}",
+                        column=target_column,
+                    ) from exc
 
         # Materialized view (Plan 28): defined by SQL, so the DataFrame pipeline
         # is short-circuited entirely — no source is ever read here.
@@ -126,11 +207,14 @@ class PipelinePatterns:
             from skifer.observability.publication import PublicationCoordinator
 
             definition = canonicalize_contract(parse_to_ir(schema_dict))
+            alert_router, alert_config = _build_alert_router(e)
             coordinator = PublicationCoordinator(
                 e._get_backend(),
                 e.monitor,
                 e.certification_store,
                 metadata_store=getattr(e, "metadata_store", None),
+                alert_router=alert_router,
+                alert_config=alert_config,
             )
             # Same identity from the pipeline down to the certification record,
             # so the link survives without exported traces (Plan 29).
@@ -204,6 +288,14 @@ class PipelinePatterns:
                 "streaming pivot table, then N downstream streaming pipelines each "
                 "filtering their slice (filter is stream-safe, one checkpoint per branch)."
             )
+        if schema_dict.get("data_product") is not None:
+            raise NotImplementedError(
+                "run_process_and_split does not support certified publication — the schema "
+                "declares 'data_product', which must be staged, checked and promoted or "
+                "quarantined. Use run_process_to_table (or run_from_yaml) for a data product; "
+                "publish one certified table per slice (one schema per slice, each with its "
+                "own filter), or split downstream of the certified table."
+            )
 
         logger.info(
             "--- Executing Pattern: process_and_split (Base: %s, Column: %s) ---",
@@ -271,6 +363,14 @@ class PipelinePatterns:
                 "run_union_sources_to_table does not support streaming schemas — "
                 "multi-source streaming union is a materialized-table use case "
                 "(planned for a later plan)."
+            )
+        if schema_dict.get("data_product") is not None:
+            raise NotImplementedError(
+                "run_union_sources_to_table does not support certified publication — the "
+                "schema declares 'data_product', which must be staged, checked and promoted "
+                "or quarantined. Use run_process_to_table (or run_from_yaml) for a data "
+                "product; list the sources explicitly in 'tables:' and publish with "
+                "run_process_to_table."
             )
 
         actual_schema_source = e.get_target_schema(source_layer)
@@ -367,7 +467,9 @@ def _index_promoted_metadata(e: Any, schema_dict: dict, fqn: str, run_id: str) -
         logger.warning("   -> [Metadata] SYNC_ERROR indexing skipped (non-blocking): %s", exc)
 
 
-def _inherit_registry_classifications(store: Any, record: Any) -> Any:
+def _inherit_registry_classifications(
+    store: Any, record: Any, *, mode: str = "warn"
+) -> Any:
     """Enrich undeclared output classifications from indexed source columns."""
     from dataclasses import replace
 
@@ -418,7 +520,7 @@ def _inherit_registry_classifications(store: Any, record: Any) -> Any:
                 record.target_fqn,
                 {},
                 source_classifications,
-                mode="warn",
+                mode=mode,
             )
         )
 

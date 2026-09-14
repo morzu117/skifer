@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import yaml
+import json
+import pytest
 
 from skifer.core.ir import parse_to_ir
 from skifer.core.schema_loader import parse_schema
 from skifer.observability.certification import diff_contracts
+from skifer.observability.certification import ContractDefinition
+from skifer.observability.certification import canonicalize_contract, schema_from_definition
 
 
 def _schema(fields: dict, *, sla: dict | None = None):
@@ -156,3 +160,61 @@ def test_diff_sla_non_comparable_is_breaking():
 
     assert diff.sla_changed is True
     assert diff.breaking is True
+
+
+def test_contract_definition_round_trip_preserves_diff_fields_and_sla():
+    schema = _schema(
+        {
+            "customer_id": {
+                "logical_type": "identifier",
+                "required": True,
+                "unique": True,
+                "classification": "confidential",
+                "entity": "customer",
+            },
+            "amount": {
+                "logical_type": "currency",
+                "required": False,
+                "unique": False,
+                "classification": "internal",
+            },
+        },
+        sla={"refresh_frequency": "daily", "max_latency": "12h"},
+    )
+
+    restored = schema_from_definition(canonicalize_contract(schema))
+    diff = diff_contracts(schema, restored)
+
+    assert restored.contract_output == schema.contract_output
+    assert restored.contract_sla == schema.contract_sla
+    assert diff.added == ()
+    assert diff.removed == ()
+    assert diff.retyped == ()
+    assert diff.required_changed == ()
+    assert diff.classification_changed == ()
+    assert diff.sla_changed is False
+    assert diff.breaking is False
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ([], "payload must be an object"),
+        ({}, "contract.output list"),
+        ({"contract": {}}, "contract.output list"),
+        ({"contract": {"output": [{}]}}, "non-empty string name"),
+        ({"contract": {"output": [{"name": ""}]}}, "non-empty string name"),
+    ],
+)
+def test_schema_from_definition_refuses_malformed_payloads(payload, message):
+    definition = ContractDefinition(
+        "sales.orders",
+        "1.0.0",
+        "hash",
+        json.dumps(payload),
+        "sales.orders",
+        None,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        schema_from_definition(definition)

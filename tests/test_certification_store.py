@@ -7,6 +7,7 @@ import pytest
 from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification_store import (
     DeltaCertificationStore, RunEvent, SqliteCertificationStore, StoredCheckResult,
+    next_run_event_time,
 )
 from skifer.observability.checks import CheckStatus, ContractScope
 from skifer.observability.incidents import Incident, IncidentStatus
@@ -90,6 +91,20 @@ def test_sqlite_get_contract_refuses_ambiguous_version():
 
     with pytest.raises(ValueError, match="ambiguous"):
         store.get_contract("sales.orders", "1.0.0")
+
+
+def test_sqlite_get_contract_by_hash_disambiguates_version_and_returns_none():
+    store = SqliteCertificationStore(":memory:")
+    definition_a = _contract_definition("hash-a")
+    definition_b = _contract_definition("hash-b")
+    store.register_contract(definition_a)
+    store.register_contract(definition_b)
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        store.get_contract("sales.orders", "1.0.0")
+
+    assert store.get_contract_by_hash("sales.orders", "hash-b") == definition_b
+    assert store.get_contract_by_hash("sales.orders", "missing") is None
 
 
 def test_sqlite_run_events_are_append_only_and_idempotent():
@@ -299,6 +314,27 @@ def test_delta_get_contract_delegates_and_rebuilds_definition():
     assert result == definition
 
 
+def test_delta_get_contract_by_hash_delegates_and_rebuilds_definition():
+    definition = _contract_definition("definition-hash")
+
+    class Backend:
+        def get_certification_contract_by_hash(
+            self, schema, contract_id, definition_hash
+        ):
+            assert (schema, contract_id, definition_hash) == (
+                "_skifer_certification",
+                "sales.orders",
+                "definition-hash",
+            )
+            return DeltaCertificationStore._row(definition)
+
+    result = DeltaCertificationStore(Backend()).get_contract_by_hash(
+        "sales.orders", "definition-hash"
+    )
+
+    assert result == definition
+
+
 def test_delta_get_certification_returns_certified_after_promoted_run():
     class Backend:
         def __init__(self): self.rows = []
@@ -427,3 +463,63 @@ def test_uc_mirror_is_non_sensitive_and_permission_failure_is_non_blocking():
         def execute_sql(self, sql): raise PermissionError("denied")
     result = mirror_certification(Backend(), "main.gold.orders", Certification("sales.orders", "agent", "CERTIFIED", "1.0.0", "hash", None), "team")
     assert result.status == "SYNC_ERROR"
+
+
+def test_next_run_event_time_returns_now_without_previous_event():
+    now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    store = SqliteCertificationStore(":memory:")
+
+    assert next_run_event_time(store, "run-1", now) == now
+
+
+def test_next_run_event_time_advances_one_microsecond_when_clock_is_unchanged():
+    now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    store = SqliteCertificationStore(":memory:")
+    store.append_run_event(_run_event("evt-1", "run-1", "STARTED", now))
+
+    assert next_run_event_time(store, "run-1", now) == now.replace(microsecond=1)
+
+
+def test_next_run_event_time_uses_later_current_time():
+    previous = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    now = previous.replace(second=1)
+    store = SqliteCertificationStore(":memory:")
+    store.append_run_event(_run_event("evt-1", "run-1", "STARTED", previous))
+
+    assert next_run_event_time(store, "run-1", now) == now
+
+
+def test_next_run_event_time_coerces_naive_previous_time_to_utc():
+    previous = datetime(2026, 9, 13, 12, 0)
+    now = previous.replace(tzinfo=timezone.utc)
+    store = SqliteCertificationStore(":memory:")
+    store.append_run_event(_run_event("evt-1", "run-1", "STARTED", previous))
+
+    assert next_run_event_time(store, "run-1", now) == now.replace(microsecond=1)
+
+
+def test_sqlite_get_run_breaks_identical_timestamp_ties_by_insertion_order():
+    occurred_at = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    store = SqliteCertificationStore(":memory:")
+    for index, state in enumerate(("STARTED", "STAGING", "STAGED")):
+        store.append_run_event(_run_event(f"evt-{index}", "run-1", state, occurred_at))
+
+    assert store.get_run("run-1").state == "STAGED"
+
+
+def test_sqlite_latest_promoted_breaks_identical_timestamp_ties_by_insertion_order():
+    occurred_at = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    store = SqliteCertificationStore(":memory:")
+    store.append_run_event(_run_event("evt-1", "run-1", "PROMOTED", occurred_at))
+    store.append_run_event(_run_event("evt-2", "run-2", "PROMOTED", occurred_at))
+
+    assert store.get_latest_promoted("sales.orders").run_id == "run-2"
+
+
+def test_sqlite_history_breaks_identical_timestamp_ties_by_insertion_order():
+    occurred_at = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    store = SqliteCertificationStore(":memory:")
+    store.append_run_event(_run_event("evt-1", "run-1", "PROMOTED", occurred_at))
+    store.append_run_event(_run_event("evt-2", "run-2", "PROMOTED", occurred_at))
+
+    assert [event.run_id for event in store.list_history("sales.orders")] == ["run-2", "run-1"]

@@ -294,6 +294,22 @@ class SparkBackend:
             )
         return rows[0].asDict(recursive=True) if rows else None
 
+    def get_certification_contract_by_hash(
+        self, schema: str, contract_id: str, definition_hash: str
+    ) -> dict | None:
+        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        plain = f"{schema}.contract_definitions"
+        if not self._spark.catalog.tableExists(plain):
+            return None
+        escaped_id = escape_sql_string(contract_id)
+        escaped_hash = escape_sql_string(definition_hash)
+        rows = self._spark.sql(
+            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('contract_definitions')} "
+            f"WHERE {quote_ident('contract_id')} = '{escaped_id}' "
+            f"AND {quote_ident('definition_hash')} = '{escaped_hash}' LIMIT 1"
+        ).collect()
+        return rows[0].asDict(recursive=True) if rows else None
+
     def append_certification_run(self, schema: str, row: dict) -> None:
         self._append_certification(schema, "materialization_runs", row, "event_id")
 

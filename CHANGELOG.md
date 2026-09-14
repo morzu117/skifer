@@ -8,8 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- `run_process_and_split` and `run_union_sources_to_table` now refuse schemas declaring `data_product` before any processing, reads, or writes, directing certified publication through `run_process_to_table` or `run_from_yaml`. (Plan 35.5)
+
 ### Fixed
 
+- Reserved index exit code 3 for classification violations via `ClassificationViolationError`.
+- Made certified-publication run events strictly ordered within each run and
+  deterministic under identical SQLite timestamps.
 - Cached preview DataFrames across exact counting and bounded collection, made
   service lineage share one lazy memoized metadata-registry graph, and added
   real local Delta coverage for Spark-backed incident persistence and escaping.
@@ -22,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Documented publication alert routing and the warn-to-strict classification
+  propagation migration path.
+- Added fail-closed strict classification propagation before certified writes
+  and to `skifer index --strict`, while preserving warning-only defaults.
+- Routed certified-publication quarantine incidents and breaking contract changes
+  through configured best-effort alert channels and governed metadata recipients.
+- Registered contract definitions before certified publication starts and added
+  hash-addressed definition lookup for governance comparisons.
+- Added validated per-environment `alerts` and `classification_propagation`
+  settings with runtime context accessors.
 - **Plan 31 (6.2)** — CLI `skifer api serve --project DIR [--port]` (fixed
   loopback bind and lazy imports) and `skifer api openapi` (deterministic JSON
   export). Added a Spark-free `/health` check and a normalized OpenAPI contract

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 from typing import Protocol, Sequence
@@ -25,6 +25,17 @@ class RunEvent:
     target_fqn: str | None = None
     staging_fqn: str | None = None
     quarantine_fqn: str | None = None
+
+
+def next_run_event_time(store, run_id: str, now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    previous = store.get_run(run_id)
+    if previous is None:
+        return now
+    occurred_at = previous.occurred_at
+    if occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+    return max(now, occurred_at + timedelta(microseconds=1))
 
 
 @dataclass(frozen=True)
@@ -54,6 +65,9 @@ class Certification:
 class CertificationStore(Protocol):
     def register_contract(self, definition: ContractDefinition) -> None: ...
     def get_contract(self, contract_id: str, version: str) -> ContractDefinition | None: ...
+    def get_contract_by_hash(
+        self, contract_id: str, definition_hash: str
+    ) -> ContractDefinition | None: ...
     def append_run_event(self, event: RunEvent) -> None: ...
     def append_check_results(self, results: Sequence[StoredCheckResult]) -> None: ...
     def get_check_results(self, run_id: str) -> list[StoredCheckResult]: ...
@@ -241,6 +255,21 @@ class SqliteCertificationStore:
             raise ValueError("Stored contract payload must be an object.")
         return _contract_definition_from_row(payload)
 
+    def get_contract_by_hash(
+        self, contract_id: str, definition_hash: str
+    ) -> ContractDefinition | None:
+        row = self._conn.execute(
+            "SELECT payload FROM contract_definitions "
+            "WHERE contract_id = ? AND definition_hash = ? LIMIT 1",
+            (contract_id, definition_hash),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row[0])
+        if not isinstance(payload, dict):
+            raise ValueError("Stored contract payload must be an object.")
+        return _contract_definition_from_row(payload)
+
     def append_run_event(self, event: RunEvent) -> None:
         self._conn.execute(
             "INSERT OR IGNORE INTO materialization_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -261,7 +290,7 @@ class SqliteCertificationStore:
     def get_run(self, run_id: str) -> RunEvent | None:
         row = self._conn.execute(
             "SELECT event_id, run_id, dataset, state, contract_id, contract_version, definition_hash, occurred_at, target_fqn, staging_fqn, quarantine_fqn "
-            "FROM materialization_runs WHERE run_id = ? ORDER BY occurred_at DESC LIMIT 1", (run_id,)
+            "FROM materialization_runs WHERE run_id = ? ORDER BY occurred_at DESC, rowid DESC LIMIT 1", (run_id,)
         ).fetchone()
         if row is None:
             return None
@@ -270,7 +299,7 @@ class SqliteCertificationStore:
     def get_latest_promoted(self, dataset: str) -> RunEvent | None:
         row = self._conn.execute(
             "SELECT event_id, run_id, dataset, state, contract_id, contract_version, definition_hash, occurred_at, target_fqn, staging_fqn, quarantine_fqn "
-            "FROM materialization_runs WHERE dataset = ? AND state = 'PROMOTED' ORDER BY occurred_at DESC LIMIT 1", (dataset,)
+            "FROM materialization_runs WHERE dataset = ? AND state = 'PROMOTED' ORDER BY occurred_at DESC, rowid DESC LIMIT 1", (dataset,)
         ).fetchone()
         return _run_event_from_row(row) if row else None
 
@@ -290,7 +319,7 @@ class SqliteCertificationStore:
 
     def list_history(self, dataset: str, limit: int = 50) -> list[RunEvent]:
         rows = self._conn.execute(
-            "SELECT event_id, run_id, dataset, state, contract_id, contract_version, definition_hash, occurred_at, target_fqn, staging_fqn, quarantine_fqn FROM materialization_runs WHERE dataset = ? ORDER BY occurred_at DESC LIMIT ?",
+            "SELECT event_id, run_id, dataset, state, contract_id, contract_version, definition_hash, occurred_at, target_fqn, staging_fqn, quarantine_fqn FROM materialization_runs WHERE dataset = ? ORDER BY occurred_at DESC, rowid DESC LIMIT ?",
             (dataset, limit),
         ).fetchall()
         return [_run_event_from_row(row) for row in rows]
@@ -459,6 +488,14 @@ class DeltaCertificationStore:
 
     def get_contract(self, contract_id: str, version: str) -> ContractDefinition | None:
         row = self.backend.get_certification_contract(self.schema, contract_id, version)
+        return _contract_definition_from_row(row) if row else None
+
+    def get_contract_by_hash(
+        self, contract_id: str, definition_hash: str
+    ) -> ContractDefinition | None:
+        row = self.backend.get_certification_contract_by_hash(
+            self.schema, contract_id, definition_hash
+        )
         return _contract_definition_from_row(row) if row else None
 
     def append_run_event(self, event: RunEvent) -> None:

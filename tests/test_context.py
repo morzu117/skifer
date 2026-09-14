@@ -93,3 +93,43 @@ def test_is_production_resolves_for_uppercase_keys():
 def test_is_production_defaults_false_when_absent():
     ctx = _ctx(env_block={"catalog": "c"})
     assert ctx.is_production is False
+
+
+def test_governance_wiring_accessors_default_when_absent():
+    ctx = _ctx(env_block={"catalog": "c"})
+
+    assert ctx.alerts_config() == {}
+    assert ctx.classification_propagation() == "warn"
+
+
+def test_governance_wiring_accessors_return_configured_values():
+    alerts = {
+        "slack_webhook": "https://example.test/slack",
+        "min_severity": "critical",
+        "max_depth": 2,
+    }
+    ctx = _ctx(
+        env_block={
+            "catalog": "c",
+            "alerts": alerts,
+            "classification_propagation": "strict",
+        }
+    )
+
+    assert ctx.alerts_config() == alerts
+    assert ctx.classification_propagation() == "strict"
+
+
+def test_governance_wiring_accessors_match_environment_case_insensitively():
+    config = {
+        "environments": {
+            "dev": {
+                "alerts": {"min_severity": "info"},
+                "classification_propagation": "strict",
+            }
+        }
+    }
+    ctx = ExecutionContext(env="DEV", db="c", config=config)
+
+    assert ctx.alerts_config() == {"min_severity": "info"}
+    assert ctx.classification_propagation() == "strict"

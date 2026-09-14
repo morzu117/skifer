@@ -84,6 +84,15 @@ _SUCCESS
 /.gbrain-source
 # gbrain `put` write-through mirror files (page-id contains a colon)
 *:*.md
+# même miroir quand l'id de page utilise des / (les : sont refusés sous Windows)
+/skifer/
+# outillage local des agents : codegraph (Claude Code) et config/hooks écrits par Codex
+/.claude/
+/.codex/
+# donnée dérivée, reconstructible à l'identique par `codegraph init`
+/.codegraph/
+# config MCP du projet (index structurel) : commitée pour que les worktrees l'aient
+!/.mcp.json
 
 # MkDocs generated site
 /site/

@@ -57,6 +57,75 @@ def _certified_schema(**overrides):
     return schema
 
 
+def test_run_process_and_split_refuses_data_product_before_engine_work():
+    engine, backend, patterns = _make_patterns_engine()
+
+    with pytest.raises(NotImplementedError, match="data_product.*run_process_to_table"):
+        patterns.run_process_and_split(
+            schema_dict=_certified_schema(),
+            split_values=[{"label": "fr", "value": "FR"}],
+            target_layer="gold",
+            target_base_name="orders",
+            split_column="country",
+        )
+
+    engine.process_schema.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+
+
+def test_run_union_sources_to_table_refuses_data_product_before_engine_work():
+    engine, backend, patterns = _make_patterns_engine()
+
+    with pytest.raises(NotImplementedError, match="data_product"):
+        patterns.run_union_sources_to_table(
+            schema_dict=_certified_schema(),
+            source_partitions=[{"label": "fr"}],
+            source_layer="silver",
+            target_layer="gold",
+            target_table_name="orders",
+            source_base_names=["orders"],
+            source_alias="unioned",
+        )
+
+    backend.table_exists.assert_not_called()
+    backend.read_table.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine.process_schema.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+
+
+def test_run_process_and_split_without_data_product_reaches_normal_flow():
+    engine, backend, patterns = _make_patterns_engine()
+
+    patterns.run_process_and_split(
+        schema_dict={"tables": []},
+        split_values=[],
+        target_layer="gold",
+        target_base_name="orders",
+        split_column="country",
+    )
+
+    engine.process_schema.assert_called_once_with({"tables": []})
+
+
+def test_run_union_sources_to_table_without_data_product_reaches_normal_flow():
+    engine, backend, patterns = _make_patterns_engine(table_exists_map={"orders_fr": False})
+
+    with pytest.raises(ValueError, match="No sources found"):
+        patterns.run_union_sources_to_table(
+            schema_dict={"tables": []},
+            source_partitions=[{"label": "fr"}],
+            source_layer="silver",
+            target_layer="gold",
+            target_table_name="orders",
+            source_base_names=["orders"],
+            source_alias="unioned",
+        )
+
+    backend.table_exists.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # B.4 — absent table is silently skipped, warning emitted
 # ---------------------------------------------------------------------------
@@ -264,7 +333,65 @@ def test_run_process_to_table_certified_schema_uses_publication_coordinator():
         patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
 
     coordinator.return_value.publish.assert_called_once()
+    assert coordinator.call_args.kwargs["alert_router"] is None
+    assert coordinator.call_args.kwargs["alert_config"] == {}
     engine._write_dataframe.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        "not-a-mapping",
+        {},
+        {"max_depth": 5, "min_severity": "critical"},
+    ],
+)
+def test_build_alert_router_requires_mapping_with_truthy_channel(config):
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.context.alerts_config.return_value = config
+
+    router, alert_config = _build_alert_router(engine)
+
+    assert router is None
+    assert alert_config == {}
+
+
+def test_build_alert_router_uses_configured_max_depth():
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.metadata_store = None
+    config = {
+        "slack_webhook": "https://alerts.example.test/hook",
+        "max_depth": 7,
+        "min_severity": "warning",
+    }
+    engine.context.alerts_config.return_value = config
+
+    router, alert_config = _build_alert_router(engine)
+
+    assert router is not None
+    assert router._max_depth == 7
+    assert alert_config == config
+
+
+def test_build_alert_router_failure_is_non_blocking_and_redacted():
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.context.alerts_config.side_effect = RuntimeError("secret config value")
+
+    with pytest.warns(RuntimeWarning) as caught:
+        router, alert_config = _build_alert_router(engine)
+
+    assert router is None
+    assert alert_config == {}
+    assert [str(item.message) for item in caught] == [
+        "[Alerts] failed to build alert router: RuntimeError"
+    ]
 
 
 def test_promoted_publication_indexes_metadata_and_attaches_latest_run_id():
@@ -345,6 +472,148 @@ def test_promoted_publication_inherits_upstream_pii_classification():
     assert record is not None
     assert record.columns[0].name == "email_hash"
     assert record.columns[0].classification == "pii"
+
+
+def test_strict_classification_rejects_before_processing_and_names_lineage_source():
+    from skifer.lineage.classification import ClassificationViolationError
+    from skifer.observability.metadata_store import (
+        ColumnRecord,
+        DatasetRecord,
+        SqliteMetadataStore,
+    )
+
+    engine, backend, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "strict"
+    store = SqliteMetadataStore(":memory:")
+    engine.metadata_store = store
+    store.upsert(DatasetRecord(
+        target_fqn="silver.orders",
+        pipeline_path="upstream.yaml",
+        data_product_id="sales.raw_orders",
+        contract_version="1.0.0",
+        definition_hash="upstream-hash",
+        owner=None,
+        columns=(ColumnRecord("email", classification="pii"),),
+        indexed_at=datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc),
+    ))
+    schema = _certified_schema(
+        contract={
+            "output": {
+                "email_hash": {"logical_type": "string", "required": True},
+            },
+        },
+        select_final=[["email", "email_hash", ["upper"]]],
+    )
+
+    with pytest.raises(ClassificationViolationError) as caught:
+        patterns.run_process_to_table(schema, "gold", "fact_orders")
+
+    assert "target column 'email_hash'" in str(caught.value)
+    assert "silver.orders.email" in str(caught.value)
+    engine.process_schema.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+    backend.write_table.assert_not_called()
+
+
+def test_strict_classification_preflight_propagates_technical_index_error():
+    class TechnicalIndexError(ValueError):
+        pass
+
+    engine, backend, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "strict"
+    engine.metadata_store = MagicMock()
+
+    with patch(
+        "skifer.observability.metadata_index.index_schema",
+        side_effect=TechnicalIndexError("invalid dataset record"),
+    ):
+        with pytest.raises(TechnicalIndexError, match="invalid dataset record"):
+            patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    engine.process_schema.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+    backend.write_table.assert_not_called()
+
+
+def test_strict_classification_allows_declared_classification():
+    from skifer.observability.metadata_store import SqliteMetadataStore
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "strict"
+    engine.metadata_store = SqliteMetadataStore(":memory:")
+    schema = _certified_schema(
+        contract={
+            "output": {
+                "email_hash": {
+                    "logical_type": "string",
+                    "required": True,
+                    "classification": "pii",
+                },
+            },
+        },
+        select_final=[["email", "email_hash", ["upper"]]],
+    )
+    fqn = "`gold_schema`.`fact_orders`"
+    run = PublicationRun("run-new", fqn, "staging.fact_orders", RunState.PROMOTED)
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(schema, "gold", "fact_orders")
+
+    engine.process_schema.assert_called_once()
+    coordinator.return_value.publish.assert_called_once()
+
+
+def test_strict_classification_requires_metadata_store_before_processing():
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "strict"
+
+    with pytest.raises(
+        ValueError,
+        match="strict requires SkiferEngine\\(metadata_store=\\.\\.\\.\\)",
+    ):
+        patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    engine.process_schema.assert_not_called()
+    engine._ensure_schema_exists.assert_not_called()
+    engine._write_dataframe.assert_not_called()
+
+
+def test_warn_classification_without_metadata_store_keeps_publication_flow():
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    engine.context.classification_propagation.return_value = "warn"
+    run = PublicationRun(
+        "run-1",
+        "`gold_schema`.`fact_orders`",
+        "staging.fact_orders",
+        RunState.PROMOTED,
+    )
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    engine.process_schema.assert_called_once()
+    coordinator.return_value.publish.assert_called_once()
 
 
 def test_metadata_store_failure_does_not_fail_publication(caplog):
@@ -428,3 +697,79 @@ def test_run_process_to_table_certified_schema_raises_when_quarantined():
             patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
 
     engine._write_dataframe.assert_not_called()
+
+
+def test_certified_publication_wires_configured_alert_router():
+    from skifer.observability.monitor import MonitorReport
+    from skifer.observability.publication import PublicationResult, PublicationRun, RunState
+
+    engine, _, patterns = _make_patterns_engine()
+    engine.monitor = MagicMock()
+    engine.certification_store = MagicMock()
+    config = {
+        "slack_webhook": "https://alerts.example.test/hook",
+        "max_depth": 2,
+    }
+    engine.context.alerts_config.return_value = config
+    run = PublicationRun(
+        "run-1", "gold_schema.fact_orders", "staging.fact_orders", RunState.PROMOTED
+    )
+    result = PublicationResult(run, MonitorReport("staging.fact_orders", []), "PROMOTED")
+
+    with patch("skifer.observability.publication.PublicationCoordinator") as coordinator:
+        coordinator.return_value.publish.return_value = result
+        patterns.run_process_to_table(_certified_schema(), "gold", "fact_orders")
+
+    router = coordinator.call_args.kwargs["alert_router"]
+    assert router is not None
+    assert router._max_depth == 2
+    assert coordinator.call_args.kwargs["alert_config"] == config
+
+
+@pytest.mark.parametrize("max_depth", [None, True, -1])
+def test_build_alert_router_invalid_max_depth_defaults_to_three(max_depth):
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.metadata_store = None
+    engine.context.alerts_config.return_value = {
+        "slack_webhook": "https://alerts.example.test/hook",
+        "max_depth": max_depth,
+    }
+
+    router, _ = _build_alert_router(engine)
+
+    assert router is not None
+    assert router._max_depth == 3
+
+
+def test_alert_router_without_metadata_store_still_dispatches_to_channel():
+    from skifer.core.patterns import _build_alert_router
+
+    engine = MagicMock()
+    engine.metadata_store = None
+    config = {"slack_webhook": "https://alerts.example.test/hook"}
+    engine.context.alerts_config.return_value = config
+    dispatcher = MagicMock()
+    dispatcher.dispatch_incident.return_value = ["slack"]
+
+    with patch(
+        "skifer.observability.alerts.AlertDispatcher", return_value=dispatcher
+    ):
+        router, alert_config = _build_alert_router(engine)
+
+    incidents = [object()]
+    result = router.alert_incident(
+        None,
+        target_fqn="gold.orders",
+        incidents=incidents,
+        config=alert_config,
+    )
+
+    assert result == ["slack"]
+    dispatcher.dispatch_incident.assert_called_once_with(
+        target_fqn="gold.orders",
+        incidents=incidents,
+        recipients=[],
+        config=config,
+    )

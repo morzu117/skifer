@@ -1,0 +1,40 @@
+# Manifeste projet — résolu par /sync depuis ~/.agent-kernel
+#
+# Ne contient que les écarts. Tout le reste est détecté du repo ou hérité de
+# defaults.yml du noyau :
+#
+#   name/namespace       pyproject.toml
+#   languages            pyproject.toml
+#   memory.source        .gbrain-source
+#   commands, gates      pyproject.toml + AGENTS.md (repris verbatim)
+#   capabilities, models, guardrails, phases    defaults.yml
+
+kernel:
+  version: "v0.5.3"        # dernier tag connu bon ; swairm reste le canari sur main
+
+capabilities:
+  # Plan 35, décision D4 (2026-09-13) : fournisseurs distincts pour le dev et
+  # la review, la review Claude n'est plus un repli.
+  dev_agent: codex
+
+models:
+  # Consommés par l'adaptateur dev_agent. Un seul modèle Codex sur le poste ;
+  # la difficulté se route par `-c model_reasoning_effort=low|medium|high`.
+  trivial: gpt-5.6-sol
+  standard: gpt-5.6-sol
+  complex: gpt-5.6-sol
+
+stack:
+  produit: >
+    Framework déclaratif Spark/Databricks (Bronze → Silver → Gold).
+    YAML = le What ; règles Python du RuleRegistry = le How.
+  tests: >
+    ~2200 tests sans Spark (~27 s) + 182 sur une session Delta locale
+    réelle (fixture `spark`). LLM toujours mocké. examples/ est exécuté
+    par la suite.
+  workflow: >
+    Toute modif de src/ = test + entrée CHANGELOG [Unreleased]. Un point
+    de plan = un commit. Jamais de bump de version.
+  index: >
+    Flux de données piloté par YAML : le rayon d'impact de l'index est un
+    plancher, pas un périmètre.

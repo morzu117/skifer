@@ -12,6 +12,7 @@ from skifer.observability.incidents import (
     Incident,
     IncidentStatus,
     InvalidIncidentTransition,
+    MetadataStoreGovernance,
     incidents_from_report,
 )
 from skifer.observability.monitor import MonitorReport
@@ -462,3 +463,59 @@ def test_alert_breaking_only_on_breaking():
     assert alert.check_name == "breaking contract change"
     assert alert.from_version == "1.0.0"
     assert alert.to_version == "2.0.0"
+
+
+def test_metadata_store_governance_resolves_target_and_downstream_owners():
+    from skifer.lineage.tracker import LineageEdge, LineageGraph
+    from skifer.observability.metadata_store import (
+        ColumnRecord,
+        DatasetRecord,
+        SqliteMetadataStore,
+    )
+
+    graph = LineageGraph()
+    graph.add_edge(
+        LineageEdge(
+            "gold.orders",
+            "amount",
+            "mart.revenue",
+            "amount",
+        )
+    )
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    store = SqliteMetadataStore(":memory:")
+    store.upsert(
+        DatasetRecord(
+            target_fqn="gold.orders",
+            pipeline_path="gold/orders.yaml",
+            data_product_id="sales.orders",
+            contract_version="1.0.0",
+            definition_hash="orders-hash",
+            owner="orders@example.test",
+            columns=(ColumnRecord("amount"),),
+            indexed_at=now,
+            lineage=graph.to_dict(),
+        )
+    )
+    store.upsert(
+        DatasetRecord(
+            target_fqn="mart.revenue",
+            pipeline_path="mart/revenue.yaml",
+            data_product_id="finance.revenue",
+            contract_version="1.0.0",
+            definition_hash="revenue-hash",
+            owner="revenue@example.test",
+            columns=(ColumnRecord("amount"),),
+            indexed_at=now,
+        )
+    )
+
+    recipients = AlertRouter(
+        MetadataStoreGovernance(store),
+        _CapturingDispatcher(),
+    ).resolve_recipients(None, "gold.orders")
+
+    assert [(recipient.contact, recipient.source_fqn) for recipient in recipients] == [
+        ("orders@example.test", "gold.orders"),
+        ("revenue@example.test", "mart.revenue"),
+    ]
