@@ -7,8 +7,8 @@ from enum import Enum
 import re
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
-import warnings
 
+from skifer.observability.best_effort import warn_best_effort
 from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification import diff_contracts, schema_from_definition
 from skifer.observability.certification_store import RunEvent, StoredCheckResult, next_run_event_time
@@ -179,9 +179,8 @@ class PublicationCoordinator:
                                 config=self.alert_config,
                             )
                         except Exception as exc:
-                            warnings.warn(
-                                f"[Alerts] failed to alert incident: {type(exc).__name__}",
-                                RuntimeWarning,
+                            warn_best_effort(
+                                f"[Alerts] failed to alert incident: {type(exc).__name__}"
                             )
                 set_span_attribute(
                     span, "decision", "QUARANTINED", required=self.tracing_required
@@ -192,9 +191,8 @@ class PublicationCoordinator:
                 try:
                     previous = self.store.get_latest_promoted(run.target_fqn)
                 except Exception as exc:
-                    warnings.warn(
-                        f"[Alerts] failed to read previous publication: {type(exc).__name__}",
-                        RuntimeWarning,
+                    warn_best_effort(
+                        f"[Alerts] failed to read previous publication: {type(exc).__name__}"
                     )
             promoted = promote_staging(self.backend, run, definition, self.store)
             self._resolve_recovered(promoted)
@@ -228,9 +226,8 @@ class PublicationCoordinator:
                                 config=self.alert_config,
                             )
                 except Exception as exc:
-                    warnings.warn(
-                        f"[Alerts] failed to alert breaking change: {type(exc).__name__}",
-                        RuntimeWarning,
+                    warn_best_effort(
+                        f"[Alerts] failed to alert breaking change: {type(exc).__name__}"
                     )
             set_span_attribute(
                 span, "decision", "PROMOTED", required=self.tracing_required
@@ -312,9 +309,8 @@ class PublicationCoordinator:
                 record = replace(existing, last_run_id=run.run_id)
             upsert_index_record(self.metadata_store, record)
         except Exception as exc:
-            warnings.warn(
-                f"[Metadata] failed to index resumed publication: {type(exc).__name__}",
-                RuntimeWarning,
+            warn_best_effort(
+                f"[Metadata] failed to index resumed publication: {type(exc).__name__}"
             )
 
     def _record_incidents(self, run, definition, report):
@@ -331,9 +327,8 @@ class PublicationCoordinator:
                 if opened_incident is not None:
                     opened.append(opened_incident)
         except Exception as exc:
-            warnings.warn(
-                f"[Incidents] failed to open incident(s): {type(exc).__name__}",
-                RuntimeWarning,
+            warn_best_effort(
+                f"[Incidents] failed to open incident(s): {type(exc).__name__}"
             )
             return opened
         return opened
@@ -347,9 +342,8 @@ class PublicationCoordinator:
                 resolved_at=datetime.now(timezone.utc),
             )
         except Exception as exc:
-            warnings.warn(
-                f"[Incidents] failed to resolve incidents: {type(exc).__name__}",
-                RuntimeWarning,
+            warn_best_effort(
+                f"[Incidents] failed to resolve incidents: {type(exc).__name__}"
             )
 
 

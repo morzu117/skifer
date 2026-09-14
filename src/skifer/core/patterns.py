@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import os
 from typing import TYPE_CHECKING, Any
-import warnings
+
+from skifer.observability.best_effort import warn_best_effort
 
 if TYPE_CHECKING:
     pass
@@ -57,9 +58,8 @@ def _build_alert_router(e):
             config,
         )
     except Exception as exc:
-        warnings.warn(
-            f"[Alerts] failed to build alert router: {type(exc).__name__}",
-            RuntimeWarning,
+        warn_best_effort(
+            f"[Alerts] failed to build alert router: {type(exc).__name__}"
         )
         return None, {}
 

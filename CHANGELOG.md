@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Certified-publication alerts, incident hooks, resumed metadata indexing, and
+  alert-router construction remain non-blocking when warnings are errors. (Plan 37.1)
 - Template parameter injection now preserves backslashes literally and adds a key-only hint
   when a backslash makes a double-quoted YAML scalar invalid. (Plan 37.3)
 - Added a shared standard-library-only best-effort warning helper that cannot
