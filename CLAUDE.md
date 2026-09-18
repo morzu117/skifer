@@ -828,7 +828,7 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Émetteur OpenLineage (Plan 36)](docs/roadmap/36_openlineage_emitter_plan.md) | mergé via PR #3 | Implémenté (36.0–36.4) — événements `RunEvent` allowlistés, émetteurs NoOp/InMemory/HTTP, émission best-effort à la publication et à l'écriture batch |
 | [Durcissement best-effort et injection de paramètres (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implémenté (37.0–37.4) — chemins best-effort jamais bloquants sous `-W error`, `\` préservé à l'injection, exemples portables Windows |
 | [Lineage du tracker : agrégats, jointures, intermédiaires (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | `feat/plan38-tracker-lineage` | Plan finalisé, non démarré |
-| [Portabilité SQL-first : alternative à dbt hors Databricks (Plan 39)](docs/roadmap/39_sql_first_portability_plan.md) | `feat/plan39-sql-first` | En cours — 39.1, 39.2 (4 tranches) et 39.3.1 livrées : frontière `Adapter`, dialecte sqlglot, compilateur complet, règles `kind="sql"`, équivalence Spark ↔ DuckDB, adaptateur DuckDB exécutant sans Spark |
+| [Portabilité SQL-first : alternative à dbt hors Databricks (Plan 39)](docs/roadmap/39_sql_first_portability_plan.md) | `feat/plan39-sql-first` | En cours — **phase 39.3 terminée** : frontière `Adapter`, dialecte sqlglot, compilateur complet, règles `kind="sql"`, adaptateur DuckDB, sources fichier, et les exemples 01/05/06 du dépôt produisant les mêmes lignes sur les deux moteurs. Reste 39.4 à 39.9. |
 
 ## Key files
 

@@ -175,8 +175,33 @@ unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
 > passe encore `persisted_definition=False`), mais c'est bloquant pour 39.3.
 - `core/adapters/duckdb.py`, `duckdb_factory`, `engine: sql` + `adapter: duckdb` en `LOCAL`.
 - `run_process_to_table` en mode SQL : `CREATE OR REPLACE TABLE … AS <select>` via l'adaptateur.
-- Critère de sortie : les exemples 01, 02, 05, 06, 07, 13 passent en mode SQL (règles réécrites en `kind="sql"`
-  dans une variante, les originaux PySpark restant pour le mode Spark).
+
+**Découpage en tranches** (chaque tranche = un commit, gate vert) :
+
+| Tranche | Contenu | État |
+|---|---|---|
+| 39.3.1 | Adaptateur DuckDB, `duckdb_factory`, chemin d'exécution SQL de `run_process_to_table` | livrée |
+| 39.3.2 | Sources fichier CSV / Parquet / JSON, défauts d'options alignés sur Spark | livrée |
+| 39.3.3 | Colonnes résolues depuis la source : règles `kind="sql"` sur tables fichier | livrée |
+| 39.3.4 | Exemples du dépôt exécutés et comparés sur les deux moteurs | livrée |
+
+> **Critère de sortie corrigé le 18 septembre 2026, après exécution.** Le critère d'origine — « les exemples 01,
+> 02, 05, 06, 07, 13 passent en mode SQL » — a été écrit avant d'avoir rien exécuté. Sondés un par un sur le
+> chemin DuckDB, deux d'entre eux ne relèvent pas de cette phase et un troisième n'exécute aucun pipeline :
+>
+> | Exemple | Constat mesuré |
+> |---|---|
+> | 01 `first_pipeline` | tourne en mode SQL sans aucune modification |
+> | 05 `rules_join_aggregate` | débloqué par 39.3.3 ; mêmes lignes que Spark sur ses deux pipelines |
+> | 06 `nested_partials` | débloqué par 39.3.3 ; mêmes lignes que Spark |
+> | 02 `quality_and_contract` | déclare `data_product:` — dépend de la publication certifiée, donc de la **phase 39.5** |
+> | 07 `sources_and_shaping` | déclare `source_type: loader`, une fonction Python rendant un DataFrame. Aucun équivalent SQL n'est conçu ; le refus nominatif de l'adaptateur est le bon comportement. Décision ouverte D8. |
+> | 13 `semantic_projection` | n'exécute aucun pipeline (projection pure, déjà sans Spark) : ne prouve rien sur le mode SQL |
+>
+> Critère retenu : **les exemples 01, 05 et 06 produisent les mêmes lignes sur les deux moteurs**, comparées par
+> la fonction stricte de `tests/test_sql_spark_equivalence.py` (`tests/test_examples_sql_mode.py`), et
+> `examples/24_sql_mode_portability/` le montre au lecteur. Les exemples 02 et 07 descendent respectivement en
+> 39.5 et sous la décision D8.
 
 ### Phase 39.4 — Stratégies d'écriture — *10–15 j*
 - `materialization: table|view|incremental|snapshot` ; `incremental: {strategy: append|merge, unique_key,
@@ -235,6 +260,7 @@ exemple `24_sql_mode_duckdb`, un `25_incremental_snapshot`, guide « venir de db
 | D5 | Périmètre Spark-only assumé en v1 | streaming, serving MLflow, règles PySpark, MV via SQL warehouse |
 | D6 | Ordre des adaptateurs | DuckDB → Snowflake → BigQuery ; Fabric Warehouse/Postgres/Trino ensuite selon demande |
 | D7 | Dépendances | `sqlglot` + `duckdb` dans un extra `[sql]` ; le cœur s'importe sans eux (comme `[tracing]`, `[mcp]`) |
+| D8 | Loaders portables — **ouverte, à trancher avant 39.6** | Un `source_type: loader` est une fonction Python rendant un DataFrame : rien ne le traduit en SQL. Deux voies — un loader `kind="sql"` rendant une expression de relation (symétrique des règles `kind="sql"`), ou le maintien du refus nominatif hors Spark. Trouvée en 39.3.4 en mesurant l'exemple 07. |
 
 ## 7. Risques
 
