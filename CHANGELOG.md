@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a cross join with declared keys compiling to an unconditional `CROSS JOIN`.
+  The DataFrame path applies the key condition, so the same YAML returned a filtered
+  result on Spark and a cartesian product in SQL — including in materialized views,
+  which compile through the same path. (Plan 39)
 - Dialect-aware FQN quoting now understands pivot quoting: dots inside quoted identifiers,
   doubled-backtick escapes and already-quoted names translate correctly to non-Databricks
   targets, and unbalanced quoting is refused. (Plan 39.2.1)

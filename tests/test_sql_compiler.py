@@ -400,9 +400,24 @@ keep_all_columns: true
                                         f"    type: {declared}\n"))
         assert keyword in sql
 
-    def test_cross_join_has_no_on_clause(self):
+    def test_cross_join_with_declared_keys_filters_like_spark(self):
+        """Declared keys must filter, exactly as they do on the DataFrame path.
+
+        The interpreter builds the equality condition and calls
+        ``join(other, cond, "cross")``, which filters. A bare ``CROSS JOIN`` here
+        would return every pair of rows instead — the same YAML yielding a handful
+        of rows on Spark and a cartesian product in SQL.
+        """
         sql = _compile(self._two_tables("  - table_from: [ord, customer_id]\n"
                                         "    table_to: [cust, id]\n"
+                                        "    type: cross\n"))
+        assert "INNER JOIN `cust`" in sql
+        assert "`ord`.`customer_id` = `cust`.`id`" in sql
+        assert "CROSS JOIN" not in sql
+
+    def test_cross_join_without_keys_stays_a_cartesian_product(self):
+        sql = _compile(self._two_tables("  - table_from: ord\n"
+                                        "    table_to: cust\n"
                                         "    type: cross\n"))
         assert "CROSS JOIN `cust`" in sql
         assert " ON " not in sql

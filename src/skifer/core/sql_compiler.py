@@ -412,8 +412,17 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
             )
         right = quote_ident(j.alias_right)
         if j.join_type == "cross":
-            sql += f"\n  {keyword} {right}"
-            continue
+            declared_keys = [k for k in (*j.keys_left, *j.keys_right) if k is not None]
+            if not declared_keys:
+                sql += f"\n  {keyword} {right}"
+                continue
+            # Spark applies the declared keys even for a cross join: the interpreter
+            # builds the equality condition and calls ``join(other, cond, "cross")``,
+            # which filters. Emitting a bare CROSS JOIN here would turn that filtered
+            # join into a cartesian product — the same YAML producing a handful of rows
+            # on Spark and every pair of rows in SQL. INNER JOIN is the faithful SQL
+            # equivalent of "cross join plus equality predicate".
+            keyword = _SQL_JOIN_TYPES["inner"]
         if j.keys_left == j.keys_right:
             using = ", ".join(quote_ident(k) for k in j.keys_left)
             sql += f"\n  {keyword} {right} USING ({using})"
