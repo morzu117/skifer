@@ -61,6 +61,10 @@ META_EXIT_ERROR = 1
 META_EXIT_USAGE = 2
 META_EXIT_NOT_FOUND = 3
 
+GRAPH_EXIT_OK = 0
+GRAPH_EXIT_ERROR = 1
+GRAPH_EXIT_USAGE = 2
+
 AUDIT_EXIT_OK = 0
 AUDIT_EXIT_ERROR = 1
 AUDIT_EXIT_BELOW_THRESHOLD = 2
@@ -178,6 +182,13 @@ def main() -> None:
     lineage_parser.add_argument("--direction", choices=["up", "down"], default="down")
     lineage_parser.add_argument("--format", choices=["mermaid", "json"], default="mermaid")
     lineage_parser.add_argument("--db", default=".skifer_metadata.db")
+
+    graph_parser = subparsers.add_parser(
+        "graph",
+        help="Show the inter-pipeline dataset graph from the metadata registry.",
+    )
+    graph_parser.add_argument("--db", default=".skifer_metadata.db")
+    graph_parser.add_argument("--format", choices=["text", "json", "mermaid"], default="text")
 
     dictionary_parser = subparsers.add_parser(
         "dictionary",
@@ -442,6 +453,8 @@ def main() -> None:
         _run_index(args)
     elif args.command == "lineage":
         _run_lineage(args)
+    elif args.command == "graph":
+        _run_graph(args)
     elif args.command == "dictionary":
         _run_dictionary(args)
     elif args.command == "hub":
@@ -486,6 +499,11 @@ def _run_audit(args: argparse.Namespace) -> None:
 def _run_lineage(args: argparse.Namespace) -> None:
     """Render registry-backed lineage with stable exit codes."""
     sys.exit(run_lineage_command(args))
+
+
+def _run_graph(args: argparse.Namespace) -> None:
+    """Render the registry-backed inter-pipeline graph with stable exit codes."""
+    sys.exit(run_graph_command(args))
 
 
 def _run_dictionary(args: argparse.Namespace) -> None:
@@ -579,6 +597,36 @@ def run_lineage_command(args: argparse.Namespace, *, store=None) -> int:
     except Exception as exc:
         print(f"[lineage] Failed to read metadata registry: {exc}", file=sys.stderr)
         return META_EXIT_ERROR
+
+
+def run_graph_command(args: argparse.Namespace, *, store=None) -> int:
+    """Show the inter-pipeline dataset graph from the persisted metadata registry."""
+    from skifer.observability.metadata_store import SqliteMetadataStore
+    from skifer.observability.pipeline_graph import (
+        PipelineGraphCycleError,
+        build_pipeline_graph,
+    )
+
+    if args.format not in {"text", "json", "mermaid"}:
+        print("[graph] Invalid format.", file=sys.stderr)
+        return GRAPH_EXIT_USAGE
+
+    try:
+        registry = store or SqliteMetadataStore(args.db)
+        graph = build_pipeline_graph(registry)
+        if args.format == "json":
+            print(json.dumps(graph.to_dict(), sort_keys=True))
+        elif args.format == "mermaid":
+            print(graph.to_mermaid())
+        else:
+            print(graph.to_text())
+        return GRAPH_EXIT_OK
+    except PipelineGraphCycleError as exc:
+        print(f"[graph] {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
+    except Exception as exc:
+        print(f"[graph] Failed to read metadata registry: {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
 
 
 def run_dictionary_command(args: argparse.Namespace, *, store=None) -> int:

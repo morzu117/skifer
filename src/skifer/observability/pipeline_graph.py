@@ -1,0 +1,249 @@
+"""Spark-free inter-pipeline dataset graph from the metadata registry."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import re
+
+from skifer.core.dialect import split_fqn
+from skifer.core.ir import parse_to_ir
+from skifer.core.schema_loader import parse_schema
+from skifer.observability.metadata_store import DatasetRecord, MetadataStore
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+
+class PipelineGraphError(ValueError):
+    """Raised when the registry cannot be converted into a dataset graph."""
+
+
+class PipelineGraphCycleError(PipelineGraphError):
+    """Raised when indexed pipelines form a cycle."""
+
+    def __init__(self, cycle: tuple[str, ...]):
+        self.cycle = cycle
+        super().__init__(
+            "Pipeline graph contains a cycle: " + " -> ".join(cycle) + "."
+        )
+
+
+@dataclass(frozen=True, order=True)
+class PipelineEdge:
+    """A producer pipeline whose output is read by a consumer pipeline."""
+
+    producer: str
+    consumer: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"producer": self.producer, "consumer": self.consumer}
+
+
+@dataclass(frozen=True, order=True)
+class ExternalSource:
+    """A declared table with no indexed producer in this registry."""
+
+    consumer: str
+    source: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"consumer": self.consumer, "source": self.source}
+
+
+@dataclass(frozen=True)
+class PipelineGraph:
+    nodes: tuple[str, ...]
+    edges: tuple[PipelineEdge, ...]
+    external_sources: tuple[ExternalSource, ...]
+
+    def to_dict(self) -> dict:
+        return {
+            "nodes": list(self.nodes),
+            "edges": [edge.to_dict() for edge in self.edges],
+            "external_sources": [
+                external.to_dict() for external in self.external_sources
+            ],
+            "summary": {
+                "nodes": len(self.nodes),
+                "edges": len(self.edges),
+                "external_sources": len(self.external_sources),
+            },
+        }
+
+    def to_text(self) -> str:
+        lines = ["Pipeline graph", "Nodes:"]
+        lines.extend(_indented(self.nodes))
+        lines.append("Edges:")
+        lines.extend(
+            _indented(f"{edge.producer} -> {edge.consumer}" for edge in self.edges)
+        )
+        lines.append("External sources:")
+        lines.extend(
+            _indented(
+                f"{external.consumer} <- {external.source}"
+                for external in self.external_sources
+            )
+        )
+        return "\n".join(lines)
+
+    def to_mermaid(self, direction: str = "LR") -> str:
+        node_ids = {
+            name: f"n{index}"
+            for index, name in enumerate(self.nodes)
+        }
+        external_names = sorted(
+            {external.source for external in self.external_sources}
+        )
+        external_ids = {
+            name: f"x{index}"
+            for index, name in enumerate(external_names)
+        }
+
+        lines = [f"graph {direction}"]
+        for name in self.nodes:
+            lines.append(f'    {node_ids[name]}["{_mermaid_label(name)}"]')
+        for name in external_names:
+            label = f"{name} (external)"
+            lines.append(f'    {external_ids[name]}["{_mermaid_label(label)}"]')
+        for edge in self.edges:
+            lines.append(f"    {node_ids[edge.producer]} --> {node_ids[edge.consumer]}")
+        for external in self.external_sources:
+            lines.append(
+                f"    {external_ids[external.source]} -. external .-> "
+                f"{node_ids[external.consumer]}"
+            )
+        if external_names:
+            lines.append("    classDef external fill:#f7f7f7,stroke:#777,stroke-dasharray: 4 3")
+            for name in external_names:
+                lines.append(f"    class {external_ids[name]} external")
+        return "\n".join(lines)
+
+
+def build_pipeline_graph(store: MetadataStore) -> PipelineGraph:
+    """Build the inter-pipeline graph from indexed records only."""
+    return graph_from_records(store.list_all())
+
+
+def graph_from_records(records: list[DatasetRecord]) -> PipelineGraph:
+    latest = _latest_records(records)
+    nodes = tuple(sorted(latest))
+    target_index = _target_index(nodes)
+
+    edges: set[PipelineEdge] = set()
+    external_sources: set[ExternalSource] = set()
+    for consumer in nodes:
+        record = latest[consumer]
+        for source in _declared_source_tables(record):
+            producer = target_index.get(_fqn_key(source))
+            if producer is None:
+                external_sources.add(ExternalSource(consumer=consumer, source=source))
+            else:
+                # A pipeline declaring its own target as a source is kept as a
+                # self-edge on purpose, so the cycle check names it. Dropping it
+                # here would make the graph look acyclic and hide the mistake.
+                edges.add(PipelineEdge(producer=producer, consumer=consumer))
+
+    graph = PipelineGraph(
+        nodes=nodes,
+        edges=tuple(sorted(edges)),
+        external_sources=tuple(sorted(external_sources)),
+    )
+    _raise_on_cycle(graph)
+    return graph
+
+
+def _latest_records(records: list[DatasetRecord]) -> dict[str, DatasetRecord]:
+    latest: dict[str, DatasetRecord] = {}
+    ordered = sorted(
+        records,
+        key=lambda record: (
+            record.target_fqn,
+            record.indexed_at.isoformat(),
+            record.definition_hash,
+            record.pipeline_path,
+        ),
+    )
+    for record in ordered:
+        latest[record.target_fqn] = record
+    return latest
+
+
+def _target_index(nodes: tuple[str, ...]) -> dict[tuple[str, ...], str]:
+    by_key: dict[tuple[str, ...], str] = {}
+    for target in nodes:
+        key = _fqn_key(target)
+        existing = by_key.get(key)
+        if existing is not None and existing != target:
+            raise PipelineGraphError(
+                "Metadata registry contains duplicate target FQNs after "
+                f"identifier normalization: {existing!r}, {target!r}."
+            )
+        by_key[key] = target
+    return by_key
+
+
+def _declared_source_tables(record: DatasetRecord) -> tuple[str, ...]:
+    path = Path(record.pipeline_path)
+    if not path.is_file():
+        raise PipelineGraphError(
+            f"Indexed pipeline '{record.target_fqn}' points to missing YAML "
+            f"'{record.pipeline_path}'."
+        )
+    yaml_text = path.read_text(encoding="utf-8")
+    schema = parse_schema(
+        yaml_text,
+        params=_sentinel_params(yaml_text),
+        base_dir=str(path.parent),
+    )
+    parsed = parse_to_ir(schema)
+    return tuple(table.name for table in parsed.tables)
+
+
+def _fqn_key(fqn: str) -> tuple[str, ...]:
+    return tuple(split_fqn(fqn.strip()))
+
+
+def _sentinel_params(yaml_text: str) -> dict[str, str]:
+    return {
+        key: f"__sentinel_{key}__"
+        for key in _PLACEHOLDER_RE.findall(yaml_text)
+    }
+
+
+def _raise_on_cycle(graph: PipelineGraph) -> None:
+    adjacency: dict[str, list[str]] = {node: [] for node in graph.nodes}
+    for edge in graph.edges:
+        adjacency[edge.producer].append(edge.consumer)
+    for node in adjacency:
+        adjacency[node].sort()
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    stack: list[str] = []
+
+    def visit(node: str) -> None:
+        if node in visited:
+            return
+        if node in visiting:
+            start = stack.index(node)
+            raise PipelineGraphCycleError(tuple(stack[start:] + [node]))
+
+        visiting.add(node)
+        stack.append(node)
+        for child in adjacency[node]:
+            visit(child)
+        stack.pop()
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in graph.nodes:
+        visit(node)
+
+
+def _indented(values) -> list[str]:
+    rendered = [f"  {value}" for value in values]
+    return rendered or ["  (none)"]
+
+
+def _mermaid_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')

@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `skifer graph`, the inter-pipeline dataset graph built from the metadata registry
+  without Spark: an edge exists when a pipeline reads a table another pipeline produces.
+  A declared table with no indexed producer is reported as an external source rather than
+  guessed at, a cycle is an error naming the pipelines in it instead of a `RecursionError`,
+  and a pipeline declaring its own output keeps its self-edge so the cycle check can name
+  it. Output is deterministic under any `PYTHONHASHSEED`, in text, JSON or Mermaid.
+  (Plan 39.6.2)
 - Added `skifer compile PIPELINE --target databricks|duckdb|snowflake|bigquery`, which prints
   the SQL a pipeline would run and executes nothing. The SQL goes to stdout alone so the
   command can be redirected to a file; every diagnostic goes to stderr. The `databricks`
