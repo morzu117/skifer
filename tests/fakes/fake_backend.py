@@ -210,6 +210,16 @@ class FakeBackend:
         return None
 
     @property
+    def name(self) -> str:
+        return "databricks"
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        from skifer.core.capabilities_matrix import DATABRICKS_CAPABILITIES
+
+        return DATABRICKS_CAPABILITIES
+
+    @property
     def is_local(self) -> bool:
         return True
 

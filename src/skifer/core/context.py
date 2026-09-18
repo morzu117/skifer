@@ -80,6 +80,28 @@ class ExecutionContext:
         """Classification propagation mode for the active environment."""
         return self.env_config().get("classification_propagation", "warn")
 
+    def engine_mode(self) -> str:
+        """Execution engine selected for the active environment."""
+        value = self.env_config().get("engine", "spark")
+        allowed = {"spark", "sql"}
+        if value not in allowed:
+            raise ValueError(
+                f"Invalid config key 'engine': received {value!r}; "
+                f"allowed values are {sorted(allowed)}."
+            )
+        return value
+
+    def adapter_name(self) -> str:
+        """Runtime adapter selected for the active environment."""
+        value = self.env_config().get("adapter", "databricks")
+        allowed = {"databricks", "duckdb", "snowflake", "bigquery"}
+        if value not in allowed:
+            raise ValueError(
+                f"Invalid config key 'adapter': received {value!r}; "
+                f"allowed values are {sorted(allowed)}."
+            )
+        return value
+
     @property
     def default_params(self) -> dict:
         """

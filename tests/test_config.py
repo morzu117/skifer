@@ -3,6 +3,7 @@ import yaml
 from unittest.mock import MagicMock
 from skifer.core.config import ConfigurationManager
 from skifer.core.config import LineageConfig, parse_lineage_config
+from skifer.core.core import SkiferEngine
 from skifer.core.spark_backend import SparkBackend
 
 # ==============================================================================
@@ -160,6 +161,36 @@ def _write_local_config(tmp_path, **environment_values):
         )
     )
     return config_file
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "allowed"),
+    [
+        ("engine", "python", "spark"),
+        ("adapter", "postgres", "databricks"),
+    ],
+)
+def test_engine_rejects_unknown_execution_config_at_startup(
+    spark, tmp_path, key, value, allowed
+):
+    config_file = _write_local_config(tmp_path, **{key: value})
+
+    with pytest.raises(ValueError) as exc_info:
+        SkiferEngine(spark=spark, config_path=str(config_file), force_env="local")
+
+    message = str(exc_info.value)
+    assert key in message
+    assert value in message
+    assert allowed in message
+
+
+def test_engine_recognizes_but_refuses_sql_mode_at_startup(spark, tmp_path):
+    config_file = _write_local_config(
+        tmp_path, engine="sql", adapter="duckdb"
+    )
+
+    with pytest.raises(ValueError, match=r"recognized.*Plan 39 phases 39\.3\+"):
+        SkiferEngine(spark=spark, config_path=str(config_file), force_env="local")
 
 
 def test_config_accepts_valid_alerts(tmp_path):

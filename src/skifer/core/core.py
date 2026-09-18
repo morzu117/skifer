@@ -286,6 +286,15 @@ class SkiferEngine:
             self.is_local = (self.db is None)
             logger.info("[Config] force_env='%s': bypassing auto-detection -> catalog='%s'", force_env, self.db)
 
+        engine_mode = self._context.engine_mode()
+        adapter_name = self._context.adapter_name()
+        if (engine_mode, adapter_name) != ("spark", "databricks"):
+            raise ValueError(
+                f"Configuration engine={engine_mode!r}, adapter={adapter_name!r} is "
+                "recognized but not implemented in Plan 39 phase 39.1; support is "
+                "planned for Plan 39 phases 39.3+."
+            )
+
         from skifer.core.config import parse_tracing_config
         from skifer.observability.tracing_exporters import create_tracer
 
@@ -1024,6 +1033,14 @@ class SkiferEngine:
         run_id=None,
     ):
         """Delegates to PipelinePatterns.run_process_to_table (plan17-2.4)."""
+        from skifer.core.capabilities_matrix import assert_supported
+        from skifer.core.ir import parse_to_ir
+
+        assert_supported(
+            parse_to_ir(schema_dict),
+            adapter_name=self._backend.name,
+            supported=self._backend.capabilities,
+        )
         # Minted on the business path, never only when tracing is on: this id is
         # what the certification registry persists, so an audit trail that
         # existed only under an exporter would be no audit trail at all.

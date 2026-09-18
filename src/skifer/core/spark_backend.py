@@ -25,6 +25,7 @@ from skifer.core.environment import (
     is_databricks_sdk_available,
 )
 from skifer.core.constants import VALID_SOURCE_TYPES, VALID_STREAMING_SOURCE_TYPES
+from skifer.core.capabilities_matrix import DATABRICKS_CAPABILITIES
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,14 @@ class SparkBackend:
         return self._spark
 
     @property
+    def name(self) -> str:
+        return "databricks"
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return DATABRICKS_CAPABILITIES
+
+    @property
     def is_local(self) -> bool:
         return self._is_local
 
@@ -259,6 +268,10 @@ class SparkBackend:
 
     def sql(self, query: str) -> Any:
         return self._spark.sql(query)
+
+    def fetch(self, query: str) -> list[dict]:
+        rows = self.sql(query).collect()
+        return [row.asDict() if hasattr(row, "asDict") else dict(row) for row in rows]
 
     def _append_certification(self, schema: str, table: str, row: dict, key: str) -> None:
         from skifer.core.sql_compiler import escape_sql_string, quote_ident

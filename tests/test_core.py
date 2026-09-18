@@ -780,9 +780,15 @@ def test_run_process_to_table_survives_failed_process(mock_engine, mocker, spark
 
 
 def _engine_for_run_id_tests(mocker):
+    from skifer.core.capabilities_matrix import DATABRICKS_CAPABILITIES
+
     engine = object.__new__(SkiferEngine)
     object.__setattr__(engine, "_context", ExecutionContext(env="test", is_local=True))
     engine._tracer = NoOpTracer()
+    engine._backend = mocker.Mock(
+        name="databricks", capabilities=DATABRICKS_CAPABILITIES
+    )
+    engine._backend.name = "databricks"
     engine._patterns = mocker.Mock()
     return engine
 

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added the Plan 39 phase 39.1 `Adapter` boundary and capability matrix.
+
 ## [2.2.0] - 2026-09-14
 
 ### Fixed
