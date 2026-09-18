@@ -145,6 +145,11 @@ unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
 | 39.2.3 | Règles `kind="sql"` (registre, fusion, analyse, gouvernance `allow_raw_sql`) | 39.2.1 |
 | 39.2.4 | Tests d'équivalence Spark ↔ DuckDB par construction | 39.2.2, 39.2.3 |
 
+> 39.2.4 doit couvrir en **exécution réelle** le partial à deux niveaux (aujourd'hui seulement compilé,
+> pas exécuté) et ne jamais affirmer *quelle* ligne un dédoublonnage conserve : l'ordre portant sur les clés de
+> partition, toutes les lignes d'une partition sont à égalité, donc la ligne retenue dépend du moteur et n'est pas
+> reproductible d'un run à l'autre — comme `dropDuplicates` sur Spark.
+
 - `core/dialect.py` : `transpile(sql, target)` via `sqlglot` (`read="databricks"`), extra optionnel `[sql]`.
   `quote_ident`/`quote_fqn` deviennent dépendants du dialecte (`sql_compiler.py:58-68`, `resolver.py:628`).
 - Levée des refus de `_reject_uncompilable` qui ont un équivalent fidèle :
@@ -159,6 +164,15 @@ unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
   `spark` (test d'équivalence, la seule preuve valable).
 
 ### Phase 39.3 — DuckDB de bout en bout — *5–8 j*
+
+> **Condition d'acceptation ajoutée le 18 septembre 2026, trouvée en review de 39.2.2.**
+> Le chemin Spark n'applique `dev_limit` que **hors job et hors production** (`interpreter.py:476-482` :
+> `if dev_limit and not ctx.is_job_execution` puis `if not ctx.is_production`). Le compilateur SQL, lui, n'a
+> aucune notion de mode d'exécution : il émet le `LIMIT` dès que `persisted_definition=False`. Tel quel, le
+> chemin d'exécution batch **tronquerait silencieusement la sortie d'un job de production** — précisément ce que
+> le message de refus d'origine dénonçait. L'appelant doit donc neutraliser `dev_limit` en mode job/prod avant de
+> compiler, et un test doit le prouver sur les deux modes. Ce n'est pas un défaut de 39.2.2 (aucun appelant ne
+> passe encore `persisted_definition=False`), mais c'est bloquant pour 39.3.
 - `core/adapters/duckdb.py`, `duckdb_factory`, `engine: sql` + `adapter: duckdb` en `LOCAL`.
 - `run_process_to_table` en mode SQL : `CREATE OR REPLACE TABLE … AS <select>` via l'adaptateur.
 - Critère de sortie : les exemples 01, 02, 05, 06, 07, 13 passent en mode SQL (règles réécrites en `kind="sql"`
