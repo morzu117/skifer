@@ -26,13 +26,12 @@ from pyspark.sql.types import (
 )
 
 from skifer.core.context import ExecutionContext
-from skifer.core.dialect import transpile
+from skifer.core.adapters.duckdb import DuckDBAdapter
 from skifer.core.interpreter import SchemaInterpreter
-from skifer.core.ir import parse_to_ir
 from skifer.core.registry import RuleRegistry
 from skifer.core.schema_loader import parse_schema
 from skifer.core.spark_backend import SparkBackend
-from skifer.core.sql_compiler import compile_select
+from skifer.core.sql_runner import run_sql_pipeline
 
 
 NUMERIC_REL_TOLERANCE = Decimal("1e-9")
@@ -194,10 +193,20 @@ def _spark_result(runtime, schema, *, context=None):
     return interpreter.process_schema(schema)
 
 
-def _duck_result(runtime, schema):
-    pivot_sql = compile_select(parse_to_ir(schema), persisted_definition=False)
-    cursor = runtime.duck.execute(transpile(pivot_sql, target="duckdb"))
-    return [description[0] for description in cursor.description], cursor.fetchall()
+def _duck_result(runtime, schema, *, context=None):
+    adapter = DuckDBAdapter(connection=runtime.duck)
+    target = runtime.table(f"result_{uuid4().hex}")
+    run_sql_pipeline(
+        adapter,
+        schema,
+        target,
+        context=context or _context(),
+    )
+    try:
+        cursor = adapter.read_table(target)
+        return [description[0] for description in cursor.description], cursor.fetchall()
+    finally:
+        adapter.drop_table(target)
 
 
 def _is_nan(value):
@@ -612,13 +621,6 @@ def test_dev_limit_interactive_checks_only_count_and_membership(equivalence_runt
     [_context(is_job=True), _context(is_production=True)],
     ids=["job", "production"],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "dev_limit divergence: the Spark interpreter disables it in job/production, "
-        "but compile_select has no execution context and still emits LIMIT"
-    ),
-)
 def test_dev_limit_job_and_production_equivalence(equivalence_runtime, context):
     schema = _normalized_schema(
         {
@@ -633,5 +635,5 @@ def test_dev_limit_job_and_production_equivalence(equivalence_runtime, context):
         }
     )
     spark_count = _spark_result(equivalence_runtime, schema, context=context).count()
-    _, duck_rows = _duck_result(equivalence_runtime, schema)
+    _, duck_rows = _duck_result(equivalence_runtime, schema, context=context)
     assert spark_count == len(duck_rows)

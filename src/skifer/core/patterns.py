@@ -102,6 +102,21 @@ class PipelinePatterns:
         run_id: str | None = None,
     ) -> None:
         e = self._engine
+        if e.context.engine_mode() == "sql":
+            from skifer.core.sql_runner import run_sql_pipeline
+
+            actual_schema = e.get_target_schema(target_layer)
+            e._ensure_schema_exists(actual_schema)
+            target_fqn = e._build_fqn(actual_schema, target_table_name)
+            run_sql_pipeline(
+                e._get_backend(),
+                schema_dict,
+                target_fqn,
+                context=e.context,
+                allow_raw_sql=e.context.env_config().get("allow_raw_sql", True),
+            )
+            return
+
         sink_config = schema_dict.get("sink")
         uses_jdbc_sink = bool(sink_config and sink_config.get("type") in ("postgres", "jdbc"))
         actual_schema = e.get_target_schema(target_layer)

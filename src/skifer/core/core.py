@@ -175,6 +175,7 @@ class SkiferEngine:
         monitor=None,
         certification_store=None,
         metadata_store=None,
+        connection=None,
     ):
         """
         Initializes the SkiferEngine.
@@ -198,6 +199,9 @@ class SkiferEngine:
             metadata_store (MetadataStore, optional): Explicit metadata registry store.
                                              When provided, certified publication indexes
                                              promoted datasets non-blockingly.
+            connection: Explicit DuckDB connection for ``engine: sql``. When omitted,
+                                             the engine creates one private in-memory
+                                             connection through the lazy DuckDB factory.
         """
         # Initialize _context unconditionally before any property access so that a
         # partially-constructed engine (init raises mid-way) never silently exposes a
@@ -220,21 +224,58 @@ class SkiferEngine:
         # ======================================================================
         # 1. BACKEND + SPARK SESSION
         # ======================================================================
-        # Connect v2 patches are applied inside SparkBackend.__init__
-        from skifer.spark_factory import get_spark_session
-        if spark:
-            self.spark = spark
-            self._spark_mode = "provided"
+        # Peek only far enough to take the SQL branch before importing the Spark
+        # factory. The ordinary Spark/Databricks initialization below is otherwise
+        # byte-for-byte the historical path.
+        hinted_config_path = config_path or self._find_file_upwards("config.yaml")
+        sql_runtime_requested = False
+        if hinted_config_path:
+            try:
+                with open(hinted_config_path, "r", encoding="utf-8") as handle:
+                    hinted_config = yaml.safe_load(handle) or {}
+                environments = hinted_config.get("environments", {})
+                hinted_env = force_env or hinted_config.get("default_env")
+                if hinted_env is None and len(environments) == 1:
+                    hinted_env = next(iter(environments))
+                matched = next(
+                    (
+                        value
+                        for key, value in environments.items()
+                        if key.casefold() == str(hinted_env).casefold()
+                    ),
+                    {},
+                )
+                sql_runtime_requested = (
+                    matched.get("engine", "spark"),
+                    matched.get("adapter", "databricks"),
+                ) == ("sql", "duckdb")
+            except (AttributeError, OSError, TypeError, yaml.YAMLError):
+                # The normal config loader below owns the actionable diagnostic.
+                pass
+
+        if sql_runtime_requested:
+            self.spark = None
+            self._spark_mode = "sql"
+            self.is_local = True
+            self.dbutils = None
         else:
-            self.spark, self._spark_mode = get_spark_session()
+            # Connect v2 patches are applied inside SparkBackend.__init__
+            from skifer.spark_factory import get_spark_session
 
-        self.is_local = (self._spark_mode == "local")
+            if spark:
+                self.spark = spark
+                self._spark_mode = "provided"
+            else:
+                self.spark, self._spark_mode = get_spark_session()
 
-        if not self.spark:
-            raise RuntimeError("CRITICAL: Failed to initialize Spark Session.")
+            self.is_local = (self._spark_mode == "local")
 
-        from skifer.core.spark_backend import SparkBackend
-        self._backend = SparkBackend(spark=self.spark, is_local=self.is_local)
+            if not self.spark:
+                raise RuntimeError("CRITICAL: Failed to initialize Spark Session.")
+
+            from skifer.core.spark_backend import SparkBackend
+
+            self._backend = SparkBackend(spark=self.spark, is_local=self.is_local)
 
         if self.spark:
             try:
@@ -288,12 +329,35 @@ class SkiferEngine:
 
         engine_mode = self._context.engine_mode()
         adapter_name = self._context.adapter_name()
-        if (engine_mode, adapter_name) != ("spark", "databricks"):
+        if (engine_mode, adapter_name) not in {
+            ("spark", "databricks"),
+            ("sql", "duckdb"),
+        }:
             raise ValueError(
                 f"Configuration engine={engine_mode!r}, adapter={adapter_name!r} is "
                 "recognized but not implemented in Plan 39 phase 39.1; support is "
                 "planned for Plan 39 phases 39.3+."
             )
+        if (engine_mode, adapter_name) == ("sql", "duckdb"):
+            if spark is not None:
+                raise ValueError(
+                    f"Configuration engine={engine_mode!r}, adapter={adapter_name!r} is "
+                    "recognized but cannot use a SparkSession; support is available "
+                    "without spark= in Plan 39 phases 39.3+."
+                )
+            if not sql_runtime_requested:
+                raise ValueError(
+                    "Configuration engine='sql', adapter='duckdb' must be selected "
+                    "before Spark initialization; set force_env or default_env to that "
+                    "environment."
+                )
+            if connection is None:
+                from skifer.duckdb_factory import get_duckdb_connection
+
+                connection = get_duckdb_connection()
+            from skifer.core.adapters.duckdb import DuckDBAdapter
+
+            self._backend = DuckDBAdapter(connection=connection)
 
         from skifer.core.config import parse_tracing_config
         from skifer.observability.tracing_exporters import create_tracer
@@ -313,7 +377,10 @@ class SkiferEngine:
         # ======================================================================
         # 3. DÉTECTION UTILISATEUR & SANDBOX
         # ======================================================================
-        self.current_user = self._get_clean_username()
+        if engine_mode == "sql":
+            self.current_user = self._backend.get_current_user() or ""
+        else:
+            self.current_user = self._get_clean_username()
         self.is_job_execution = self._is_running_as_job()
 
         self.schema_suffix = ""
@@ -321,7 +388,9 @@ class SkiferEngine:
         is_prod_env = self._context.is_production
 
         # On active la Sandbox SEULEMENT si : PAS Prod ET PAS Job
-        if not is_prod_env and not self.is_job_execution:
+        if engine_mode == "sql":
+            logger.info("[SQL Mode] Sandbox is not enabled for the DuckDB execution path.")
+        elif not is_prod_env and not self.is_job_execution:
             logger.info("[Interactive Mode] Sandbox enabled for: %s", self.current_user)
             self.schema_suffix = f"_{self.current_user}"
         else:
