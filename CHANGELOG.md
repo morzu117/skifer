@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added SCD2 `materialization: snapshot` on both engines, with `valid_from`/`valid_to`
+  bounds that meet exactly, so a key's history has neither gap nor overlap. The preflight
+  runs before every write and nothing is emitted unless it is clean. An unchanged row
+  creates no new version — the case an implementation that closes and reinserts everything
+  would still pass every other test on. Closing rows absent from the batch on Delta goes
+  through a merge, since a correlated `UPDATE ... WHERE NOT EXISTS` is unsupported there.
+  A run interrupted between statements converges when replayed rather than compounding,
+  which is the property reachable on engines without multi-statement transactions.
+  (Plan 39.4.5.2)
 - Added the SCD2 snapshot guardrails: `on_missing` is required with no default, since
   Skifer cannot tell a complete snapshot from a partial extract and guessing wrong closes
   every row; `max_closed_ratio` (0.2) refuses a run that would close an unusual share of

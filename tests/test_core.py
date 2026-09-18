@@ -880,10 +880,15 @@ def test_spark_snapshot_write_runs_preflight_and_applies_scd2(spark, strategy):
             "strategy": "timestamp",
             "unique_key": ["order_id"],
             "updated_at": "modified_at",
-            "on_missing": "ignore",
+            "on_missing": "close",
+            "max_closed_ratio": 1.0,
         }
         first = spark.createDataFrame(
-            [(1, "old", 10, datetime(2026, 1, 1)), (2, "steady", 20, datetime(2026, 1, 1))],
+            [
+                (1, "old", 10, datetime(2026, 1, 1)),
+                (2, "missing", 20, datetime(2026, 1, 1)),
+                (4, "steady", 40, datetime(2026, 1, 1)),
+            ],
             ["order_id", "status", "amount", "modified_at"],
         )
         duplicate = spark.createDataFrame(
@@ -893,23 +898,25 @@ def test_spark_snapshot_write_runs_preflight_and_applies_scd2(spark, strategy):
         second = spark.createDataFrame(
             [
                 (1, "new", 15, datetime(2026, 1, 2)),
-                (2, "steady", 20, datetime(2026, 1, 1)),
                 (3, "new", 30, datetime(2026, 1, 2)),
+                (4, "steady", 40, datetime(2026, 1, 1)),
             ],
             ["order_id", "status", "amount", "modified_at"],
         )
         old_from = datetime(2026, 1, 1)
         new_from = datetime(2026, 1, 2)
+        missing_to = datetime(2026, 1, 2, 9)
     else:
         materialization = {
             "type": "snapshot",
             "strategy": "check",
             "unique_key": ["order_id"],
             "check_columns": ["status", "amount"],
-            "on_missing": "ignore",
+            "on_missing": "close",
+            "max_closed_ratio": 1.0,
         }
         first = spark.createDataFrame(
-            [(1, "old", 10), (2, "steady", 20)],
+            [(1, "old", 10), (2, "missing", 20), (4, "steady", 40)],
             ["order_id", "status", "amount"],
         )
         duplicate = spark.createDataFrame(
@@ -917,11 +924,12 @@ def test_spark_snapshot_write_runs_preflight_and_applies_scd2(spark, strategy):
             ["order_id", "status", "amount"],
         )
         second = spark.createDataFrame(
-            [(1, "new", 15), (2, "steady", 20), (3, "new", 30)],
+            [(1, "new", 15), (3, "new", 30), (4, "steady", 40)],
             ["order_id", "status", "amount"],
         )
         old_from = datetime(2026, 1, 1, 9)
         new_from = datetime(2026, 1, 2, 9)
+        missing_to = datetime(2026, 1, 2, 9)
 
     try:
         engine._write_dataframe(first, fqn, "orders", materialization=materialization)
@@ -957,8 +965,12 @@ def test_spark_snapshot_write_runs_preflight_and_applies_scd2(spark, strategy):
         assert rows == [
             {"order_id": 1, "status": "old", "amount": 10, "valid_from": old_from, "valid_to": new_from},
             {"order_id": 1, "status": "new", "amount": 15, "valid_from": new_from, "valid_to": None},
-            {"order_id": 2, "status": "steady", "amount": 20, "valid_from": old_from, "valid_to": None},
+            {"order_id": 2, "status": "missing", "amount": 20, "valid_from": old_from, "valid_to": missing_to},
             {"order_id": 3, "status": "new", "amount": 30, "valid_from": new_from, "valid_to": None},
+            # Key 4 is byte-identical in both batches. It must keep its FIRST
+            # valid_from and stay open: an implementation that closes and
+            # reinserts everything on each run passes every other case here.
+            {"order_id": 4, "status": "steady", "amount": 40, "valid_from": old_from, "valid_to": None},
         ]
     finally:
         spark.sql(f"DROP TABLE IF EXISTS {fqn}")

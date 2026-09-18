@@ -210,9 +210,31 @@ def _snapshot_close_missing_sql(
     target: str,
     run_at: datetime,
 ) -> str:
+    close_at = sql_timestamp_literal(run_at)
+    if target == "databricks":
+        key_projection = ", ".join(
+            f"t_missing.{quote_ident(key, target=target)} AS {quote_ident(key, target=target)}"
+            for key in materialization["unique_key"]
+        )
+        missing_source = (
+            f"SELECT {key_projection}\n"
+            f"FROM {target_relation} AS t_missing\n"
+            f"WHERE {_current_condition('t_missing', target=target)}\n"
+            f"  AND NOT EXISTS (\n"
+            f"    SELECT 1 FROM {source_relation} AS s_source\n"
+            f"    WHERE {_key_match('t_missing', 's_source', materialization['unique_key'], target=target)}\n"
+            f"  )"
+        )
+        return (
+            f"MERGE INTO {target_relation} AS t\n"
+            f"USING (\n{missing_source}\n) AS s\n"
+            f"ON {_current_condition('t', target=target)}\n"
+            f"  AND {_key_match('t', 's', materialization['unique_key'], target=target)}\n"
+            f"WHEN MATCHED THEN UPDATE SET {_set_target('valid_to', target=target)} = {close_at}"
+        )
     return (
         f"UPDATE {target_relation} AS t\n"
-        f"SET {quote_ident('valid_to', target=target)} = {sql_timestamp_literal(run_at)}\n"
+        f"SET {quote_ident('valid_to', target=target)} = {close_at}\n"
         f"WHERE {_current_condition('t', target=target)}\n"
         f"  AND NOT EXISTS (\n"
         f"    SELECT 1 FROM {source_relation} AS s\n"
