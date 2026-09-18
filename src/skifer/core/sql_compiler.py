@@ -20,7 +20,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from skifer.core.ir import ParsedColumnSpec, ParsedOp, ParsedSchema, _parse_op
+from skifer.core.ir import ParsedColumnSpec, ParsedOp, ParsedSchema, _parse_op, parse_to_ir
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, resolve_filter_operator
 
 logger = logging.getLogger(__name__)
@@ -272,19 +272,16 @@ def compile_measure(measure: Any) -> str:
 # Guards — never emit approximate SQL
 # ---------------------------------------------------------------------------
 
-def _reject_uncompilable(parsed: ParsedSchema) -> None:
+def _reject_uncompilable(
+    parsed: ParsedSchema, *, persisted_definition: bool = True
+) -> None:
     """Raise SqlCompilationError for every construct with no faithful SQL form."""
     if parsed.business_rules:
         raise SqlCompilationError(
             f"Python business_rules {list(parsed.business_rules)} cannot be compiled to SQL. "
             "Materialize them upstream in a silver table, then join/aggregate that table here."
         )
-    if parsed.partials:
-        raise SqlCompilationError(
-            "'partials:' sub-transformations cannot be compiled to SQL (they run Python). "
-            "Materialize the partial as its own table and reference it in 'tables:'."
-        )
-    if parsed.dev_limit:
+    if persisted_definition and parsed.dev_limit:
         raise SqlCompilationError(
             "schema-level 'dev_limit' cannot be compiled to SQL — a frozen LIMIT in a "
             "persisted definition silently truncates the result."
@@ -307,12 +304,12 @@ def _reject_uncompilable(parsed: ParsedSchema) -> None:
                 f"table '{label}': streaming reads have no SQL equivalent here — "
                 "use 'materialization: streaming_table' for incremental append."
             )
-        if t.dev_limit:
+        if persisted_definition and t.dev_limit:
             raise SqlCompilationError(
                 f"table '{label}': 'dev_limit' cannot be compiled to SQL — a frozen LIMIT "
                 "in a persisted definition silently truncates the result."
             )
-        if t.drop_duplicates_on:
+        if persisted_definition and t.drop_duplicates_on:
             raise SqlCompilationError(
                 f"table '{label}': 'quality_checks.drop_duplicates_on' cannot be compiled to "
                 "SQL faithfully (it needs a windowed row_number with a deterministic ORDER BY). "
@@ -335,8 +332,21 @@ def _reject_uncompilable(parsed: ParsedSchema) -> None:
 # Compilation
 # ---------------------------------------------------------------------------
 
-def _compile_table_cte(table: Any, resolve_table: Callable[[str], str], allow_raw_sql: bool) -> str:
-    """Compile one source table (projection + all its predicates) to a CTE body."""
+def _compile_table_cte(
+    table: Any,
+    resolve_table: Callable[[str], str],
+    allow_raw_sql: bool,
+    *,
+    persisted_definition: bool,
+    schema_dev_limit: int | None,
+) -> str:
+    """Compile one source table (projection + all its predicates) to a CTE body.
+
+    Spark ``dropDuplicates`` keeps an arbitrary row for each key. Ordering a
+    ``ROW_NUMBER`` window by those same partition keys is equally arbitrary and
+    therefore faithful for one batch execution. Persisted definitions still
+    reject that choice because refreshing them could freeze a different row.
+    """
     if table.fields:
         projection = ", ".join(compile_column_spec(f, allow_raw_sql) for f in table.fields)
     else:
@@ -356,12 +366,19 @@ def _compile_table_cte(table: Any, resolve_table: Callable[[str], str], allow_ra
     sql = f"SELECT {projection} FROM {quote_fqn(resolve_table(table.name))}"
     if predicates:
         sql += "\n  WHERE " + " AND ".join(predicates)
+    if table.drop_duplicates_on:
+        keys = ", ".join(quote_ident(key) for key in table.drop_duplicates_on)
+        sql += f"\n  QUALIFY ROW_NUMBER() OVER (PARTITION BY {keys} ORDER BY {keys}) = 1"
+    if not persisted_definition:
+        dev_limit = table.dev_limit or schema_dev_limit
+        if dev_limit:
+            sql += f"\n  LIMIT {dev_limit}"
     return sql
 
 
 def _compile_join_tree(parsed: ParsedSchema) -> str:
     """Compile the FROM clause: base alias followed by each join in declaration order."""
-    aliases = [t.alias for t in parsed.tables]
+    aliases = [p.alias for p in parsed.partials] + [t.alias for t in parsed.tables]
     if not aliases:
         raise SqlCompilationError("No tables declared — nothing to compile.")
 
@@ -397,6 +414,8 @@ def compile_select(
     parsed: ParsedSchema,
     resolve_table: Callable[[str], str] | None = None,
     allow_raw_sql: bool = True,
+    *,
+    persisted_definition: bool = True,
 ) -> str:
     """
     Compile a parsed schema into a single SELECT statement.
@@ -406,6 +425,10 @@ def compile_select(
         resolve_table: Maps a declared table name to its actual FQN (sandbox
                        resolution). Defaults to identity.
         allow_raw_sql: When False, ``expr:`` and the ``sql`` filter operator raise.
+        persisted_definition: Keep constructs with unstable refresh semantics out
+                              of persisted definitions. Set False for one-off batch
+                              execution to compile ``drop_duplicates_on`` and
+                              ``dev_limit``.
 
     Returns:
         A ``WITH … SELECT …`` statement, without trailing semicolon.
@@ -415,12 +438,29 @@ def compile_select(
                              SQL equivalent (Python rules, loaders, file sources…).
     """
     resolve = resolve_table or (lambda name: name)
-    _reject_uncompilable(parsed)
+    _reject_uncompilable(parsed, persisted_definition=persisted_definition)
 
-    ctes = ",\n".join(
-        f"{quote_ident(t.alias)} AS (\n  {_compile_table_cte(t, resolve, allow_raw_sql)}\n)"
+    cte_parts = []
+    for partial in parsed.partials:
+        try:
+            child_sql = compile_select(
+                parse_to_ir(partial.schema),
+                resolve_table=resolve,
+                allow_raw_sql=allow_raw_sql,
+                persisted_definition=persisted_definition,
+            )
+        except SqlCompilationError as exc:
+            path = partial.resolved_path or "<inline>"
+            raise SqlCompilationError(
+                f"partial '{partial.alias}' (path '{path}') cannot be compiled: {exc}"
+            ) from exc
+        cte_parts.append(f"{quote_ident(partial.alias)} AS (\n  {child_sql}\n)")
+    cte_parts.extend(
+        f"{quote_ident(t.alias)} AS (\n  "
+        f"{_compile_table_cte(t, resolve, allow_raw_sql, persisted_definition=persisted_definition, schema_dev_limit=parsed.dev_limit)}\n)"
         for t in parsed.tables
     )
+    ctes = ",\n".join(cte_parts)
     join_tree = _compile_join_tree(parsed)
     add_columns = [compile_column_spec(f, allow_raw_sql) for f in parsed.add_columns]
 

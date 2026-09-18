@@ -8,7 +8,6 @@ from skifer.core.capabilities_matrix import (
     CAP_JDBC_SINK,
     CAP_LOADERS,
     CAP_MATERIALIZED_VIEW,
-    CAP_PARTIALS,
     CAP_PREPROCESS_QUALIFY,
     CAP_PYTHON_RULES,
     CAP_STREAMING,
@@ -23,7 +22,6 @@ from skifer.core.ir import parse_to_ir
     ("schema", "expected"),
     [
         ({"business_rules": ["enrich"]}, CAP_PYTHON_RULES),
-        ({"partials": [{"alias": "nested"}]}, CAP_PARTIALS),
         (
             {"tables": [{"name": "orders", "source": {"type": "csv"}}]},
             CAP_FILE_SOURCES,
@@ -76,6 +74,28 @@ def test_ordinary_schema_requires_no_capability():
     parsed = parse_to_ir({"tables": [{"name": "silver.orders"}]})
 
     assert required_capabilities(parsed) == frozenset()
+
+
+def test_partials_require_their_child_capabilities_recursively():
+    parsed = parse_to_ir(
+        {
+            "partials": [
+                {
+                    "alias": "outer",
+                    "schema": {
+                        "partials": [
+                            {
+                                "alias": "inner",
+                                "schema": {"business_rules": ["enrich"]},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    )
+
+    assert required_capabilities(parsed) == frozenset({CAP_PYTHON_RULES})
 
 
 def test_assert_supported_accepts_all_capabilities():

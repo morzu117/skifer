@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Batch SQL compilation now supports recursive `partials:` CTEs, `drop_duplicates_on`
+  through `QUALIFY`, and table/schema `dev_limit`. Persisted definitions keep refusing
+  all three, since a refresh could freeze a different row or a truncated result. (Plan 39.2.2)
 - Added the Plan 39 tranche 39.2.1 SQL dialect boundary, with lazy optional
   transpilation and dialect-aware identifier quoting.
 - Added the Plan 39 phase 39.1 `Adapter` boundary and capability matrix.

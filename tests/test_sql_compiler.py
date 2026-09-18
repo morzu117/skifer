@@ -110,6 +110,131 @@ keep_all_columns: true
 """))
         assert "SELECT `order_id` AS `order_id`, ROUND(`amount`, 2) AS `amount_eur`" in sql
 
+    def test_drop_duplicates_on_compiles_to_qualify_for_batch_execution(self):
+        sql = _compile(
+            _single_table("""    quality_checks:
+      drop_duplicates_on: [customer_id, order_id]
+keep_all_columns: true
+"""),
+            persisted_definition=False,
+        )
+
+        assert (
+            "QUALIFY ROW_NUMBER() OVER (PARTITION BY `customer_id`, `order_id` "
+            "ORDER BY `customer_id`, `order_id`) = 1" in sql
+        )
+
+    def test_table_dev_limit_overrides_schema_dev_limit_for_batch_execution(self):
+        sql = _compile(
+            _single_table("    dev_limit: 3\nkeep_all_columns: true\ndev_limit: 10\n"),
+            persisted_definition=False,
+        )
+
+        assert "LIMIT 3" in sql
+        assert "LIMIT 10" not in sql
+
+    def test_schema_dev_limit_compiles_for_batch_execution(self):
+        sql = _compile(
+            _single_table("keep_all_columns: true\ndev_limit: 10\n"),
+            persisted_definition=False,
+        )
+
+        assert "LIMIT 10" in sql
+
+
+class TestPartialCompilation:
+    def test_simple_partial_is_compiled_before_table_ctes(self):
+        child = {
+            "tables": [{"name": "silver.orders", "alias": "orders"}],
+            "select_final": [["order_id", "order_id"]],
+        }
+        parsed = parse_to_ir(
+            {
+                "partials": [
+                    {
+                        "alias": "daily_orders",
+                        "resolved_path": "/schemas/daily_orders.yaml",
+                        "schema": child,
+                    }
+                ],
+                "tables": [{"name": "silver.calendar", "alias": "calendar"}],
+                "join": [
+                    {
+                        "table_from": ["daily_orders", "order_id"],
+                        "table_to": ["calendar", "order_id"],
+                        "type": "inner",
+                    }
+                ],
+                "select_final": [["order_id", "order_id"]],
+            }
+        )
+
+        sql = compile_select(parsed)
+
+        assert sql.index("`daily_orders` AS") < sql.index("`calendar` AS")
+        assert "`daily_orders` AS (\n  WITH `orders` AS" in sql
+        assert "FROM `daily_orders`\n  INNER JOIN `calendar` USING (`order_id`)" in sql
+
+    def test_partial_can_contain_another_partial(self):
+        leaf = {
+            "tables": [{"name": "bronze.events", "alias": "events"}],
+            "select_final": [["event_id", "event_id"]],
+        }
+        middle = {
+            "partials": [
+                {
+                    "alias": "leaf_events",
+                    "resolved_path": "/schemas/leaf.yaml",
+                    "schema": leaf,
+                }
+            ],
+            "select_final": [["event_id", "event_id"]],
+        }
+        parsed = parse_to_ir(
+            {
+                "partials": [
+                    {
+                        "alias": "middle_events",
+                        "resolved_path": "/schemas/middle.yaml",
+                        "schema": middle,
+                    }
+                ],
+                "select_final": [["event_id", "event_id"]],
+            }
+        )
+
+        sql = compile_select(parsed)
+
+        assert "`middle_events` AS (\n  WITH `leaf_events` AS (\n  WITH `events` AS" in sql
+        assert sql.endswith("SELECT `event_id` AS `event_id`\nFROM `middle_events`")
+
+    def test_uncompilable_partial_error_names_alias_and_path(self):
+        child = {
+            "tables": [{"name": "silver.orders", "alias": "orders"}],
+            "business_rules": ["enrich_orders"],
+            "keep_all_columns": True,
+        }
+        parsed = parse_to_ir(
+            {
+                "partials": [
+                    {
+                        "alias": "bad_orders",
+                        "resolved_path": "/schemas/bad_orders.yaml",
+                        "schema": child,
+                    }
+                ],
+                "keep_all_columns": True,
+            }
+        )
+
+        with pytest.raises(SqlCompilationError) as exc_info:
+            compile_select(parsed)
+
+        message = str(exc_info.value)
+        assert "partial 'bad_orders'" in message
+        assert "/schemas/bad_orders.yaml" in message
+        assert "business_rules" in message
+
 
 class TestFilterOperators:
     """One assertion per filter operator — the SQL must mirror the Spark dispatch."""
@@ -362,6 +487,78 @@ keep_all_columns: true
         from skifer.core.ir import ParsedSchema
         with pytest.raises(SqlCompilationError, match="No tables declared"):
             compile_select(ParsedSchema())
+
+
+class TestDuckDBExecution:
+    def test_partial_compiled_sql_returns_expected_rows(self):
+        import duckdb
+
+        from skifer.core.dialect import transpile
+
+        connection = duckdb.connect()
+        connection.execute("CREATE TABLE raw_orders (order_id INTEGER, status VARCHAR)")
+        connection.executemany(
+            "INSERT INTO raw_orders VALUES (?, ?)",
+            [(1, "DONE"), (2, "PENDING"), (3, "DONE")],
+        )
+        child = {
+            "tables": [
+                {
+                    "name": "raw_orders",
+                    "alias": "orders",
+                    "filter": [
+                        {"column": "status", "operator": "equals", "value": "DONE"}
+                    ],
+                }
+            ],
+            "select_final": [["order_id", "order_id"]],
+        }
+        parsed = parse_to_ir(
+            {
+                "partials": [
+                    {
+                        "alias": "done_orders",
+                        "resolved_path": "/schemas/done_orders.yaml",
+                        "schema": child,
+                    }
+                ],
+                "select_final": [["order_id", "order_id"]],
+            }
+        )
+
+        sql = transpile(compile_select(parsed), target="duckdb")
+        rows = connection.execute(sql).fetchall()
+
+        assert sorted(rows) == [(1,), (3,)]
+
+    def test_drop_duplicates_compiled_sql_keeps_one_original_row_per_key(self):
+        import duckdb
+
+        from skifer.core.dialect import transpile
+
+        original_rows = [(1, "first"), (1, "second"), (2, "only")]
+        connection = duckdb.connect()
+        connection.execute("CREATE TABLE raw_events (event_key INTEGER, value VARCHAR)")
+        connection.executemany("INSERT INTO raw_events VALUES (?, ?)", original_rows)
+        parsed = parse_to_ir(
+            {
+                "tables": [
+                    {
+                        "name": "raw_events",
+                        "alias": "events",
+                        "quality_checks": {"drop_duplicates_on": ["event_key"]},
+                    }
+                ],
+                "keep_all_columns": True,
+            }
+        )
+
+        pivot_sql = compile_select(parsed, persisted_definition=False)
+        rows = connection.execute(transpile(pivot_sql, target="duckdb")).fetchall()
+
+        assert len(rows) == 2
+        assert {row[0] for row in rows} == {1, 2}
+        assert all(row in original_rows for row in rows)
 
 
 # ==============================================================================

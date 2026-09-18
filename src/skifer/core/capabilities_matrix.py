@@ -9,7 +9,6 @@ if TYPE_CHECKING:
 
 
 CAP_PYTHON_RULES = "python_rules"
-CAP_PARTIALS = "partials"
 CAP_FILE_SOURCES = "file_sources"
 CAP_LOADERS = "loaders"
 CAP_STREAMING = "streaming"
@@ -22,7 +21,6 @@ CAP_PREPROCESS_QUALIFY = "preprocess_qualify"
 ALL_CAPABILITIES: frozenset[str] = frozenset(
     {
         CAP_PYTHON_RULES,
-        CAP_PARTIALS,
         CAP_FILE_SOURCES,
         CAP_LOADERS,
         CAP_STREAMING,
@@ -42,7 +40,6 @@ class UnsupportedCapabilityError(ValueError):
 
 _YAML_CONSTRUCTIONS = {
     CAP_PYTHON_RULES: "business_rules:",
-    CAP_PARTIALS: "partials:",
     CAP_FILE_SOURCES: "tables[].source:",
     CAP_LOADERS: "tables[].source_type: loader",
     CAP_STREAMING: "tables[].streaming: true",
@@ -59,10 +56,14 @@ def required_capabilities(parsed: ParsedSchema) -> frozenset[str]:
     required: set[str] = set()
     if parsed.business_rules:
         required.add(CAP_PYTHON_RULES)
-    if parsed.partials:
-        required.add(CAP_PARTIALS)
     if parsed.dev_limit:
         required.add(CAP_DEV_LIMIT)
+
+    if parsed.partials:
+        from skifer.core.ir import parse_to_ir
+
+        for partial in parsed.partials:
+            required.update(required_capabilities(parse_to_ir(partial.schema)))
 
     for table in parsed.tables:
         if table.is_loader:
