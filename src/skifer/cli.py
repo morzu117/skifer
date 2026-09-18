@@ -27,6 +27,10 @@ SEMANTIC_EXIT_ERROR = 1
 SEMANTIC_EXIT_DRIFT = 2
 SEMANTIC_EXIT_CONFLICT = 3
 
+COMPILE_EXIT_OK = 0
+COMPILE_EXIT_ERROR = 1
+COMPILE_EXIT_REFUSAL = 2
+
 SNAPSHOT_EXIT_OK = 0
 SNAPSHOT_EXIT_ERROR = 1
 SNAPSHOT_EXIT_FINDING = 2
@@ -83,6 +87,30 @@ def main() -> None:
         nargs="+",
         metavar="PATH",
         help="Schema file path(s) or glob patterns (e.g. schemas/**/*.yaml).",
+    )
+
+    compile_parser = subparsers.add_parser(
+        "compile",
+        help="Print the SQL one pipeline would run, without executing anything.",
+    )
+    compile_parser.add_argument(
+        "pipeline",
+        metavar="PIPELINE",
+        help="Pipeline YAML file path.",
+    )
+    compile_parser.add_argument(
+        "--target",
+        required=True,
+        choices=("databricks", "duckdb", "snowflake", "bigquery"),
+        help="SQL dialect to emit.",
+    )
+    compile_parser.add_argument(
+        "--env",
+        default=None,
+        help=(
+            "config.yaml environment used to resolve {{ params }}. Without it, "
+            "placeholders are filled with sentinels and the SQL is not runnable."
+        ),
     )
 
     audit_parser = subparsers.add_parser(
@@ -406,6 +434,8 @@ def main() -> None:
 
     if args.command == "validate":
         _run_validate(args)
+    elif args.command == "compile":
+        sys.exit(run_compile(args.pipeline, args.target, env=args.env))
     elif args.command == "audit":
         _run_audit(args)
     elif args.command == "index":
@@ -1159,6 +1189,121 @@ def run_semantic_sync(pipeline_path: str, *, mode: str) -> int:
         f"'{curated_path.name}' and updated semantic_catalog.yaml."
     )
     return SEMANTIC_EXIT_OK
+
+
+def _compile_params(yaml_text: str, env: str | None) -> tuple[dict, bool]:
+    """Resolve {{ params }} from one environment, or fall back to sentinels.
+
+    Returns (params, used_sentinels). The flag is reported to the caller rather
+    than guessed later: SQL rendered with sentinels is not runnable, and nothing
+    in the SQL itself says so.
+    """
+    if env is None:
+        sentinels = _sentinel_params(yaml_text)
+        # Only claim substitution when the YAML actually carries placeholders.
+        # Warning on a file that has none states something untrue, and a warning
+        # that cries wolf is the one nobody reads on the file that does.
+        return sentinels, bool(sentinels)
+
+    from skifer.core.config import ConfigurationManager
+
+    config = ConfigurationManager().config
+    environments = config.get("environments") or {}
+    target = str(env).casefold()
+    matched = next(
+        (
+            value
+            for key, value in environments.items()
+            if str(key).casefold() == target and isinstance(value, dict)
+        ),
+        None,
+    )
+    if matched is None:
+        raise ValueError(
+            f"Environment {env!r} is not declared in config.yaml. "
+            f"Declared: {sorted(environments)}."
+        )
+    declared = matched.get("params") or {}
+    if not isinstance(declared, dict):
+        raise ValueError(f"Environment {env!r} declares a non-mapping 'params'.")
+    # Built-ins win on collision, exactly as engine.default_params does.
+    return {**declared, "catalog": matched.get("catalog"), "env": env.upper()}, False
+
+
+def run_compile(pipeline_path: str, target: str, *, env: str | None = None) -> int:
+    """Print one pipeline's SQL for a dialect; execute nothing, connect to nothing.
+
+    SQL goes to stdout alone so the command can be redirected to a file. Every
+    diagnostic goes to stderr, including the sentinel warning.
+
+    Compilation is refused rather than approximated. A rule of kind='sql' needs its
+    tables' columns to know whether it adds or rewrites one, and a file source needs
+    the adapter's reader — both require a live connection, which this command
+    deliberately does not open. Emitting plausible SQL instead would be worse than
+    refusing: plausible SQL gets pasted.
+    """
+    from skifer.core.dialect import DialectError, transpile
+    from skifer.core.ir import parse_to_ir
+    from skifer.core.schema_loader import parse_schema
+    from skifer.core.sql_compiler import SqlCompilationError, compile_select
+
+    try:
+        yaml_text = _read_text_file(pipeline_path)
+        params, used_sentinels = _compile_params(yaml_text, env)
+        parsed = parse_to_ir(parse_schema(yaml_text, params=params))
+    except Exception as exc:
+        print(f"[compile] Failed to load '{pipeline_path}': {exc}", file=sys.stderr)
+        return COMPILE_EXIT_ERROR
+
+    materialization = parsed.materialization or {}
+    persisted = materialization.get("type") in ("view", "materialized_view")
+    allow_raw_sql = True
+    if env is not None:
+        from skifer.core.config import ConfigurationManager
+
+        environments = ConfigurationManager().config.get("environments") or {}
+        for key, value in environments.items():
+            if str(key).casefold() == str(env).casefold() and isinstance(value, dict):
+                allow_raw_sql = value.get("allow_raw_sql", True)
+
+    try:
+        pivot = compile_select(
+            parsed,
+            allow_raw_sql=allow_raw_sql,
+            persisted_definition=persisted,
+        )
+        sql = transpile(pivot, target=target)
+    except SqlCompilationError as exc:
+        print(
+            f"[compile] Refusing '{pipeline_path}' for target '{target}': {exc}",
+            file=sys.stderr,
+        )
+        # Only add the connection hint when the refusal really is about reading
+        # columns. Appending it to every refusal would explain a file source or an
+        # unimported rule with a cause that has nothing to do with either.
+        if "resolve_columns" in str(exc):
+            print(
+                "[compile] 'skifer compile' opens no connection, so it cannot read "
+                "a table's columns. Declare explicit 'fields' projections on the "
+                "tables concerned, or run the pipeline through an engine.",
+                file=sys.stderr,
+            )
+        return COMPILE_EXIT_REFUSAL
+    except DialectError as exc:
+        print(f"[compile] Refusing '{pipeline_path}': {exc}", file=sys.stderr)
+        return COMPILE_EXIT_REFUSAL
+    except Exception as exc:
+        print(f"[compile] Failed to compile '{pipeline_path}': {exc}", file=sys.stderr)
+        return COMPILE_EXIT_ERROR
+
+    if used_sentinels:
+        print(
+            "[compile] No --env given: '{{ param }}' placeholders were filled with "
+            "sentinel values. This SQL is readable, not runnable.",
+            file=sys.stderr,
+        )
+    print(sql)
+    return COMPILE_EXIT_OK
 
 
 def run_snapshot_check(pipeline_path: str, *, runner=None) -> int:

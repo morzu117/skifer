@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `skifer compile PIPELINE --target databricks|duckdb|snowflake|bigquery`, which prints
+  the SQL a pipeline would run and executes nothing. The SQL goes to stdout alone so the
+  command can be redirected to a file; every diagnostic goes to stderr. The `databricks`
+  target emits the pivot verbatim, since a materialized view's definition hash is computed
+  on that exact text. The command opens no connection, so a pipeline whose compilation needs
+  to read a catalog is refused by name with exit code 2 rather than rendered approximately —
+  plausible SQL gets pasted. (Plan 39.6.1)
 - Added write-strategy equivalence tests running the same YAML through both engines,
   twice, with the source changed in between: `view`, `incremental append` with and without
   a watermark, `incremental merge` and both SCD2 snapshot strategies. A single run proves
