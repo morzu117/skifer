@@ -315,6 +315,24 @@ class TestPatternWiring:
         assert b._written == {}
         assert b._streams == {}
 
+    def test_view_uses_sql_ddl_and_never_writes_dataframe(self, mocker):
+        b = _backend_with_orders()
+        b.execute_sql = mocker.Mock()
+        engine = _make_engine(b)
+        schema = {
+            "materialization": {"type": "view"},
+            "tables": [{"name": "silver.orders", "alias": "ord"}],
+            "select_final": [["country", "country"], ["amount", "amount"]],
+        }
+
+        engine.run_process_to_table(schema, "gold", "orders_v")
+
+        b.execute_sql.assert_called_once()
+        assert b.execute_sql.call_args.args[0].startswith(
+            "CREATE OR REPLACE VIEW `gold`.`orders_v` AS "
+        )
+        assert b._written == {}
+
     def test_monitor_runs_only_when_the_ddl_executed(self, tmp_path):
         class _RecordingMonitor:
             def __init__(self):

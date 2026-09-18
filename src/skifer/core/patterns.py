@@ -89,6 +89,12 @@ class PipelinePatterns:
         mat = schema_dict.get("materialization")
         return bool(mat and mat.get("type") == "materialized_view")
 
+    @staticmethod
+    def _is_view_schema(schema_dict: dict) -> bool:
+        """True when the schema declares ``materialization: view`` (Plan 39.4.2)."""
+        mat = schema_dict.get("materialization")
+        return bool(mat and mat.get("type") == "view")
+
     # ------------------------------------------------------------------
     # run_process_to_table
     # ------------------------------------------------------------------
@@ -129,10 +135,16 @@ class PipelinePatterns:
 
         has_data_product = schema_dict.get("data_product") is not None
         if has_data_product:
-            if uses_jdbc_sink or is_streaming or self._is_materialized_view_schema(schema_dict):
+            if (
+                uses_jdbc_sink
+                or is_streaming
+                or self._is_materialized_view_schema(schema_dict)
+                or self._is_view_schema(schema_dict)
+            ):
                 raise ValueError(
                     "Certified publication (schema declares 'data_product') does not support "
-                    "streaming, JDBC sinks, or materialized views yet."
+                    "streaming, JDBC sinks, or materialized views yet; views are also "
+                    "unsupported."
                 )
             if e.certification_store is None or getattr(e, "monitor", None) is None:
                 raise ValueError(
@@ -191,6 +203,17 @@ class PipelinePatterns:
                     "   -> [Monitor] %s — %s/%s checks passed.",
                     summary.get("status", "PASS"), summary["passed"], summary["total_checks"],
                 )
+            logger.info("--- Pattern 'process_to_table' completed. ---")
+            return
+
+        # Logical view (Plan 39.4.2): like materialized views, a persisted SQL
+        # definition must never run through the DataFrame write path.
+        if self._is_view_schema(schema_dict):
+            logger.info(
+                "--- Executing Pattern: process_to_table [view] (Target: %s) ---",
+                target_table_name,
+            )
+            e._create_view(schema_dict, actual_schema, target_table_name)
             logger.info("--- Pattern 'process_to_table' completed. ---")
             return
 
@@ -304,6 +327,12 @@ class PipelinePatterns:
                 "materialized view per slice (each with its own filter), or split "
                 "downstream in batch."
             )
+        if self._is_view_schema(schema_dict):
+            raise NotImplementedError(
+                "run_process_and_split does not support views — a view is one SQL "
+                "definition, it cannot fan out into N targets. Declare one view per "
+                "slice or split downstream in batch."
+            )
         if self._is_streaming_schema(schema_dict):
             raise NotImplementedError(
                 "run_process_and_split does not support streaming schemas (cache() and "
@@ -380,6 +409,12 @@ class PipelinePatterns:
                 "which has no place in a persisted SQL definition. List the sources "
                 "explicitly in 'tables:' (UNION ALL compilation is planned for a "
                 "later plan)."
+            )
+        if self._is_view_schema(schema_dict):
+            raise NotImplementedError(
+                "run_union_sources_to_table does not support views — this pattern "
+                "discovers its sources at run time and injects a DataFrame, which "
+                "has no place in a persisted SQL definition."
             )
         if self._is_streaming_schema(schema_dict):
             raise NotImplementedError(

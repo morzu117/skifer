@@ -44,6 +44,7 @@ DATABRICKS_CAPABILITIES: frozenset[str] = frozenset(
         CAP_LOADERS,
         CAP_STREAMING,
         CAP_MATERIALIZED_VIEW,
+        CAP_VIEW,
         CAP_JDBC_SINK,
         CAP_DEV_LIMIT,
         CAP_DROP_DUPLICATES,

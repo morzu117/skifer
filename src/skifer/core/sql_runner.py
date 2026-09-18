@@ -47,14 +47,16 @@ def run_sql_pipeline(
     resolve_table: Callable[[str], str] | None = None,
     allow_raw_sql: bool = True,
 ) -> str:
-    """Compile, transpile and materialize one YAML pipeline as an SQL table."""
+    """Compile, transpile and materialize one YAML pipeline through SQL DDL."""
     parsed = parse_to_ir(schema_dict)
     assert_supported(
         parsed,
         adapter_name=adapter.name,
         supported=adapter.capabilities,
     )
-    if context.is_job_execution or context.is_production:
+    materialization = parsed.materialization or {}
+    is_view = materialization.get("type") == "view"
+    if (context.is_job_execution or context.is_production) and not is_view:
         parsed = _without_dev_limits(parsed)
 
     resolve = resolve_table or (lambda name: name)
@@ -76,12 +78,13 @@ def run_sql_pipeline(
             else None
         ),
         resolve_columns=resolve_columns,
-        persisted_definition=False,
+        persisted_definition=is_view,
     )
     translated = transpile(select_sql, target=adapter.name)
-    statement = (
-        f"CREATE OR REPLACE TABLE {quote_fqn(target_fqn, target=adapter.name)} AS "
-        f"{translated}"
-    )
+    target = quote_fqn(target_fqn, target=adapter.name)
+    if is_view:
+        statement = f"CREATE OR REPLACE VIEW {target} AS {translated}"
+    else:
+        statement = f"CREATE OR REPLACE TABLE {target} AS {translated}"
     adapter.execute_sql(statement)
     return statement

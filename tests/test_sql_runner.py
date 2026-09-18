@@ -15,7 +15,6 @@ from skifer.core.adapters.duckdb import DuckDBAdapter, DuckDBAdapterError
 from skifer.core.capabilities_matrix import (
     CAP_INCREMENTAL,
     CAP_SNAPSHOT,
-    CAP_VIEW,
     UnsupportedCapabilityError,
 )
 from skifer.core.context import ExecutionContext
@@ -168,7 +167,6 @@ def test_python_rule_is_refused_by_adapter_capability(duck_adapter, registered_r
 @pytest.mark.parametrize(
     ("materialization", "capability"),
     [
-        ({"type": "view"}, CAP_VIEW),
         ({"type": "incremental", "strategy": "append"}, CAP_INCREMENTAL),
         (
             {
@@ -198,6 +196,76 @@ def test_duckdb_refuses_unimplemented_materialization_by_name(
     message = str(exc_info.value)
     assert "duckdb" in message
     assert capability in message
+
+
+def test_duckdb_view_tracks_source_changes(duck_adapter):
+    duck_adapter.execute_sql("CREATE SCHEMA source")
+    duck_adapter.execute_sql("CREATE SCHEMA gold")
+    duck_adapter.execute_sql(
+        "CREATE TABLE source.orders(order_id INTEGER, status VARCHAR)"
+    )
+    duck_adapter.execute_sql("INSERT INTO source.orders VALUES (1, 'ready')")
+    schema = {
+        "materialization": {"type": "view"},
+        "tables": [{"name": "source.orders", "alias": "orders"}],
+        "select_final": [["order_id", "order_id"], ["status", "status"]],
+    }
+
+    statement = run_sql_pipeline(
+        duck_adapter,
+        schema,
+        "gold.orders_v",
+        context=_context(),
+    )
+
+    assert statement.startswith('CREATE OR REPLACE VIEW "gold"."orders_v" AS ')
+    assert duck_adapter.fetch(
+        'SELECT * FROM "gold"."orders_v" ORDER BY "order_id"'
+    ) == [{"order_id": 1, "status": "ready"}]
+
+    duck_adapter.execute_sql("INSERT INTO source.orders VALUES (2, 'done')")
+
+    assert duck_adapter.fetch(
+        'SELECT * FROM "gold"."orders_v" ORDER BY "order_id"'
+    ) == [
+        {"order_id": 1, "status": "ready"},
+        {"order_id": 2, "status": "done"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("schema_extra", "message"),
+    [
+        ({"dev_limit": 1}, "dev_limit"),
+        (
+            {
+                "tables": [
+                    {
+                        "name": "source.orders",
+                        "quality_checks": {"drop_duplicates_on": ["order_id"]},
+                    }
+                ]
+            },
+            "drop_duplicates_on",
+        ),
+    ],
+)
+def test_duckdb_view_rejects_unstable_persisted_definition_constructs(
+    duck_adapter, schema_extra, message
+):
+    schema = {
+        "materialization": {"type": "view"},
+        "tables": [{"name": "source.orders"}],
+        **schema_extra,
+    }
+
+    with pytest.raises(SqlCompilationError, match=message):
+        run_sql_pipeline(
+            duck_adapter,
+            schema,
+            "gold.orders_v",
+            context=_context(is_job=True),
+        )
 
 
 def test_sql_rule_rewrite_uses_resolved_source_columns(

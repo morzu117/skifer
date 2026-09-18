@@ -10,7 +10,6 @@ from skifer.core.spark_backend import SparkBackend
 from skifer.core.capabilities_matrix import (
     CAP_INCREMENTAL,
     CAP_SNAPSHOT,
-    CAP_VIEW,
     UnsupportedCapabilityError,
 )
 from skifer.core.ir import ParsedFilter, _parse_op
@@ -824,7 +823,6 @@ def test_run_process_to_table_accepts_and_returns_injected_run_id(mocker):
 @pytest.mark.parametrize(
     ("materialization", "capability"),
     [
-        ({"type": "view"}, CAP_VIEW),
         ({"type": "incremental", "strategy": "append"}, CAP_INCREMENTAL),
         (
             {

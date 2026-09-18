@@ -255,5 +255,6 @@ def test_capability_error_schemas_cover_all_capabilities_exactly():
 
 def test_databricks_capabilities_exclude_unimplemented_write_strategies():
     assert DATABRICKS_CAPABILITIES.isdisjoint(
-        {CAP_VIEW, CAP_INCREMENTAL, CAP_SNAPSHOT}
+        {CAP_INCREMENTAL, CAP_SNAPSHOT}
     )
+    assert CAP_VIEW in DATABRICKS_CAPABILITIES

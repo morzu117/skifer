@@ -9,6 +9,7 @@ from skifer.core.capabilities_matrix import (
     CAP_DEV_LIMIT,
     CAP_DROP_DUPLICATES,
     CAP_FILE_SOURCES,
+    CAP_VIEW,
 )
 from skifer.core.dialect import quote_fqn, quote_ident
 from skifer.core.ir import ParsedTable
@@ -33,7 +34,9 @@ class DuckDBAdapter:
 
     @property
     def capabilities(self) -> frozenset[str]:
-        return frozenset({CAP_DEV_LIMIT, CAP_DROP_DUPLICATES, CAP_FILE_SOURCES})
+        return frozenset(
+            {CAP_DEV_LIMIT, CAP_DROP_DUPLICATES, CAP_FILE_SOURCES, CAP_VIEW}
+        )
 
     @property
     def connection(self) -> Any:

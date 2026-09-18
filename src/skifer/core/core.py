@@ -693,6 +693,14 @@ class SkiferEngine:
                 "materialized views to the DDL path."
             )
 
+        if materialization and materialization.get("type") == "view":
+            raise ValueError(
+                f"[_write_dataframe] '{fqn}' declares 'materialization: view' — "
+                "a view is defined by SQL, not written from a DataFrame. "
+                "Run it through run_process_to_table/run_from_yaml, which route "
+                "views to the DDL path."
+            )
+
         if materialization and materialization.get("type") == "streaming_table":
             self._get_backend().write_stream_table(
                 df,
@@ -742,6 +750,24 @@ class SkiferEngine:
     # ------------------------------------------------------------------
     # Materialized views (Plan 28)
     # ------------------------------------------------------------------
+
+    def _create_view(
+        self, schema_dict: dict, actual_schema: str, target_table_name: str
+    ) -> None:
+        """Compile the schema to a persisted SQL view and execute its DDL."""
+        from skifer.core.ir import parse_to_ir
+        from skifer.core.sql_compiler import compile_select
+
+        self._ensure_schema_exists(actual_schema)
+        fqn = self._build_fqn(actual_schema, target_table_name)
+        allow_raw_sql = self._context.env_config().get("allow_raw_sql", True)
+        select_sql = compile_select(
+            parse_to_ir(schema_dict),
+            resolve_table=self._interpreter.resolve_source_table,
+            allow_raw_sql=allow_raw_sql,
+            persisted_definition=True,
+        )
+        self._get_backend().execute_sql(f"CREATE OR REPLACE VIEW {fqn} AS {select_sql}")
 
     def resolve_sql_warehouse_id(self) -> str | None:
         """
