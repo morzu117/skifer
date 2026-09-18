@@ -718,6 +718,35 @@ class SkiferEngine:
 
         return df.filter(F.col(f"`{watermark_column}`") > F.lit(max_value))
 
+    def _merge_incremental_dataframe(self, df, fqn: str, materialization: dict) -> None:
+        if not self._target_exists(fqn):
+            self._get_backend().write_table(df, fqn)
+            return
+
+        from skifer.core.merge_sql import assert_merge_columns_match, build_merge_sql
+        from skifer.core.sql_compiler import quote_ident
+
+        backend = self._get_backend()
+        unique_key = materialization["unique_key"]
+        source_columns = list(getattr(df, "columns", []))
+        target_columns = backend.list_relation_columns(fqn)
+        assert_merge_columns_match(
+            source_columns=source_columns,
+            target_columns=target_columns,
+            unique_key=unique_key,
+        )
+        view_name = f"_skifer_incremental_merge_src_{uuid4().hex}"
+        backend.register_temp_view(df, view_name)
+        backend.execute_sql(
+            build_merge_sql(
+                target_relation=fqn,
+                source_relation=quote_ident(view_name),
+                unique_key=unique_key,
+                target_columns=target_columns,
+                target=backend.name,
+            )
+        )
+
     def _write_dataframe(self, df, fqn, label, sink_config=None, materialization=None):
         """Writes a DataFrame to the configured sink."""
         if sink_config and sink_config.get("type") in ("postgres", "jdbc"):
@@ -747,14 +776,18 @@ class SkiferEngine:
 
         if materialization and materialization.get("type") == "incremental":
             strategy = materialization.get("strategy")
-            if strategy != "append":
+            if strategy == "append":
+                df = self._apply_incremental_append_bound(df, fqn, materialization)
+                self._get_backend().write_table(df, fqn, mode="append")
+                return
+            if strategy == "merge":
+                self._merge_incremental_dataframe(df, fqn, materialization)
+                return
+            if strategy:
                 raise NotImplementedError(
-                    "[incremental] strategy 'merge' is not implemented yet; "
-                    "only 'append' is supported."
+                    f"[incremental] strategy {strategy!r} is not implemented yet; "
+                    "only 'append' and 'merge' are supported."
                 )
-            df = self._apply_incremental_append_bound(df, fqn, materialization)
-            self._get_backend().write_table(df, fqn, mode="append")
-            return
 
         if materialization and materialization.get("type") == "streaming_table":
             self._get_backend().write_stream_table(

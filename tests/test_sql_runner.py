@@ -196,31 +196,6 @@ def test_duckdb_refuses_unimplemented_materialization_by_name(
     assert capability in message
 
 
-def test_duckdb_refuses_incremental_merge_strategy(duck_adapter):
-    with pytest.raises(UnsupportedCapabilityError) as exc_info:
-        run_sql_pipeline(
-            duck_adapter,
-            {
-                "tables": [{"name": "source.orders"}],
-                "materialization": {
-                    "type": "incremental",
-                    "strategy": "merge",
-                    "unique_key": ["order_id"],
-                },
-            },
-            "gold.orders",
-            context=_context(),
-        )
-
-    message = str(exc_info.value)
-    assert "incremental strategy 'merge'" in message
-    assert "append" in message
-    # The refusal must not read as an adapter limitation. No adapter implements
-    # merge yet, so naming DuckDB here would send the reader shopping for another
-    # engine to switch to — and every one of them refuses it identically.
-    assert "duckdb" not in message.lower()
-
-
 def test_duckdb_view_tracks_source_changes(duck_adapter):
     duck_adapter.execute_sql("CREATE SCHEMA source")
     duck_adapter.execute_sql("CREATE SCHEMA gold")
@@ -371,6 +346,136 @@ def test_duckdb_incremental_append_watermark_unchanged_source_noops(duck_adapter
     assert duck_adapter.fetch(
         'SELECT COUNT(*) AS "row_count" FROM "gold"."orders"'
     ) == [{"row_count": 2}]
+
+
+def test_duckdb_incremental_merge_updates_inserts_and_keeps_keys_unique(duck_adapter):
+    duck_adapter.execute_sql("CREATE SCHEMA source")
+    duck_adapter.execute_sql("CREATE SCHEMA gold")
+    duck_adapter.execute_sql(
+        "CREATE TABLE source.orders(order_id INTEGER, status VARCHAR, amount INTEGER)"
+    )
+    duck_adapter.execute_sql(
+        "INSERT INTO source.orders VALUES (1, 'steady', 10), (2, 'old', 20)"
+    )
+    schema = {
+        "materialization": {
+            "type": "incremental",
+            "strategy": "merge",
+            "unique_key": ["order_id"],
+        },
+        "tables": [{"name": "source.orders", "alias": "orders"}],
+    }
+
+    first = run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+    duck_adapter.execute_sql("DELETE FROM source.orders")
+    duck_adapter.execute_sql(
+        "INSERT INTO source.orders VALUES "
+        "(1, 'steady', 10), (2, 'updated', 25), (3, 'new', 30)"
+    )
+    second = run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+
+    assert first.startswith('CREATE TABLE "gold"."orders" AS ')
+    assert second.startswith('MERGE INTO "gold"."orders" AS t')
+    assert "SET *" not in second
+    assert "INSERT *" not in second
+    assert 't."order_id" = s."order_id"' in second
+    assert 't."order_id" = s."order_id"' not in second.split(
+        "WHEN MATCHED THEN UPDATE SET", 1
+    )[1].split("WHEN NOT MATCHED", 1)[0]
+    assert duck_adapter.fetch(
+        'SELECT * FROM "gold"."orders" ORDER BY "order_id"'
+    ) == [
+        {"order_id": 1, "status": "steady", "amount": 10},
+        {"order_id": 2, "status": "updated", "amount": 25},
+        {"order_id": 3, "status": "new", "amount": 30},
+    ]
+    assert duck_adapter.fetch(
+        'SELECT "order_id", COUNT(*) AS "row_count" '
+        'FROM "gold"."orders" GROUP BY "order_id" ORDER BY "order_id"'
+    ) == [
+        {"order_id": 1, "row_count": 1},
+        {"order_id": 2, "row_count": 1},
+        {"order_id": 3, "row_count": 1},
+    ]
+
+
+def test_duckdb_incremental_merge_composite_key_uses_every_key(duck_adapter):
+    duck_adapter.execute_sql("CREATE SCHEMA source")
+    duck_adapter.execute_sql("CREATE SCHEMA gold")
+    duck_adapter.execute_sql(
+        "CREATE TABLE source.orders(order_id INTEGER, src VARCHAR, status VARCHAR)"
+    )
+    duck_adapter.execute_sql(
+        "INSERT INTO source.orders VALUES (1, 'web', 'old'), (1, 'pos', 'steady')"
+    )
+    schema = {
+        "materialization": {
+            "type": "incremental",
+            "strategy": "merge",
+            "unique_key": ["order_id", "src"],
+        },
+        "tables": [{"name": "source.orders", "alias": "orders"}],
+    }
+
+    run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+    duck_adapter.execute_sql("DELETE FROM source.orders")
+    duck_adapter.execute_sql(
+        "INSERT INTO source.orders VALUES "
+        "(1, 'web', 'updated'), (1, 'pos', 'steady'), (2, 'web', 'new')"
+    )
+    statement = run_sql_pipeline(
+        duck_adapter, schema, "gold.orders", context=_context()
+    )
+
+    assert 't."order_id" = s."order_id" AND t."src" = s."src"' in statement
+    assert duck_adapter.fetch(
+        'SELECT "order_id", "src", "status" FROM "gold"."orders" '
+        'ORDER BY "order_id", "src"'
+    ) == [
+        {"order_id": 1, "src": "pos", "status": "steady"},
+        {"order_id": 1, "src": "web", "status": "updated"},
+        {"order_id": 2, "src": "web", "status": "new"},
+    ]
+    assert duck_adapter.fetch(
+        'SELECT "order_id", "src", COUNT(*) AS "row_count" '
+        'FROM "gold"."orders" GROUP BY "order_id", "src" '
+        'ORDER BY "order_id", "src"'
+    ) == [
+        {"order_id": 1, "src": "pos", "row_count": 1},
+        {"order_id": 1, "src": "web", "row_count": 1},
+        {"order_id": 2, "src": "web", "row_count": 1},
+    ]
+
+
+def test_duckdb_incremental_merge_refuses_source_target_column_divergence(
+    duck_adapter,
+):
+    duck_adapter.execute_sql("CREATE SCHEMA source")
+    duck_adapter.execute_sql("CREATE SCHEMA gold")
+    duck_adapter.execute_sql(
+        "CREATE TABLE source.orders(order_id INTEGER, status VARCHAR)"
+    )
+    duck_adapter.execute_sql("INSERT INTO source.orders VALUES (1, 'old')")
+    schema = {
+        "materialization": {
+            "type": "incremental",
+            "strategy": "merge",
+            "unique_key": ["order_id"],
+        },
+        "tables": [{"name": "source.orders", "alias": "orders"}],
+    }
+
+    run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+    duck_adapter.execute_sql("DROP TABLE source.orders")
+    duck_adapter.execute_sql("CREATE TABLE source.orders(order_id INTEGER, note VARCHAR)")
+    duck_adapter.execute_sql("INSERT INTO source.orders VALUES (1, 'new')")
+
+    with pytest.raises(ValueError) as exc_info:
+        run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+
+    message = str(exc_info.value)
+    assert "source-only columns: ['note']" in message
+    assert "target-only columns: ['status']" in message
 
 
 def test_sql_rule_rewrite_uses_resolved_source_columns(

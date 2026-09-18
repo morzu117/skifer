@@ -8,6 +8,7 @@ from typing import Any, Callable
 from skifer.core.capabilities_matrix import CAP_FILE_SOURCES, assert_supported
 from skifer.core.dialect import quote_fqn, quote_ident, split_fqn, transpile
 from skifer.core.ir import ParsedSchema, ParsedTable, parse_to_ir
+from skifer.core.merge_sql import assert_merge_columns_match, build_merge_sql
 from skifer.core.sql_compiler import compile_select
 
 
@@ -99,6 +100,10 @@ def run_sql_pipeline(
         materialization.get("type") == "incremental"
         and materialization.get("strategy") == "append"
     )
+    is_incremental_merge = (
+        materialization.get("type") == "incremental"
+        and materialization.get("strategy") == "merge"
+    )
     if (context.is_job_execution or context.is_production) and not is_view:
         parsed = _without_dev_limits(parsed)
 
@@ -138,6 +143,26 @@ def run_sql_pipeline(
                 adapter_name=adapter.name,
             )
             statement = f"INSERT INTO {target} {bounded}"
+        else:
+            statement = f"CREATE TABLE {target} AS {translated}"
+    elif is_incremental_merge:
+        catalog, schema, table = _target_parts(target_fqn)
+        target_exists = adapter.table_exists(catalog, schema, table)
+        if target_exists:
+            target_columns = adapter.list_relation_columns(target)
+            source_columns = adapter.list_relation_columns(f"(\n{translated}\n)")
+            assert_merge_columns_match(
+                source_columns=source_columns,
+                target_columns=target_columns,
+                unique_key=materialization["unique_key"],
+            )
+            statement = build_merge_sql(
+                target_relation=target,
+                source_relation=f"(\n{translated}\n)",
+                unique_key=materialization["unique_key"],
+                target_columns=target_columns,
+                target=adapter.name,
+            )
         else:
             statement = f"CREATE TABLE {target} AS {translated}"
     else:

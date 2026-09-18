@@ -259,7 +259,7 @@ def test_databricks_capabilities_exclude_unimplemented_write_strategies():
     assert CAP_INCREMENTAL in DATABRICKS_CAPABILITIES
 
 
-def test_incremental_capability_does_not_enable_merge_strategy():
+def test_incremental_capability_enables_implemented_merge_strategy():
     parsed = parse_to_ir(
         {
             "tables": [{"name": "orders"}],
@@ -271,7 +271,25 @@ def test_incremental_capability_does_not_enable_merge_strategy():
         }
     )
 
-    with pytest.raises(UnsupportedCapabilityError, match="merge.*append"):
+    assert_supported(
+        parsed, adapter_name="databricks", supported=DATABRICKS_CAPABILITIES
+    )
+
+
+def test_capability_matrix_still_refuses_unimplemented_snapshot_materialization():
+    parsed = parse_to_ir(
+        {
+            "tables": [{"name": "orders"}],
+            "materialization": {
+                "type": "snapshot",
+                "strategy": "timestamp",
+                "unique_key": ["id"],
+                "updated_at": "modified_at",
+            },
+        }
+    )
+
+    with pytest.raises(UnsupportedCapabilityError, match="snapshot"):
         assert_supported(
             parsed, adapter_name="databricks", supported=DATABRICKS_CAPABILITIES
         )

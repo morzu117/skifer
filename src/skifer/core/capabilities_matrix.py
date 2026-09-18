@@ -53,7 +53,7 @@ DATABRICKS_CAPABILITIES: frozenset[str] = frozenset(
     }
 )
 
-IMPLEMENTED_INCREMENTAL_STRATEGIES: frozenset[str] = frozenset({"append"})
+IMPLEMENTED_INCREMENTAL_STRATEGIES: frozenset[str] = frozenset({"append", "merge"})
 
 
 class UnsupportedCapabilityError(ValueError):

@@ -26,6 +26,8 @@ from skifer.core.environment import (
 )
 from skifer.core.constants import VALID_SOURCE_TYPES, VALID_STREAMING_SOURCE_TYPES
 from skifer.core.capabilities_matrix import DATABRICKS_CAPABILITIES
+from skifer.core.merge_sql import assert_merge_columns_match, build_merge_sql
+from skifer.core.sql_compiler import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -816,11 +818,21 @@ class SparkBackend:
                 return
 
             deduped.createOrReplaceTempView(view_name)
-            on_clause = " AND ".join(f"t.`{k}` = s.`{k}`" for k in keys)
+            target_columns = spark.sql(f"SELECT * FROM {fqn} LIMIT 0").columns
+            source_columns = deduped.columns
+            assert_merge_columns_match(
+                source_columns=source_columns,
+                target_columns=target_columns,
+                unique_key=keys,
+            )
             spark.sql(
-                f"MERGE INTO {fqn} AS t USING {view_name} AS s ON {on_clause} "
-                "WHEN MATCHED THEN UPDATE SET * "
-                "WHEN NOT MATCHED THEN INSERT *"
+                build_merge_sql(
+                    target_relation=fqn,
+                    source_relation=quote_ident(view_name),
+                    unique_key=keys,
+                    target_columns=target_columns,
+                    target="databricks",
+                )
             )
 
         return _merge_batch

@@ -854,26 +854,27 @@ def test_databricks_refuses_unimplemented_materialization_by_name(
     engine._patterns.run_process_to_table.assert_not_called()
 
 
-def test_databricks_refuses_incremental_merge_strategy_before_patterns(mocker):
+def test_databricks_accepts_incremental_merge_strategy_before_patterns(mocker):
     engine = _engine_for_run_id_tests(mocker)
 
-    with pytest.raises(UnsupportedCapabilityError) as exc_info:
-        engine.run_process_to_table(
-            {
-                "tables": [{"name": "silver.orders"}],
-                "materialization": {
-                    "type": "incremental",
-                    "strategy": "merge",
-                    "unique_key": ["order_id"],
-                },
-            },
-            "gold",
-            "orders",
-        )
+    schema = {
+        "tables": [{"name": "silver.orders"}],
+        "materialization": {
+            "type": "incremental",
+            "strategy": "merge",
+            "unique_key": ["order_id"],
+        },
+    }
+    run_id = engine.run_process_to_table(schema, "gold", "orders")
 
-    assert "incremental strategy 'merge'" in str(exc_info.value)
-    assert "append" in str(exc_info.value)
-    engine._patterns.run_process_to_table.assert_not_called()
+    UUID(run_id)
+    engine._patterns.run_process_to_table.assert_called_once_with(
+        schema,
+        "gold",
+        "orders",
+        intermediate_mode="inline",
+        run_id=run_id,
+    )
 
 
 def test_run_from_yaml_mints_and_returns_same_run_id(mocker):
