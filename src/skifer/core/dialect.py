@@ -36,17 +36,49 @@ def _validate_target(target: str) -> None:
         )
 
 
-def _import_sqlglot() -> tuple[Any, Any, Any]:
+def _import_sqlglot() -> tuple[Any, Any, Any, Any]:
     try:
         import sqlglot
         from sqlglot import exp
-        from sqlglot.errors import ErrorLevel
+        from sqlglot.errors import ErrorLevel, SqlglotError
     except ImportError as exc:
         raise DialectError(
             "SQL dialect support requires the optional dependencies; "
             f"install them with `{_SQL_EXTRA_INSTALL}`."
         ) from exc
-    return sqlglot, exp, ErrorLevel
+    return sqlglot, exp, ErrorLevel, SqlglotError
+
+
+def _split_pivot_fqn(fqn: str) -> list[str]:
+    """Split a pivot FQN and remove its backtick quoting."""
+    parts: list[str] = []
+    part: list[str] = []
+    in_quotes = False
+    index = 0
+    while index < len(fqn):
+        char = fqn[index]
+        if char == "`":
+            if in_quotes and index + 1 < len(fqn) and fqn[index + 1] == "`":
+                part.append("`")
+                index += 2
+                continue
+            if in_quotes:
+                in_quotes = False
+            elif not part:
+                in_quotes = True
+            else:
+                part.append(char)
+        elif char == "." and not in_quotes:
+            parts.append("".join(part))
+            part = []
+        else:
+            part.append(char)
+        index += 1
+
+    if in_quotes:
+        raise DialectError(f"Unbalanced backtick quoting in qualified name {fqn!r}.")
+    parts.append("".join(part))
+    return parts
 
 
 def transpile(sql: str, *, target: str) -> str:
@@ -59,7 +91,7 @@ def transpile(sql: str, *, target: str) -> str:
     if target == "databricks":
         return sql
 
-    sqlglot, _, error_level = _import_sqlglot()
+    sqlglot, _, error_level, sqlglot_error = _import_sqlglot()
     try:
         statements = sqlglot.transpile(
             sql,
@@ -68,7 +100,7 @@ def transpile(sql: str, *, target: str) -> str:
             error_level=error_level.RAISE,
             unsupported_level=error_level.RAISE,
         )
-    except Exception as exc:
+    except sqlglot_error as exc:
         raise DialectError(
             f"Could not transpile SQL to target {target!r}: "
             f"{type(exc).__name__}: {exc}"
@@ -90,12 +122,12 @@ def quote_ident(name: str, *, target: str) -> str:
 
         return quote_pivot_ident(name)
 
-    _, exp, _ = _import_sqlglot()
+    _, exp, _, sqlglot_error = _import_sqlglot()
     try:
         return exp.Identifier(this=str(name), quoted=True).sql(
             dialect=_SQLGLOT_DIALECT[target]
         )
-    except Exception as exc:
+    except sqlglot_error as exc:
         raise DialectError(
             f"Could not quote identifier for target {target!r}: "
             f"{type(exc).__name__}: {exc}"
@@ -110,4 +142,6 @@ def quote_fqn(fqn: str, *, target: str) -> str:
 
         return quote_pivot_fqn(fqn)
 
-    return ".".join(quote_ident(part, target=target) for part in fqn.split("."))
+    return ".".join(
+        quote_ident(part, target=target) for part in _split_pivot_fqn(fqn)
+    )

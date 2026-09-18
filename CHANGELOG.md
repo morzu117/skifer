@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dialect-aware FQN quoting now understands pivot quoting: dots inside quoted identifiers,
+  doubled-backtick escapes and already-quoted names translate correctly to non-Databricks
+  targets, and unbalanced quoting is refused. (Plan 39.2.1)
+- Dialect error wrapping is restricted to sqlglot exceptions, so a programming error no longer
+  masquerades as a dialect incompatibility. (Plan 39.2.1)
+
 ### Added
 
 - Added the Plan 39 tranche 39.2.1 SQL dialect boundary, with lazy optional
