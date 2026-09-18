@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a generic SQL registry above the Adapter Protocol, written once instead of as
+  fourteen more adapter methods: declarative definitions for contract definitions,
+  materialization runs, check results, incidents and semantic usage events, with one
+  escaped literal renderer, dialect-quoted identifiers and deterministically ordered reads.
+  The Protocol stays at twenty members, and a test fails if anyone adds one — without it
+  the boundary would grow back to the forty-method shape Plan 26 removed. Adversarial
+  values round-trip unchanged on DuckDB and execute nothing. (Plan 39.5.1, decision D12)
 - Added portable loaders: `@RuleRegistry.register_loader(kind="sql")` returns a SQL relation
   expression instead of a DataFrame, and lands where an adapter puts a file source's
   relation — so one YAML runs on Spark and on the compiled SQL path and returns the same
