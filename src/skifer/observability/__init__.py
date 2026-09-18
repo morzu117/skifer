@@ -9,7 +9,11 @@ from skifer.observability.checks import (
 )
 from skifer.observability.contracts import ContractExtractor
 from skifer.observability.monitor import DataMonitor, MonitorReport
-from skifer.observability.history import SqliteHistoryStore, DeltaHistoryStore
+from skifer.observability.history import (
+    DeltaHistoryStore,
+    SqlHistoryStore,
+    SqliteHistoryStore,
+)
 from skifer.observability.reporter import MonitorReporter
 from skifer.observability.alerts import AlertDispatcher
 from skifer.observability.audit import AuditReport, MetricKey, PipelineAudit, audit_project
@@ -28,7 +32,7 @@ __all__ = [
     "FilterInvariantCheck", "FreshnessCheck", "DataFreshnessCheck", "LoadFreshnessCheck", "VolumeCheck", "VolumeVariationCheck",
     "SchemaDriftCheck", "CustomSqlCheck", "CheckStatus", "ContractScope", "DataQualityError",
     "ContractExtractor", "DataMonitor", "MonitorReport",
-    "SqliteHistoryStore", "DeltaHistoryStore", "MonitorReporter", "AlertDispatcher",
+    "SqliteHistoryStore", "SqlHistoryStore", "DeltaHistoryStore", "MonitorReporter", "AlertDispatcher",
     "AuditReport", "MetricKey", "PipelineAudit", "audit_project",
     "ContractDefinition", "canonicalize_contract", "OdcsExport", "export_odcs_31",
     "CertificationStore", "DeltaCertificationStore", "RunEvent", "SqliteCertificationStore", "StoredCheckResult", "UcSyncResult", "mirror_certification",

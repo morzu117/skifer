@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import inspect
+from uuid import uuid4
 
+import pytest
+
+from skifer.core.adapters.duckdb import DuckDBAdapter
+from skifer.core.spark_backend import SparkBackend
 from skifer.observability.metadata_store import (
     ColumnRecord,
     DatasetRecord,
     DeltaMetadataStore,
     MetadataStore,
+    SqlMetadataStore,
     SqliteMetadataStore,
 )
 
@@ -77,6 +84,109 @@ def _raw_row(store: SqliteMetadataStore) -> tuple[str, str, str]:
     return store._conn.execute(
         "SELECT content_hash, record, indexed_at FROM metadata_registry"
     ).fetchone()
+
+
+@pytest.fixture(params=("spark", "duckdb"))
+def portable_metadata_store(request):
+    schema = f"metadata_store_{uuid4().hex}"
+    table_fqn = f"{schema}.datasets"
+    if request.param == "spark":
+        spark = request.getfixturevalue("spark")
+        spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{schema}`")
+        try:
+            yield DeltaMetadataStore(
+                SparkBackend(spark=spark, is_local=True),
+                table_fqn=table_fqn,
+            )
+        finally:
+            spark.sql(f"DROP SCHEMA IF EXISTS `{schema}` CASCADE")
+        return
+
+    duckdb = pytest.importorskip("duckdb")
+    connection = duckdb.connect()
+    try:
+        yield SqlMetadataStore(DuckDBAdapter(connection), table_fqn=table_fqn)
+    finally:
+        connection.close()
+
+
+def test_sql_metadata_store_has_exactly_the_delta_store_method_signatures():
+    public_methods = {
+        name
+        for name, member in inspect.getmembers(SqlMetadataStore, inspect.isfunction)
+        if not name.startswith("_")
+    }
+
+    assert public_methods == {
+        name
+        for name, member in inspect.getmembers(DeltaMetadataStore, inspect.isfunction)
+        if not name.startswith("_")
+    }
+    for name in public_methods:
+        assert inspect.signature(getattr(SqlMetadataStore, name)) == inspect.signature(
+            getattr(DeltaMetadataStore, name)
+        )
+
+
+def test_metadata_store_behaves_identically_on_delta_and_sql(portable_metadata_store):
+    store = portable_metadata_store
+    record = _record()
+
+    assert store.get(record.target_fqn) is None
+    assert store.upsert(record) is True
+    assert store.get(record.target_fqn) == record
+
+    assert store.upsert(record) is False
+    assert store.get(record.target_fqn) == record
+
+    rerun = replace(record, last_run_id="run-2")
+    assert store.upsert(rerun) is False
+    assert store.get(record.target_fqn) == record
+
+    assert store.attach_run_id(record.target_fqn, record.definition_hash, "run-2") is True
+    assert store.attach_run_id(record.target_fqn, record.definition_hash, "run-2") is False
+    assert store.get(record.target_fqn) == replace(record, last_run_id="run-2")
+    assert store.attach_run_id("missing.table", record.definition_hash, "run-3") is False
+
+    changed = replace(
+        record,
+        columns=record.columns
+        + (
+            ColumnRecord(
+                name="net_amount",
+                logical_type="currency",
+                classification="internal",
+                description="Net amount after adjustments",
+                sources=("amount",),
+            ),
+        ),
+        indexed_at=datetime(2026, 9, 11, 9, 0, tzinfo=timezone.utc),
+    )
+    assert store.upsert(changed) is True
+    assert store.get(record.target_fqn) == changed
+
+    other = _record(
+        definition_hash="sha256:definition-b",
+        indexed_at=datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc),
+    )
+    assert store.upsert(other) is True
+    assert store.get(record.target_fqn) == other
+    assert store.list_all() == [other, changed]
+
+
+def test_metadata_search_treats_percent_and_underscore_as_literals(
+    portable_metadata_store,
+):
+    store = portable_metadata_store
+    percent = ColumnRecord(name="percent_col", description="Gross% margin")
+    underscore = ColumnRecord(name="underscore_col", description="Gross_ margin")
+    plain = ColumnRecord(name="plain_col", description="Gross margin")
+    record = _record(columns=(percent, underscore, plain))
+
+    assert store.upsert(record) is True
+
+    assert store.search_columns("GROSS%") == [(record.target_fqn, percent)]
+    assert store.search_columns("GROSS_") == [(record.target_fqn, underscore)]
 
 
 def test_sqlite_roundtrip_preserves_all_fields():

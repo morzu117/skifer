@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import inspect
 import subprocess
 import sys
@@ -11,10 +12,12 @@ import pytest
 from skifer.core.adapters import Adapter
 from skifer.core.adapters.duckdb import DuckDBAdapter
 from skifer.observability.sql_registry import (
+    CHECK_HISTORY,
     CHECK_RESULTS,
     CONTRACT_DEFINITIONS,
     INCIDENTS,
     MATERIALIZATION_RUNS,
+    METADATA_DATASETS,
     SEMANTIC_USAGE_EVENTS,
     TABLE_DEFINITIONS,
     SqlRegistry,
@@ -94,6 +97,18 @@ ROWS = {
         "rows_returned": 4,
         "bytes_scanned": None,
         "status": "succeeded",
+    },
+    CHECK_HISTORY: {
+        "table_fqn": "gold.orders",
+        "ts": datetime(2026, 9, 18, 8, 4),
+        "report_json": '{"table":"gold.orders"}',
+    },
+    METADATA_DATASETS: {
+        "target_fqn": "gold.orders",
+        "definition_hash": "sha256:definition",
+        "content_hash": "sha256:content",
+        "record": '{"target_fqn":"gold.orders"}',
+        "indexed_at": datetime(2026, 9, 18, 8, 5),
     },
 }
 
@@ -210,3 +225,39 @@ import skifer.observability.sql_registry
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_history_store_accepts_a_table_name_other_than_the_default():
+    """The one argument that exists to be changed must work.
+
+    Both branches of the FQN resolver must return the same shape. Returning the
+    definition alone raised `cannot unpack non-iterable TableDefinition` — and only
+    for a non-default name, so every test that used the default stayed green. The
+    table is created lazily on first use, so the proof is a write that reads back.
+    """
+    duckdb = pytest.importorskip("duckdb")
+    from datetime import datetime, timezone
+
+    from skifer.observability.history import SqlHistoryStore
+    from skifer.observability.monitor import MonitorReport
+
+    connection = duckdb.connect()
+    adapter = DuckDBAdapter(connection)
+    try:
+        adapter.execute_sql('CREATE SCHEMA "custom_hist"')
+        store = SqlHistoryStore(adapter, table_fqn="custom_hist.my_history")
+
+        store.store(
+            MonitorReport(
+                table="gold.orders",
+                timestamp=datetime(2026, 9, 18, 8, tzinfo=timezone.utc),
+                results=[],
+            )
+        )
+
+        assert adapter.table_exists(None, "custom_hist", "my_history")
+        assert [report.table for report in store.get_last_n("gold.orders", 5)] == [
+            "gold.orders"
+        ]
+    finally:
+        connection.close()

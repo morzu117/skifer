@@ -10,7 +10,13 @@ import threading
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from skifer.core.constants import CLASSIFICATION_LEVELS
+from skifer.core.dialect import split_fqn
 from skifer.core.sql_compiler import sql_literal
+from skifer.observability.sql_registry import (
+    METADATA_DATASETS,
+    SqlRegistry,
+    TableDefinition,
+)
 
 if TYPE_CHECKING:
     from skifer.lineage.tracker import LineageEdge, LineageGraph
@@ -346,6 +352,107 @@ class SqliteMetadataStore:
 
     def close(self) -> None:
         self._conn.close()
+
+
+def _registry_definition(table_fqn: str, definition: TableDefinition) -> tuple[str, TableDefinition]:
+    parts = split_fqn(table_fqn)
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(
+            "SQL registry-backed stores require a two-part table FQN "
+            f"'schema.table'; received {table_fqn!r}."
+        )
+    schema, table = parts
+    if table == definition.name:
+        return schema, definition
+    # Both branches must return the same shape. Returning the definition alone here
+    # raised `cannot unpack non-iterable TableDefinition` at the caller — invisible
+    # while the default name is used, and broken for the one argument that exists
+    # to be changed.
+    return schema, TableDefinition(
+        name=table, columns=definition.columns, key=definition.key
+    )
+
+
+class SqlMetadataStore:
+    """Adapter-backed metadata store using the portable SQL registry."""
+
+    def __init__(self, adapter, table_fqn: str = "_skifer_metadata.datasets"):
+        schema, definition = _registry_definition(table_fqn, METADATA_DATASETS)
+        self._registry = SqlRegistry(adapter, schema)
+        self._definition = definition
+
+    def upsert(self, record: DatasetRecord) -> bool:
+        content_hash = _content_fingerprint(record)
+        existing = self._registry.find(
+            self._definition,
+            where={
+                "target_fqn": record.target_fqn,
+                "definition_hash": record.definition_hash,
+            },
+            limit=1,
+        )
+        if existing and existing[0]["content_hash"] == content_hash:
+            return False
+
+        self._registry.upsert(
+            self._definition,
+            {
+                "target_fqn": record.target_fqn,
+                "definition_hash": record.definition_hash,
+                "content_hash": content_hash,
+                "record": _record_to_json(record),
+                "indexed_at": record.indexed_at,
+            },
+        )
+        return True
+
+    def attach_run_id(
+        self,
+        target_fqn: str,
+        definition_hash: str,
+        last_run_id: str,
+    ) -> bool:
+        """Attach the latest certified run id without changing content idempotence."""
+        rows = self._registry.find(
+            self._definition,
+            where={"target_fqn": target_fqn, "definition_hash": definition_hash},
+            limit=1,
+        )
+        if not rows:
+            return False
+        row = rows[0]
+        record = _record_from_json(row["record"])
+        if record.last_run_id == last_run_id:
+            return False
+        updated = replace(record, last_run_id=last_run_id)
+        self._registry.upsert(
+            self._definition,
+            {**row, "record": _record_to_json(updated)},
+        )
+        return True
+
+    def get(self, target_fqn: str) -> DatasetRecord | None:
+        rows = self._registry.find(
+            self._definition,
+            where={"target_fqn": target_fqn},
+            order_by=(("indexed_at", "DESC"),),
+            limit=1,
+        )
+        return _record_from_json(rows[0]["record"]) if rows else None
+
+    def list_all(self) -> list[DatasetRecord]:
+        rows = self._registry.find(
+            self._definition,
+            order_by=(
+                ("target_fqn", "ASC"),
+                ("indexed_at", "DESC"),
+                ("definition_hash", "ASC"),
+            ),
+        )
+        return [_record_from_json(row["record"]) for row in rows]
+
+    def search_columns(self, text: str) -> list[tuple[str, ColumnRecord]]:
+        return _search_records(self.list_all(), text)
 
 
 class DeltaMetadataStore:

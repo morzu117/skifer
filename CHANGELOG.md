@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the registry-backed stores rejecting any table name other than the default: the
+  FQN resolver returned a pair on one branch and a bare definition on the other, so
+  unpacking raised `cannot unpack non-iterable TableDefinition`. The default path worked,
+  which left every test green while the one argument meant to be changed was broken.
+  (Plan 39.5.3, decision D12)
 - Fixed SQL business rules on file-backed tables, which could not compile at all: the
   compiler asked the catalog for the columns of a table that only exists as a file. The
   column resolver now receives the declared table and answers from the adapter's relation
@@ -39,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added portable `SqlHistoryStore` and `SqlMetadataStore` over the generic SQL registry,
+  leaving the Delta classes untouched as the Databricks path — every registry now has a
+  portable implementation beside its Delta one, and the whole package still imports with
+  `pyspark` and `delta` blocked. Behaviour is
+  written once and parameterized over both implementations, including the content-hash
+  contract where rewriting an identical record reports no change — the case an
+  implementation that always writes would otherwise pass. `search_columns` keeps filtering
+  in Python because it searches columns nested inside the record's JSON, which no SQL LIKE
+  would reach, so `%` and `_` stay literal.
 - Added `SqlRegistryBackend`, which speaks the sixteen certification, incident and usage
   methods the Delta stores already call, on top of the generic SQL registry. The stores
   therefore run on a non-Spark adapter without a line changed in them — no `hasattr`

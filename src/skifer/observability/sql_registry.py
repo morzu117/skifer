@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from skifer.core.adapters.base import Adapter
@@ -150,12 +151,36 @@ SEMANTIC_USAGE_EVENTS = TableDefinition(
     key=("event_id",),
 )
 
+CHECK_HISTORY = TableDefinition(
+    name="check_history",
+    columns=_columns(
+        ("table_fqn", "STRING"),
+        ("ts", "TIMESTAMP"),
+        ("report_json", "STRING"),
+    ),
+    key=("table_fqn", "ts", "report_json"),
+)
+
+METADATA_DATASETS = TableDefinition(
+    name="datasets",
+    columns=_columns(
+        ("target_fqn", "STRING"),
+        ("definition_hash", "STRING"),
+        ("content_hash", "STRING"),
+        ("record", "STRING"),
+        ("indexed_at", "TIMESTAMP"),
+    ),
+    key=("target_fqn", "definition_hash"),
+)
+
 TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
     CONTRACT_DEFINITIONS,
     MATERIALIZATION_RUNS,
     CHECK_RESULTS,
     INCIDENTS,
     SEMANTIC_USAGE_EVENTS,
+    CHECK_HISTORY,
+    METADATA_DATASETS,
 )
 
 
@@ -169,6 +194,8 @@ def _sql_literal(value: Any) -> str:
         return str(value)
     if isinstance(value, float):
         return repr(value)
+    if isinstance(value, datetime):
+        return "CAST(" + _sql_literal(value.isoformat()) + " AS TIMESTAMP)"
     if isinstance(value, str):
         return "'" + escape_sql_string(value) + "'"
     raise TypeError(
@@ -218,6 +245,16 @@ class SqlRegistry:
         self.adapter.execute_sql(
             f"INSERT INTO {table} ({columns}) SELECT {literals} "
             f"WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE {key_match})"
+        )
+
+    def insert(self, definition: TableDefinition, row: Mapping[str, Any]) -> None:
+        """Insert one row without applying key idempotency."""
+        values = self._row(definition, row)
+        self.ensure_table(definition)
+        columns = ", ".join(self._ident(name) for name in definition.column_names)
+        literals = ", ".join(_sql_literal(values[name]) for name in definition.column_names)
+        self.adapter.execute_sql(
+            f"INSERT INTO {self._table(definition)} ({columns}) VALUES ({literals})"
         )
 
     def find(
@@ -556,10 +593,12 @@ class SqlRegistryBackend:
 
 
 __all__ = [
+    "CHECK_HISTORY",
     "CHECK_RESULTS",
     "CONTRACT_DEFINITIONS",
     "INCIDENTS",
     "MATERIALIZATION_RUNS",
+    "METADATA_DATASETS",
     "SEMANTIC_USAGE_EVENTS",
     "TABLE_DEFINITIONS",
     "SqlColumn",
