@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added incremental `strategy: merge`, compiled to a native `MERGE INTO` with explicit
+  source and target column lists. The explicit lists are not a style choice: `UPDATE SET *`
+  crosses sqlglot unchanged and is then rejected by Snowflake and BigQuery, so a merge built
+  with stars would look portable and break at the first client. Unique keys are excluded from
+  the update, and any source/target column divergence is refused by name rather than merged on
+  the intersection, where a new source column would have been dropped in silence. Plan 27
+  streaming keeps its own `SET *` merge: it targets Databricks only, and reading the target's
+  columns on every micro-batch would cost a query for no portability gain. (Plan 39.4.4)
 - Added `materialization: view`, compiled as a persisted definition and created with
   `CREATE OR REPLACE VIEW` on both engines. `dev_limit` and `drop_duplicates_on` are
   refused by name there rather than frozen into the definition, where they would have

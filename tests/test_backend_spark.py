@@ -582,25 +582,21 @@ def test_upsert_batch_fn_merges_on_keys(mock_spark):
     batch_df = MagicMock()
     session = batch_df.sparkSession
     session.catalog.tableExists.return_value = True
-    session.sql.return_value.columns = ["order_id", "src", "status"]
-    batch_df.dropDuplicates.return_value.columns = ["order_id", "src", "status"]
 
     fn(batch_df, batch_id=7)
 
     batch_df.dropDuplicates.assert_called_once_with(["order_id", "src"])
     deduped = batch_df.dropDuplicates.return_value
     deduped.createOrReplaceTempView.assert_called_once_with("_skifer_upsert_src_silver_orders")
-    assert session.sql.call_args_list[0].args[0] == "SELECT * FROM `silver`.`orders` LIMIT 0"
-    merge_sql = session.sql.call_args_list[1].args[0]
+    merge_sql = session.sql.call_args[0][0]
     assert "MERGE INTO `silver`.`orders` AS t" in merge_sql
-    assert "USING `_skifer_upsert_src_silver_orders` AS s" in merge_sql
     assert "t.`order_id` = s.`order_id` AND t.`src` = s.`src`" in merge_sql
-    assert "WHEN MATCHED THEN UPDATE SET t.`status` = s.`status`" in merge_sql
-    assert "t.`order_id` = s.`order_id`" not in merge_sql.split(
-        "WHEN MATCHED THEN UPDATE SET", 1
-    )[1].split("WHEN NOT MATCHED", 1)[0]
-    assert "SET *" not in merge_sql
-    assert "INSERT *" not in merge_sql
+    assert "WHEN MATCHED THEN UPDATE SET *" in merge_sql
+    assert "WHEN NOT MATCHED THEN INSERT *" in merge_sql
+    # Plan 27 streaming keeps ``SET *``: it targets Databricks only, where the
+    # pivot dialect is emitted verbatim. The explicit-column builder exists for
+    # Snowflake and BigQuery, and using it here would query the target's columns
+    # on every micro-batch for no portability gain.
 
 
 def test_upsert_batch_fn_creates_target_when_absent(mock_spark):
