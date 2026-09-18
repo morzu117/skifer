@@ -682,6 +682,11 @@ names `classify_order`, its Python registers that projection rule, and the scrip
 prints the joined rows with `priority`/`standard` labels before printing the
 declarative aggregate and its `having` result.
 
+`examples/24_sql_mode_portability/` runs one parameterized pipeline on both local
+Spark and DuckDB, then fails unless the two engines return the same rows. It keeps
+the declarative transformation fixed while selecting a PySpark or SQL implementation
+of the same named business concept.
+
 ```python
 # List registered rules
 RuleRegistry.list_rules()   # ["flag_vip_orders", "add_month"]

@@ -28,6 +28,15 @@ environments:
     catalog: null           # null = no Unity Catalog, triggers local mode
     is_production: false
 
+  # Local compiled-SQL execution through DuckDB. This environment is deliberately
+  # absent from priority_check: select it explicitly with force_env="LOCAL_SQL".
+  # Requires the optional SQL dependencies: pip install -e ".[sql]"
+  LOCAL_SQL:
+    catalog: null
+    is_production: false
+    engine: sql
+    adapter: duckdb
+
   # ── Databricks environments ──────────────────────────────────────────────────
   # Fill in the catalog names that match your Unity Catalog setup.
   # DATABRICKS_HOST / DATABRICKS_TOKEN / DATABRICKS_CLUSTER_ID must be set

@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a repository example and parity tests proving one YAML produces identical rows on
+  local Spark and on the compiled DuckDB SQL path. Examples 01, 05 and 06 are compared by the
+  strict equivalence helper, and the shipped configuration exposes a `LOCAL_SQL` environment
+  that auto-detection can never select. (Plan 39.3.4)
 - Added file sources to the portable SQL path: the compiler delegates the source relation
   to the adapter, and DuckDB reads CSV, Parquet and JSON with strict option translation and
   escaped path literals. Spark option defaults are emitted explicitly and unknown options
