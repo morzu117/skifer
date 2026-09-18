@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the Plan 39 tranche 39.2.1 SQL dialect boundary, with lazy optional
+  transpilation and dialect-aware identifier quoting.
 - Added the Plan 39 phase 39.1 `Adapter` boundary and capability matrix.
 
 ## [2.2.0] - 2026-09-14

@@ -73,6 +73,12 @@ databricks = [
     "databricks-sdk>=0.20.0"
 ]
 
+# --- SQL dialect translation and local SQL runtime ---
+sql = [
+    "sqlglot>=30.18.0",
+    "duckdb>=1.5.5",
+]
+
 # --- Databricks Model Serving ---
 serving = [
     "mlflow>=2.12.0,<3",
