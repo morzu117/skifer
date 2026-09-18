@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added construction-level equivalence tests between the Spark DataFrame path and the
+  compiled SQL executed on DuckDB: filters, joins, aggregates, column operations, nested
+  partials, portable SQL rules, deduplication and `dev_limit`. Non-deterministic cases
+  assert row counts and membership, never which row is kept. (Plan 39.2.4)
 - Added portable `kind="sql"` business rules: a rule returns validated SQL expressions,
   runs on Spark through the backend `expr` primitive and compiles into the SQL path, so the
   same pipeline stays portable across engines. The compiler refuses to guess whether a rule

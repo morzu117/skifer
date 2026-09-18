@@ -1,0 +1,637 @@
+"""Construction-level result equivalence between Spark and compiled DuckDB SQL.
+
+Both paths consume the same rows from physical tables: managed local Delta tables
+for the DataFrame interpreter and DuckDB tables for the compiled SQL path.  The
+comparison is deliberately shared by every deterministic case in this module.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from dataclasses import dataclass
+from decimal import Decimal
+import math
+from numbers import Number
+from uuid import uuid4
+
+import duckdb
+import pytest
+import yaml
+from pyspark.sql.types import (
+    DoubleType,
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+)
+
+from skifer.core.context import ExecutionContext
+from skifer.core.dialect import transpile
+from skifer.core.interpreter import SchemaInterpreter
+from skifer.core.ir import parse_to_ir
+from skifer.core.registry import RuleRegistry
+from skifer.core.schema_loader import parse_schema
+from skifer.core.spark_backend import SparkBackend
+from skifer.core.sql_compiler import compile_select
+
+
+NUMERIC_REL_TOLERANCE = Decimal("1e-9")
+NUMERIC_ABS_TOLERANCE = Decimal("1e-9")
+
+
+@dataclass(frozen=True)
+class EquivalenceRuntime:
+    spark: object
+    duck: duckdb.DuckDBPyConnection
+    namespace: str
+
+    def table(self, name: str) -> str:
+        return f"{self.namespace}.{name}"
+
+
+def _spark_type(name: str):
+    return {
+        "DOUBLE": DoubleType(),
+        "INTEGER": IntegerType(),
+        "VARCHAR": StringType(),
+    }[name]
+
+
+def _create_table(runtime, name, columns, rows):
+    spark_schema = StructType(
+        [StructField(column, _spark_type(dtype), True) for column, dtype in columns]
+    )
+    runtime.spark.createDataFrame(rows, spark_schema).write.format("delta").mode(
+        "overwrite"
+    ).saveAsTable(runtime.table(name))
+
+    definitions = ", ".join(f'"{column}" {dtype}' for column, dtype in columns)
+    placeholders = ", ".join("?" for _ in columns)
+    runtime.duck.execute(f'CREATE TABLE "{runtime.namespace}"."{name}" ({definitions})')
+    runtime.duck.executemany(
+        f'INSERT INTO "{runtime.namespace}"."{name}" VALUES ({placeholders})', rows
+    )
+
+
+@pytest.fixture(scope="module")
+def equivalence_runtime(spark):
+    """Share exactly one Spark session and one DuckDB connection for the module."""
+    connection = duckdb.connect()
+    namespace = f"sql_spark_equivalence_{uuid4().hex}"
+    runtime = EquivalenceRuntime(spark=spark, duck=connection, namespace=namespace)
+    spark.sql(f"CREATE DATABASE `{namespace}`")
+    connection.execute(f'CREATE SCHEMA "{namespace}"')
+
+    _create_table(
+        runtime,
+        "filter_values",
+        [
+            ("id", "INTEGER"),
+            ("text_value", "VARCHAR"),
+            ("amount", "DOUBLE"),
+            ("nullable_text", "VARCHAR"),
+        ],
+        [
+            (1, "alpha", 10.0, None),
+            (2, "alphabet", 20.0, "x"),
+            (3, "beta", 30.0, ""),
+            (4, "ALPHA", 40.0, None),
+            (5, "a%b", 50.0, " y "),
+            (6, None, None, "z"),
+        ],
+    )
+    _create_table(
+        runtime,
+        "operation_values",
+        [
+            ("id", "INTEGER"),
+            ("num_text", "VARCHAR"),
+            ("number_value", "DOUBLE"),
+            ("padded", "VARCHAR"),
+            ("maybe_null", "VARCHAR"),
+            ("token", "VARCHAR"),
+            ("date_text", "VARCHAR"),
+            ("status", "VARCHAR"),
+        ],
+        [
+            (1, "2.65", 2.65, "  MiXeD  ", None, "aa-bb-cc", "2026-02-28", "DONE"),
+            (2, "-1.25", -1.25, " spaced ", "kept", "x--z", "2024-02-29", "PENDING"),
+            (3, None, None, None, "", None, None, None),
+        ],
+    )
+    _create_table(
+        runtime,
+        "aggregate_values",
+        [
+            ("group_key", "VARCHAR"),
+            ("value", "DOUBLE"),
+            ("stable_value", "VARCHAR"),
+        ],
+        [
+            ("A", 1.0, "first-last-A"),
+            ("A", 1.0, "first-last-A"),
+            ("A", 3.0, "first-last-A"),
+            ("B", None, "first-last-B"),
+            ("B", 2.0, "first-last-B"),
+            ("C", None, "first-last-C"),
+        ],
+    )
+    _create_table(
+        runtime,
+        "join_left_same",
+        [("id", "INTEGER"), ("left_value", "VARCHAR")],
+        [(1, "left-one"), (2, "left-two"), (None, "left-null")],
+    )
+    _create_table(
+        runtime,
+        "join_right_same",
+        [("id", "INTEGER"), ("right_value", "VARCHAR")],
+        [(2, "right-two"), (3, "right-three"), (None, "right-null")],
+    )
+    _create_table(
+        runtime,
+        "join_left_different",
+        [("left_id", "INTEGER"), ("left_value", "VARCHAR")],
+        [(1, "left-one"), (2, "left-two"), (None, "left-null")],
+    )
+    _create_table(
+        runtime,
+        "join_right_different",
+        [("right_id", "INTEGER"), ("right_value", "VARCHAR")],
+        [(2, "right-two"), (3, "right-three"), (None, "right-null")],
+    )
+    _create_table(
+        runtime,
+        "duplicate_values",
+        [("event_key", "INTEGER"), ("value", "VARCHAR")],
+        [(1, "first"), (1, "second"), (2, "only"), (None, "null-a"), (None, "null-b")],
+    )
+
+    try:
+        yield runtime
+    finally:
+        spark.sql(f"DROP DATABASE IF EXISTS `{namespace}` CASCADE")
+        connection.close()
+
+
+def _normalized_schema(raw_schema):
+    """Run ordinary cases through the same YAML normalization as production."""
+    return parse_schema(yaml.safe_dump(raw_schema, sort_keys=False))
+
+
+def _context(*, is_job=False, is_production=False):
+    return ExecutionContext(
+        env="local",
+        config={"environments": {"local": {"is_production": is_production}}},
+        is_job_execution=is_job,
+        is_local=True,
+    )
+
+
+def _spark_result(runtime, schema, *, context=None):
+    backend = SparkBackend(spark=runtime.spark, is_local=True)
+    interpreter = SchemaInterpreter(backend=backend, context=context or _context())
+    return interpreter.process_schema(schema)
+
+
+def _duck_result(runtime, schema):
+    pivot_sql = compile_select(parse_to_ir(schema), persisted_definition=False)
+    cursor = runtime.duck.execute(transpile(pivot_sql, target="duckdb"))
+    return [description[0] for description in cursor.description], cursor.fetchall()
+
+
+def _is_nan(value):
+    try:
+        return bool(value.is_nan()) if isinstance(value, Decimal) else math.isnan(value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _sort_cell(value):
+    if value is None:
+        return (0, "")
+    if _is_nan(value):
+        return (1, "NaN")
+    if isinstance(value, Number) and not isinstance(value, bool):
+        return (2, float(value))
+    return (3, type(value).__name__, repr(value))
+
+
+def _assert_cell_equal(spark_value, duck_value):
+    # SQL NULL and numeric NaN are different states.  Each is compared explicitly;
+    # in particular, this never turns a NULL into a NaN or treats the two as equal.
+    if spark_value is None or duck_value is None:
+        assert spark_value is None and duck_value is None
+        return
+    if _is_nan(spark_value) or _is_nan(duck_value):
+        assert _is_nan(spark_value) and _is_nan(duck_value)
+        return
+
+    if (
+        isinstance(spark_value, Number)
+        and not isinstance(spark_value, bool)
+        and isinstance(duck_value, Number)
+        and not isinstance(duck_value, bool)
+    ):
+        left = Decimal(str(spark_value))
+        right = Decimal(str(duck_value))
+        difference = abs(left - right)
+        allowed = max(
+            NUMERIC_ABS_TOLERANCE,
+            NUMERIC_REL_TOLERANCE * max(abs(left), abs(right)),
+        )
+        # 1e-9 absorbs only representation noise from Decimal/float conversion and
+        # sample statistics.  It is far below the 1e-2 boundaries used by these
+        # pipelines, so it cannot hide a different rounded value or filter decision.
+        assert difference <= allowed, f"{spark_value!r} != {duck_value!r} (tolerance {allowed})"
+        return
+
+    # Strings are intentionally exact: no case folding and no whitespace stripping.
+    assert spark_value == duck_value
+
+
+def assert_spark_duckdb_equivalent(spark_df, duck_columns, duck_rows):
+    """Compare deterministic results by column name after a common full-row sort.
+
+    Column order is irrelevant but names (including multiplicity) must match.  Both
+    sides are reordered by sorted column name and their rows are then sorted by all
+    output columns with one explicit NULL/NaN ordering before cell comparison.
+    Numeric cells share the named Decimal/float tolerance documented above; text is
+    never case- or whitespace-normalized.
+    """
+    spark_columns = list(spark_df.columns)
+    assert Counter(spark_columns) == Counter(duck_columns)
+    assert len(set(spark_columns)) == len(spark_columns), "ambiguous duplicate output columns"
+
+    names = sorted(spark_columns)
+    spark_rows = [tuple(row[name] for name in names) for row in spark_df.select(*names).collect()]
+    duck_indexes = [duck_columns.index(name) for name in names]
+    reordered_duck_rows = [tuple(row[index] for index in duck_indexes) for row in duck_rows]
+
+    spark_rows.sort(key=lambda row: tuple(_sort_cell(value) for value in row))
+    reordered_duck_rows.sort(key=lambda row: tuple(_sort_cell(value) for value in row))
+    assert len(spark_rows) == len(reordered_duck_rows)
+    for spark_row, duck_row in zip(spark_rows, reordered_duck_rows):
+        for spark_value, duck_value in zip(spark_row, duck_row):
+            _assert_cell_equal(spark_value, duck_value)
+
+
+def _assert_schema_equivalent(runtime, schema, *, context=None):
+    spark_df = _spark_result(runtime, schema, context=context)
+    duck_columns, duck_rows = _duck_result(runtime, schema)
+    assert_spark_duckdb_equivalent(spark_df, duck_columns, duck_rows)
+
+
+FILTER_CASES = [
+    ("equals", "text_value:equals:alpha"),
+    ("not_equals", "text_value:not_equals:alpha"),
+    ("greater_than", "amount:greater_than:20"),
+    ("less_than", "amount:less_than:20"),
+    ("greater_than_equal", "amount:greater_than_equal:20"),
+    ("less_than_equal", "amount:less_than_equal:20"),
+    ("in", "text_value:in:alpha,beta"),
+    ("not_in", "text_value:not_in:alpha,beta"),
+    ("between", "amount:between:20,40"),
+    ("not_between", "amount:not_between:20,40"),
+    ("is_null", "nullable_text:is_null"),
+    ("is_not_null", "nullable_text:is_not_null"),
+    ("contains", "text_value:contains:pha"),
+    ("not_contains", "text_value:not_contains:pha"),
+    ("starts_with", "text_value:starts_with:al"),
+    ("ends_with", "text_value:ends_with:ta"),
+    ("like", "text_value:like:a%a"),
+    ("not_like", "text_value:not_like:a%a"),
+    ("sql", "ignored:sql:amount >= 40"),
+]
+
+
+@pytest.mark.parametrize(("operator", "filter_expression"), FILTER_CASES, ids=lambda value: value)
+def test_filter_operator_equivalence(equivalence_runtime, operator, filter_expression):
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {
+                    "name": equivalence_runtime.table("filter_values"),
+                    "alias": "source",
+                    "filter": [filter_expression],
+                }
+            ],
+            "select_final": [["id", "id"], ["text_value", "text_value"]],
+        }
+    )
+    _assert_schema_equivalent(equivalence_runtime, schema)
+
+
+def test_filter_groups_equivalence(equivalence_runtime):
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {
+                    "name": equivalence_runtime.table("filter_values"),
+                    "alias": "source",
+                    "filter_groups": [
+                        ["amount:greater_than_equal:40", "nullable_text:is_null"],
+                        ["text_value:equals:beta", "nullable_text:is_not_null"],
+                    ],
+                }
+            ],
+            "select_final": [["id", "id"], ["text_value", "text_value"]],
+        }
+    )
+    _assert_schema_equivalent(equivalence_runtime, schema)
+
+
+def _join_schema(runtime, join_type, *, same_keys):
+    if same_keys:
+        tables = [
+            {"name": runtime.table("join_left_same"), "alias": "left_side"},
+            {"name": runtime.table("join_right_same"), "alias": "right_side"},
+        ]
+        left_key = right_key = "id"
+        outputs = [["id", "id"], ["left_value", "left_value"], ["right_value", "right_value"]]
+    else:
+        tables = [
+            {"name": runtime.table("join_left_different"), "alias": "left_side"},
+            {"name": runtime.table("join_right_different"), "alias": "right_side"},
+        ]
+        left_key, right_key = "left_id", "right_id"
+        outputs = [
+            ["left_id", "left_id"],
+            ["left_value", "left_value"],
+            ["right_value", "right_value"],
+        ]
+    return _normalized_schema(
+        {
+            "tables": tables,
+            "join": [
+                {
+                    "table_from": ["left_side", left_key],
+                    "table_to": ["right_side", right_key],
+                    "type": join_type,
+                }
+            ],
+            "select_final": outputs,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("join_type", "same_keys"),
+    [("inner", True), ("inner", False), ("left", False), ("right", False), ("full", True)],
+)
+def test_join_equivalence(equivalence_runtime, join_type, same_keys):
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _join_schema(equivalence_runtime, join_type, same_keys=same_keys),
+    )
+
+
+def test_cross_join_equivalence(equivalence_runtime):
+    """A declared key filters on both paths.
+
+    Spark builds the equality condition and calls ``join(other, cond, "cross")``,
+    which filters. Emitting a bare ``CROSS JOIN`` used to turn that into a cartesian
+    product, so the same YAML returned a handful of rows on Spark and every pair of
+    rows in SQL.
+    """
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _join_schema(equivalence_runtime, "cross", same_keys=False),
+    )
+
+
+def test_every_aggregate_and_having_equivalence(equivalence_runtime):
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {"name": equivalence_runtime.table("aggregate_values"), "alias": "source"}
+            ],
+            "aggregate": {
+                "group_by": ["group_key"],
+                "measures": [
+                    ["value", "sum_value", "sum"],
+                    ["value", "avg_value", "avg"],
+                    ["value", "min_value", "min"],
+                    ["value", "max_value", "max"],
+                    ["*", "row_count", "count"],
+                    ["value", "distinct_count", "count_distinct"],
+                    ["value", "distinct_sum", "sum_distinct"],
+                    ["value", "approx_distinct_count", "approx_count_distinct"],
+                    ["value", "sample_stddev", "stddev"],
+                    ["value", "sample_variance", "variance"],
+                    ["stable_value", "first_value", "first"],
+                    ["stable_value", "last_value", "last"],
+                ],
+                "having": ["row_count:greater_than_equal:2"],
+            },
+        }
+    )
+    _assert_schema_equivalent(equivalence_runtime, schema)
+
+
+def _operation_specs():
+    return [
+        ["num_text", "cast_value", ["cast:double"]],
+        ["number_value", "rounded_value", ["round:1"]],
+        ["padded", "upper_value", ["upper"]],
+        ["padded", "lower_value", ["lower"]],
+        ["padded", "trimmed_value", ["trim"]],
+        ["maybe_null", "coalesced_value", ["coalesce:fallback"]],
+        ["maybe_null", "nvl_value", ["nvl:fallback"]],
+        ["status", "literal_value", ["lit:fixed"]],
+        ["padded", "substring_value", ["substring:2,3"]],
+        ["token", "split_value", ["split:-,1"]],
+        ["date_text", "date_value", ["to_date:yyyy-MM-dd"]],
+        {
+            "source": "status",
+            "target": "status_label",
+            "ops": [
+                {"when": "equals:DONE", "then": "lit:Paid"},
+                {"when": "equals:PENDING", "then": "lit:Waiting"},
+                {"else": "lit:Unknown"},
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize("construction", ["add_columns", "select_final"])
+def test_column_operation_equivalence(equivalence_runtime, construction):
+    raw_schema = {
+        "tables": [
+            {"name": equivalence_runtime.table("operation_values"), "alias": "source"}
+        ],
+        construction: _operation_specs(),
+    }
+    if construction == "add_columns":
+        raw_schema["keep_all_columns"] = True
+    schema = _normalized_schema(raw_schema)
+    _assert_schema_equivalent(equivalence_runtime, schema)
+
+
+def test_one_level_partial_equivalence(equivalence_runtime):
+    child = {
+        "tables": [
+            {
+                "name": equivalence_runtime.table("filter_values"),
+                "alias": "source",
+                "filter": [
+                    {"column": "amount", "operator": "greater_than_equal", "value": "30"}
+                ],
+            }
+        ],
+        "select_final": [["id", "id"], ["text_value", "text_value"]],
+    }
+    schema = {
+        "partials": [{"alias": "filtered", "schema": child}],
+        "select_final": [["id", "id"], ["text_value", "text_value"]],
+    }
+    _assert_schema_equivalent(equivalence_runtime, schema)
+
+
+def test_two_level_partial_is_executed_on_both_paths(equivalence_runtime):
+    leaf = {
+        "tables": [
+            {"name": equivalence_runtime.table("operation_values"), "alias": "source"}
+        ],
+        "select_final": [["id", "id"], ["status", "status"]],
+    }
+    middle = {
+        "partials": [{"alias": "leaf_rows", "schema": leaf}],
+        "add_columns": [["status", "upper_status", ["upper"]]],
+        "keep_all_columns": True,
+    }
+    schema = {
+        "partials": [{"alias": "middle_rows", "schema": middle}],
+        "select_final": [["id", "id"], ["upper_status", "upper_status"]],
+    }
+    _assert_schema_equivalent(equivalence_runtime, schema)
+
+
+@pytest.fixture
+def sql_rule_names():
+    names = []
+    yield names
+    for name in names:
+        RuleRegistry._rules.pop(name, None)
+
+
+def _register_sql_rule(names, suffix, result):
+    name = f"equivalence_{suffix}_{uuid4().hex}"
+
+    @RuleRegistry.register_rule(name=name, kind="sql")
+    def rule():
+        return result
+
+    names.append(name)
+    return name
+
+
+def test_sql_rule_adds_column_equivalently(equivalence_runtime, sql_rule_names):
+    rule_name = _register_sql_rule(sql_rule_names, "add", {"doubled": "amount * 2"})
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {
+                    "name": equivalence_runtime.table("filter_values"),
+                    "alias": "source",
+                    "fields": [["id", "id"], ["amount", "amount"]],
+                }
+            ],
+            "business_rules": [rule_name],
+            "select_final": [["id", "id"], ["doubled", "doubled"]],
+        }
+    )
+    _assert_schema_equivalent(equivalence_runtime, schema)
+
+
+def test_sql_rule_rewrites_column_equivalently(equivalence_runtime, sql_rule_names):
+    rule_name = _register_sql_rule(sql_rule_names, "rewrite", {"amount": "amount * -1"})
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {
+                    "name": equivalence_runtime.table("filter_values"),
+                    "alias": "source",
+                    "fields": [["id", "id"], ["amount", "amount"]],
+                }
+            ],
+            "business_rules": [rule_name],
+            "select_final": [["id", "id"], ["amount", "amount"]],
+        }
+    )
+    _assert_schema_equivalent(equivalence_runtime, schema)
+
+
+def test_drop_duplicates_keeps_one_original_row_per_key_on_each_path(equivalence_runtime):
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {
+                    "name": equivalence_runtime.table("duplicate_values"),
+                    "alias": "source",
+                    "quality_checks": {"drop_duplicates_on": ["event_key"]},
+                }
+            ],
+            "keep_all_columns": True,
+        }
+    )
+    originals = {(1, "first"), (1, "second"), (2, "only"), (None, "null-a"), (None, "null-b")}
+    spark_rows = [tuple(row) for row in _spark_result(equivalence_runtime, schema).collect()]
+    _, duck_rows = _duck_result(equivalence_runtime, schema)
+
+    for rows in (spark_rows, duck_rows):
+        assert len(rows) == 3
+        assert Counter(row[0] for row in rows) == Counter({1: 1, 2: 1, None: 1})
+        assert all(tuple(row) in originals for row in rows)
+
+
+def test_dev_limit_interactive_checks_only_count_and_membership(equivalence_runtime):
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {
+                    "name": equivalence_runtime.table("filter_values"),
+                    "alias": "source",
+                    "dev_limit": 3,
+                }
+            ],
+            "select_final": [["id", "id"], ["text_value", "text_value"]],
+        }
+    )
+    originals = {(1, "alpha"), (2, "alphabet"), (3, "beta"), (4, "ALPHA"), (5, "a%b"), (6, None)}
+    spark_rows = [tuple(row) for row in _spark_result(equivalence_runtime, schema).collect()]
+    _, duck_rows = _duck_result(equivalence_runtime, schema)
+
+    for rows in (spark_rows, duck_rows):
+        assert len(rows) == 3
+        assert all(tuple(row) in originals for row in rows)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [_context(is_job=True), _context(is_production=True)],
+    ids=["job", "production"],
+)
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "dev_limit divergence: the Spark interpreter disables it in job/production, "
+        "but compile_select has no execution context and still emits LIMIT"
+    ),
+)
+def test_dev_limit_job_and_production_equivalence(equivalence_runtime, context):
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {
+                    "name": equivalence_runtime.table("filter_values"),
+                    "alias": "source",
+                    "dev_limit": 3,
+                }
+            ],
+            "select_final": [["id", "id"]],
+        }
+    )
+    spark_count = _spark_result(equivalence_runtime, schema, context=context).count()
+    _, duck_rows = _duck_result(equivalence_runtime, schema)
+    assert spark_count == len(duck_rows)
