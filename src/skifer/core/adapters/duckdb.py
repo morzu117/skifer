@@ -262,10 +262,15 @@ class DuckDBAdapter:
         try:
             cursor = self._connection.execute(f"SELECT * FROM {relation} LIMIT 0")
         except Exception as exc:
-            display_relation = relation.replace('"', "")
+            # A quoted FQN reads badly under repr ('"gold"."orders"'), so the
+            # unquoted form is appended — but only when it actually differs.
+            # A file relation carries no double quotes, and printing it twice
+            # made the operator hunt for a difference that was never there.
+            unquoted = relation.replace('"', "")
+            alias = "" if unquoted == relation else f" ({unquoted})"
             raise DuckDBAdapterError(
-                f"Adapter 'duckdb' cannot resolve columns for relation {relation!r} "
-                f"({display_relation!r}); "
+                f"Adapter 'duckdb' cannot resolve columns for relation "
+                f"{relation!r}{alias}; "
                 "the relation does not exist or is not readable."
             ) from exc
         return [column[0] for column in (cursor.description or [])]

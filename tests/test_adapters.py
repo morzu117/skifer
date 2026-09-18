@@ -318,3 +318,26 @@ def test_reduced_fake_adapter_is_refused_by_name_and_capability():
     message = str(exc_info.value)
     assert adapter.name in message
     assert CAP_STREAMING in message
+
+
+def test_duckdb_relation_error_never_prints_the_same_relation_twice(tmp_path):
+    """The message names the relation once, and its unquoted form only if it differs.
+
+    A quoted FQN reads badly under repr, so an unquoted alias helps there. A file
+    relation contains no double quote: appending it unconditionally printed the
+    very same string twice and invited a search for a difference that is absent.
+    """
+    duckdb = pytest.importorskip("duckdb")
+    connection = duckdb.connect()
+    adapter = DuckDBAdapter(connection)
+    try:
+        file_relation = "read_csv('/nonexistent/skifer/missing.csv')"
+        with pytest.raises(DuckDBAdapterError) as exc_info:
+            adapter.list_relation_columns(file_relation)
+        assert str(exc_info.value).count(file_relation) == 1
+
+        with pytest.raises(DuckDBAdapterError) as exc_info:
+            adapter.list_relation_columns('"absent"."orders"')
+        assert "absent.orders" in str(exc_info.value)
+    finally:
+        connection.close()

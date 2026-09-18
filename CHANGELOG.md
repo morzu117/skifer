@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed SQL business rules on file-backed tables, which could not compile at all: the
+  compiler asked the catalog for the columns of a table that only exists as a file. The
+  column resolver now receives the declared table and answers from the adapter's relation
+  expression, so a rewrite keeps a single output column instead of emitting a homonym.
+  An unreadable relation raises instead of returning no column, since an empty answer
+  would have been read as proof that every rule column is new. (Plan 39.3.3)
 - Fixed DuckDB file-source defaults to follow Spark rather than the warehouse: an absent
   `header` or `inferSchema` no longer lets DuckDB auto-detect, which silently read a
   different dataset than Spark from the same file. `multiLine: true` now maps to a JSON

@@ -533,3 +533,41 @@ engine.backend.connection.close()
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_sql_rule_column_resolution_applies_table_resolution(
+    duck_adapter, registered_rules
+):
+    """The resolver must resolve the declared name, as the compiler used to.
+
+    Column resolution moved from the compiler to the runner in 39.3.3, taking
+    ``resolve_table`` with it. Nothing else exercises that call, so dropping it
+    would leave the sandbox name unresolved and be caught by no test.
+    """
+    duck_adapter.execute_sql("CREATE SCHEMA sandbox")
+    duck_adapter.ensure_schema_exists("gold")
+    duck_adapter.execute_sql(
+        "CREATE TABLE sandbox.orders AS SELECT * FROM VALUES "
+        "(1, 'ready') AS rows(order_id, status)"
+    )
+    rule_name = _register_rule(
+        registered_rules,
+        kind="sql",
+        result={"status": "UPPER(status)"},
+    )
+
+    run_sql_pipeline(
+        duck_adapter,
+        {
+            "tables": [{"name": "orders", "alias": "orders"}],
+            "business_rules": [rule_name],
+            "keep_all_columns": True,
+        },
+        "gold.resolved_orders",
+        context=_context(),
+        resolve_table=lambda name: f"sandbox.{name}",
+    )
+
+    cursor = duck_adapter.read_table("gold.resolved_orders")
+    assert [column[0] for column in cursor.description] == ["order_id", "status"]
+    assert cursor.fetchall() == [(1, "READY")]
