@@ -318,6 +318,36 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
   ou SQLite hébergé par skifer-plan (décision D4). Les `_get_backend().spark` résiduels (`history.py:192`,
   `metadata_store.py:360`) sont remplacés.
 
+> **Mesure du 18 septembre 2026, avant découpage.** L'état réel des registres n'est pas celui que ce plan
+> supposait, et il commande le découpage.
+>
+> Ils se répartissent en **deux familles**, pas une :
+>
+> | Famille | Modules | Comment ils atteignent le moteur |
+> |---|---|---|
+> | Déjà en forme d'adaptateur | `certification_store.py`, `adaptive/store.py` | appellent des **méthodes nommées** du backend (`append_certification_contract`, `get_certification_run`, `append_semantic_usage_event`…), déjà implémentées en SQL dans `SparkBackend` |
+> | Encore liés à Spark | `observability/history.py`, `observability/metadata_store.py` | atteignent `backend.spark` et utilisent `createDataFrame`, `.write.format("delta")`, `.collect()` |
+>
+> La première famille paraît facile à porter — il « suffirait » d'implémenter ces méthodes sur `DuckDBAdapter`.
+> **C'est le piège.** Elles sont **14** sur `SparkBackend`, contre un Protocol `Adapter` de **20 membres** :
+> les exiger de chaque adaptateur ferait passer la frontière à 34, et rendrait chaque nouvel entrepôt presque
+> deux fois plus cher. C'est exactement le Protocol à ~40 méthodes que le Plan 26 a supprimé (§1.4).
+
+| # | Question | Recommandation |
+|---|---|---|
+| D12 | Où vit la logique de registre | **Un registre SQL générique écrit une seule fois**, au-dessus du Protocol mince (`execute_sql`, `fetch`, `ensure_schema_exists`, `list_relation_columns`). Aucun membre ajouté à `Adapter`. Les 14 méthodes de `SparkBackend` restent en place — aucune régression Databricks — et deviennent à terme des appels au registre générique. **À valider.** |
+
+**Découpage proposé** :
+
+| Tranche | Contenu | Dépend de |
+|---|---|---|
+| 39.5.1 | Registre SQL générique (schéma des tables, écriture, lecture) au-dessus du Protocol mince, sans toucher aux appelants | 39.4 |
+| 39.5.2 | `certification_store` et `adaptive/store` branchés dessus quand l'adaptateur n'est pas Databricks | 39.5.1 |
+| 39.5.3 | `history.py` et `metadata_store.py` : suppression de `backend.spark`, réécriture sur le registre générique | 39.5.1 |
+| 39.5.4 | `PublicationCoordinator` : staging, checks, promotion/quarantaine via l'adaptateur (`swap_tables` : Snowflake `SWAP WITH`, BigQuery copy + rename, DuckDB transaction) | 39.5.2 |
+| 39.5.5 | `definition_hash` hors Databricks : `COMMENT`/tags, table `_skifer_meta` en repli | 39.5.4 |
+| 39.5.6 | Exemple 02 en mode SQL — le critère de sortie déplacé depuis la phase 39.3 | 39.5.4 |
+
 ### Phase 39.6 — Graphe inter-pipelines et sélection — *5–8 j*
 - `ref()` implicite : une table déclarée dans `tables:` qui est la sortie d'un autre pipeline du projet crée une
   arête. Construit sans Spark depuis l'index Plan 31 (`observability/metadata_index.py`).
