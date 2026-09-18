@@ -225,12 +225,14 @@ class SqlRegistry:
         definition: TableDefinition,
         *,
         where: Mapping[str, Any] | None = None,
+        comparisons: Sequence[tuple[str, str, Any]] | None = None,
         order_by: Sequence[tuple[str, str]] | None = None,
         limit: int | None = None,
     ) -> list[dict]:
-        """Read rows using equality filters, deterministic ordering, and a limit."""
+        """Read rows using bounded filters, deterministic ordering, and a limit."""
         self.ensure_table(definition)
         predicates = self._predicates(definition, where or {})
+        predicates.extend(self._comparisons(definition, comparisons or ()))
         ordering = self._ordering(definition, order_by)
         query = f"SELECT * FROM {self._table(definition)}"
         if predicates:
@@ -325,6 +327,37 @@ class SqlRegistry:
             )
         return predicates
 
+    def _comparisons(
+        self,
+        definition: TableDefinition,
+        comparisons: Sequence[tuple[str, str, Any]],
+    ) -> list[str]:
+        names = set(definition.column_names)
+        allowed_operators = {"=", "!=", ">=", "<="}
+        predicates = []
+        for item in comparisons:
+            if not isinstance(item, (tuple, list)) or len(item) != 3:
+                raise SqlRegistryError(
+                    "Registry comparisons must be (column, operator, value) triples."
+                )
+            name, operator, value = item
+            if name not in names or operator not in allowed_operators:
+                raise SqlRegistryError(
+                    f"Invalid registry comparison {item!r} for {definition.name!r}."
+                )
+            column = self._ident(name)
+            if value is None:
+                if operator not in {"=", "!="}:
+                    raise SqlRegistryError(
+                        "Registry NULL comparisons only support '=' and '!='."
+                    )
+                predicates.append(
+                    f"{column} IS {'NOT ' if operator == '!=' else ''}NULL"
+                )
+            else:
+                predicates.append(f"{column} {operator} {_sql_literal(value)}")
+        return predicates
+
     def _ordering(
         self,
         definition: TableDefinition,
@@ -354,6 +387,174 @@ class SqlRegistry:
         return ordering
 
 
+class SqlRegistryBackend:
+    """Speak the stores' existing vocabulary on top of the generic registry."""
+
+    def __init__(self, adapter):
+        self.adapter = adapter
+
+    def _registry(self, schema: str) -> SqlRegistry:
+        return SqlRegistry(self.adapter, schema)
+
+    def append_certification_check(self, schema: str, row: dict) -> None:
+        self._registry(schema).append(CHECK_RESULTS, row)
+
+    def append_certification_contract(self, schema: str, row: dict) -> None:
+        self._registry(schema).append(CONTRACT_DEFINITIONS, row)
+
+    def append_certification_run(self, schema: str, row: dict) -> None:
+        self._registry(schema).append(MATERIALIZATION_RUNS, row)
+
+    def append_semantic_usage_event(self, schema: str, row: dict) -> None:
+        self._registry(schema).append(SEMANTIC_USAGE_EVENTS, row)
+
+    def get_certification_check_results(
+        self, schema: str, run_id: str
+    ) -> list[dict]:
+        return self._registry(schema).find(
+            CHECK_RESULTS,
+            where={"run_id": run_id},
+        )
+
+    def get_certification_contract(
+        self, schema: str, contract_id: str, version: str
+    ) -> dict | None:
+        rows = self._registry(schema).find(
+            CONTRACT_DEFINITIONS,
+            where={"contract_id": contract_id, "contract_version": version},
+            limit=2,
+        )
+        if len(rows) > 1:
+            raise ValueError(
+                f"Contract '{contract_id}' version '{version}' has ambiguous definitions."
+            )
+        return rows[0] if rows else None
+
+    def get_certification_contract_by_hash(
+        self, schema: str, contract_id: str, definition_hash: str
+    ) -> dict | None:
+        rows = self._registry(schema).find(
+            CONTRACT_DEFINITIONS,
+            where={
+                "contract_id": contract_id,
+                "definition_hash": definition_hash,
+            },
+            limit=1,
+        )
+        return rows[0] if rows else None
+
+    def get_certification_run(self, schema: str, run_id: str) -> dict | None:
+        rows = self._registry(schema).find(
+            MATERIALIZATION_RUNS,
+            where={"run_id": run_id},
+            order_by=(("occurred_at", "DESC"),),
+            limit=1,
+        )
+        return rows[0] if rows else None
+
+    def get_incident(self, schema: str, incident_id: str) -> dict | None:
+        rows = self._registry(schema).find(
+            INCIDENTS,
+            where={"id": incident_id},
+            limit=1,
+        )
+        return rows[0] if rows else None
+
+    def get_latest_certification_promotion(
+        self, schema: str, dataset: str
+    ) -> dict | None:
+        rows = self._registry(schema).find(
+            MATERIALIZATION_RUNS,
+            where={"dataset": dataset, "state": "PROMOTED"},
+            order_by=(("occurred_at", "DESC"),),
+            limit=1,
+        )
+        return rows[0] if rows else None
+
+    def get_open_incident(
+        self, schema: str, target_fqn: str, check_name: str
+    ) -> dict | None:
+        rows = self._registry(schema).find(
+            INCIDENTS,
+            where={"target_fqn": target_fqn, "check_name": check_name},
+            comparisons=(("status", "!=", "RESOLVED"),),
+            order_by=(("opened_at", "DESC"),),
+            limit=1,
+        )
+        return rows[0] if rows else None
+
+    def list_certification_history(
+        self, schema: str, dataset: str, limit: int = 50
+    ) -> list[dict]:
+        return self._registry(schema).find(
+            MATERIALIZATION_RUNS,
+            where={"dataset": dataset},
+            order_by=(("occurred_at", "DESC"),),
+            limit=limit,
+        )
+
+    def list_incidents(
+        self,
+        schema: str,
+        *,
+        status: str | None = None,
+        target_fqn: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        where = {}
+        if status is not None:
+            where["status"] = status
+        if target_fqn is not None:
+            where["target_fqn"] = target_fqn
+        return self._registry(schema).find(
+            INCIDENTS,
+            where=where,
+            order_by=(("opened_at", "DESC"),),
+            limit=limit,
+        )
+
+    def list_open_incidents(
+        self, schema: str, target_fqn: str
+    ) -> list[dict]:
+        return self._registry(schema).find(
+            INCIDENTS,
+            where={"target_fqn": target_fqn},
+            comparisons=(("status", "!=", "RESOLVED"),),
+            order_by=(("opened_at", "DESC"),),
+        )
+
+    def list_semantic_usage_events(
+        self,
+        schema: str,
+        *,
+        environment: str | None = None,
+        consumer_class: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        where = {}
+        if environment is not None:
+            where["environment"] = environment
+        if consumer_class is not None:
+            where["consumer_class"] = consumer_class
+        comparisons = []
+        if since is not None:
+            comparisons.append(("occurred_at", ">=", since))
+        if until is not None:
+            comparisons.append(("occurred_at", "<=", until))
+        return self._registry(schema).find(
+            SEMANTIC_USAGE_EVENTS,
+            where=where,
+            comparisons=comparisons,
+            order_by=(("occurred_at", "DESC"), ("event_id", "DESC")),
+            limit=limit,
+        )
+
+    def upsert_incident(self, schema: str, row: dict) -> None:
+        self._registry(schema).upsert(INCIDENTS, row)
+
+
 __all__ = [
     "CHECK_RESULTS",
     "CONTRACT_DEFINITIONS",
@@ -363,6 +564,7 @@ __all__ = [
     "TABLE_DEFINITIONS",
     "SqlColumn",
     "SqlRegistry",
+    "SqlRegistryBackend",
     "SqlRegistryError",
     "TableDefinition",
 ]

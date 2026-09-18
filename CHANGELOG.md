@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `SqlRegistryBackend`, which speaks the sixteen certification, incident and usage
+  methods the Delta stores already call, on top of the generic SQL registry. The stores
+  therefore run on a non-Spark adapter without a line changed in them — no `hasattr`
+  dispatch, no branch, no new Adapter member. The behaviour tests are written once and
+  parameterized over both backends, so the two cannot drift apart: writing them twice is
+  exactly the divergence this slice exists to prevent. Signatures are checked by reflection
+  against `SparkBackend`, and the usage-event time bounds went into the generic registry
+  rather than hand-built SQL in the shim. (Plan 39.5.2, decision D12)
 - Added a generic SQL registry above the Adapter Protocol, written once instead of as
   fourteen more adapter methods: declarative definitions for contract definitions,
   materialization runs, check results, incidents and semantic usage events, with one
