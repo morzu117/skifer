@@ -10,6 +10,7 @@ from skifer.core.capabilities_matrix import (
     CAP_DROP_DUPLICATES,
     CAP_FILE_SOURCES,
     CAP_INCREMENTAL,
+    CAP_SNAPSHOT,
     CAP_VIEW,
 )
 from skifer.core.dialect import quote_fqn, quote_ident
@@ -42,6 +43,7 @@ class DuckDBAdapter:
                 CAP_FILE_SOURCES,
                 CAP_INCREMENTAL,
                 CAP_VIEW,
+                CAP_SNAPSHOT,
             }
         )
 

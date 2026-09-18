@@ -1,16 +1,12 @@
 import pytest
 from unittest.mock import MagicMock
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import reduce
 from uuid import UUID, uuid4
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, TimestampType, DoubleType, FloatType
 
 from skifer.core.spark_backend import SparkBackend
-from skifer.core.capabilities_matrix import (
-    CAP_SNAPSHOT,
-    UnsupportedCapabilityError,
-)
 from skifer.core.ir import ParsedFilter, _parse_op
 from skifer.core.context import ExecutionContext
 from skifer.core.core import SkiferEngine
@@ -819,40 +815,29 @@ def test_run_process_to_table_accepts_and_returns_injected_run_id(mocker):
     )
 
 
-@pytest.mark.parametrize(
-    ("materialization", "capability"),
-    [
-        (
-            {
-                "type": "snapshot",
-                "strategy": "timestamp",
-                "unique_key": ["order_id"],
-                "updated_at": "modified_at",
-                "on_missing": "close",
-            },
-            CAP_SNAPSHOT,
-        ),
-    ],
-)
-def test_databricks_refuses_unimplemented_materialization_by_name(
-    mocker, materialization, capability
-):
+def test_databricks_accepts_snapshot_strategy_before_patterns(mocker):
     engine = _engine_for_run_id_tests(mocker)
+    schema = {
+        "tables": [{"name": "silver.orders"}],
+        "materialization": {
+            "type": "snapshot",
+            "strategy": "timestamp",
+            "unique_key": ["order_id"],
+            "updated_at": "modified_at",
+            "on_missing": "close",
+        },
+    }
 
-    with pytest.raises(UnsupportedCapabilityError) as exc_info:
-        engine.run_process_to_table(
-            {
-                "tables": [{"name": "silver.orders"}],
-                "materialization": materialization,
-            },
-            "gold",
-            "orders",
-        )
+    run_id = engine.run_process_to_table(schema, "gold", "orders")
 
-    message = str(exc_info.value)
-    assert "databricks" in message
-    assert capability in message
-    engine._patterns.run_process_to_table.assert_not_called()
+    UUID(run_id)
+    engine._patterns.run_process_to_table.assert_called_once_with(
+        schema,
+        "gold",
+        "orders",
+        intermediate_mode="inline",
+        run_id=run_id,
+    )
 
 
 def test_databricks_accepts_incremental_merge_strategy_before_patterns(mocker):
@@ -876,6 +861,108 @@ def test_databricks_accepts_incremental_merge_strategy_before_patterns(mocker):
         intermediate_mode="inline",
         run_id=run_id,
     )
+
+
+@pytest.mark.parametrize("strategy", ["timestamp", "check"])
+def test_spark_snapshot_write_runs_preflight_and_applies_scd2(spark, strategy):
+    schema = f"snapshot_spark_{strategy}_{uuid4().hex[:8]}"
+    fqn = f"`{schema}`.`orders`"
+    run_at = {"value": datetime(2026, 1, 1, 9, tzinfo=timezone.utc)}
+    engine = object.__new__(SkiferEngine)
+    object.__setattr__(engine, "_context", ExecutionContext(env="local", is_local=True))
+    engine._backend = SparkBackend(spark=spark, is_local=True)
+    engine.db = None
+    engine._clock = lambda: run_at["value"]
+    engine._ensure_schema_exists(schema)
+    if strategy == "timestamp":
+        materialization = {
+            "type": "snapshot",
+            "strategy": "timestamp",
+            "unique_key": ["order_id"],
+            "updated_at": "modified_at",
+            "on_missing": "ignore",
+        }
+        first = spark.createDataFrame(
+            [(1, "old", 10, datetime(2026, 1, 1)), (2, "steady", 20, datetime(2026, 1, 1))],
+            ["order_id", "status", "amount", "modified_at"],
+        )
+        duplicate = spark.createDataFrame(
+            [(1, "old", 10, datetime(2026, 1, 1)), (1, "dup", 15, datetime(2026, 1, 2))],
+            ["order_id", "status", "amount", "modified_at"],
+        )
+        second = spark.createDataFrame(
+            [
+                (1, "new", 15, datetime(2026, 1, 2)),
+                (2, "steady", 20, datetime(2026, 1, 1)),
+                (3, "new", 30, datetime(2026, 1, 2)),
+            ],
+            ["order_id", "status", "amount", "modified_at"],
+        )
+        old_from = datetime(2026, 1, 1)
+        new_from = datetime(2026, 1, 2)
+    else:
+        materialization = {
+            "type": "snapshot",
+            "strategy": "check",
+            "unique_key": ["order_id"],
+            "check_columns": ["status", "amount"],
+            "on_missing": "ignore",
+        }
+        first = spark.createDataFrame(
+            [(1, "old", 10), (2, "steady", 20)],
+            ["order_id", "status", "amount"],
+        )
+        duplicate = spark.createDataFrame(
+            [(1, "old", 10), (1, "dup", 15)],
+            ["order_id", "status", "amount"],
+        )
+        second = spark.createDataFrame(
+            [(1, "new", 15), (2, "steady", 20), (3, "new", 30)],
+            ["order_id", "status", "amount"],
+        )
+        old_from = datetime(2026, 1, 1, 9)
+        new_from = datetime(2026, 1, 2, 9)
+
+    try:
+        engine._write_dataframe(first, fqn, "orders", materialization=materialization)
+        before = [
+            row.asDict()
+            for row in spark.sql(
+                f"SELECT order_id, status, amount, valid_from, valid_to FROM {fqn} "
+                "ORDER BY order_id, valid_from"
+            ).collect()
+        ]
+
+        with pytest.raises(ValueError, match="unique_key.*not unique"):
+            engine._write_dataframe(duplicate, fqn, "orders", materialization=materialization)
+        after_refusal = [
+            row.asDict()
+            for row in spark.sql(
+                f"SELECT order_id, status, amount, valid_from, valid_to FROM {fqn} "
+                "ORDER BY order_id, valid_from"
+            ).collect()
+        ]
+        assert after_refusal == before
+
+        run_at["value"] = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
+        engine._write_dataframe(second, fqn, "orders", materialization=materialization)
+
+        rows = [
+            row.asDict()
+            for row in spark.sql(
+                f"SELECT order_id, status, amount, valid_from, valid_to FROM {fqn} "
+                "ORDER BY order_id, valid_from"
+            ).collect()
+        ]
+        assert rows == [
+            {"order_id": 1, "status": "old", "amount": 10, "valid_from": old_from, "valid_to": new_from},
+            {"order_id": 1, "status": "new", "amount": 15, "valid_from": new_from, "valid_to": None},
+            {"order_id": 2, "status": "steady", "amount": 20, "valid_from": old_from, "valid_to": None},
+            {"order_id": 3, "status": "new", "amount": 30, "valid_from": new_from, "valid_to": None},
+        ]
+    finally:
+        spark.sql(f"DROP TABLE IF EXISTS {fqn}")
+        spark.sql(f"DROP SCHEMA IF EXISTS `{schema}` CASCADE")
 
 
 def test_run_from_yaml_mints_and_returns_same_run_id(mocker):

@@ -10,6 +10,8 @@ import yaml
 from dotenv import load_dotenv
 import os
 from contextlib import nullcontext
+from datetime import datetime, timezone
+from typing import Callable
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -191,6 +193,7 @@ class SkiferEngine:
         certification_store=None,
         metadata_store=None,
         connection=None,
+        clock: Callable[[], datetime] | None = None,
     ):
         """
         Initializes the SkiferEngine.
@@ -217,6 +220,8 @@ class SkiferEngine:
             connection: Explicit DuckDB connection for ``engine: sql``. When omitted,
                                              the engine creates one private in-memory
                                              connection through the lazy DuckDB factory.
+            clock: Optional wall-clock provider used by cumulative materializations that
+                                             need a run timestamp, notably SCD2 snapshots.
         """
         # Initialize _context unconditionally before any property access so that a
         # partially-constructed engine (init raises mid-way) never silently exposes a
@@ -224,6 +229,9 @@ class SkiferEngine:
         # AttributeError on _context itself (no _context attr) rather than
         # returning an empty string.
         object.__setattr__(self, "_context", ExecutionContext())
+        if clock is not None and not callable(clock):
+            raise TypeError("clock must be callable.")
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
         # ======================================================================
         # 0. CHARGEMENT DES VARIABLES D'ENVIRONNEMENT (.env)
@@ -747,6 +755,66 @@ class SkiferEngine:
             )
         )
 
+    def _snapshot_run_at(self) -> datetime:
+        value = self._clock()
+        if not isinstance(value, datetime):
+            raise TypeError("Snapshot clock must return datetime values.")
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Snapshot clock must return timezone-aware datetimes.")
+        return value.astimezone(timezone.utc)
+
+    def _apply_snapshot_dataframe(self, df, fqn: str, materialization: dict) -> None:
+        from skifer.core.merge_sql import (
+            build_snapshot_apply_sql,
+            build_snapshot_initial_select_sql,
+        )
+        from skifer.core.snapshot_preflight import (
+            build_snapshot_preflight_report,
+            collect_snapshot_preflight_inputs,
+        )
+        from skifer.core.sql_compiler import quote_ident
+
+        backend = self._get_backend()
+        target_exists = self._target_exists(fqn)
+        source_view = f"_skifer_snapshot_src_{uuid4().hex}"
+        source_relation = quote_ident(source_view)
+        backend.register_temp_view(df, source_view)
+        inputs = collect_snapshot_preflight_inputs(
+            backend,
+            source_relation=source_relation,
+            target_relation=fqn,
+            materialization=materialization,
+            target_exists=target_exists,
+        )
+        report = build_snapshot_preflight_report(materialization, inputs)
+        if not report.safe_to_apply:
+            rendered = "\n\n".join(finding.render() for finding in report.findings)
+            raise ValueError(rendered)
+
+        run_at = self._snapshot_run_at()
+        if not target_exists:
+            snapshot_df = backend.sql(
+                build_snapshot_initial_select_sql(
+                    source_relation=source_relation,
+                    source_columns=list(inputs.source_columns),
+                    materialization=materialization,
+                    target=backend.name,
+                    run_at=run_at,
+                )
+            )
+            backend.write_table(snapshot_df, fqn)
+            return
+
+        for statement in build_snapshot_apply_sql(
+            target_relation=fqn,
+            source_relation=source_relation,
+            source_columns=list(inputs.source_columns),
+            materialization=materialization,
+            target=backend.name,
+            run_at=run_at,
+        ):
+            backend.execute_sql(statement)
+
     def _write_dataframe(self, df, fqn, label, sink_config=None, materialization=None):
         """Writes a DataFrame to the configured sink."""
         if sink_config and sink_config.get("type") in ("postgres", "jdbc"):
@@ -788,6 +856,10 @@ class SkiferEngine:
                     f"[incremental] strategy {strategy!r} is not implemented yet; "
                     "only 'append' and 'merge' are supported."
                 )
+
+        if materialization and materialization.get("type") == "snapshot":
+            self._apply_snapshot_dataframe(df, fqn, materialization)
+            return
 
         if materialization and materialization.get("type") == "streaming_table":
             self._get_backend().write_stream_table(

@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any, Callable
 
 from skifer.core.capabilities_matrix import CAP_FILE_SOURCES, assert_supported
 from skifer.core.dialect import quote_fqn, quote_ident, split_fqn, transpile
 from skifer.core.ir import ParsedSchema, ParsedTable, parse_to_ir
-from skifer.core.merge_sql import assert_merge_columns_match, build_merge_sql
+from skifer.core.merge_sql import (
+    assert_merge_columns_match,
+    build_merge_sql,
+    build_snapshot_apply_sql,
+    build_snapshot_initial_select_sql,
+)
+from skifer.core.snapshot_preflight import (
+    build_snapshot_preflight_report,
+    collect_snapshot_preflight_inputs,
+)
 from skifer.core.sql_compiler import compile_select
 
 
@@ -86,6 +96,7 @@ def run_sql_pipeline(
     context: Any,
     resolve_table: Callable[[str], str] | None = None,
     allow_raw_sql: bool = True,
+    clock: Callable[[], datetime] | None = None,
 ) -> str:
     """Compile, transpile and materialize one YAML pipeline through SQL DDL."""
     parsed = parse_to_ir(schema_dict)
@@ -104,6 +115,7 @@ def run_sql_pipeline(
         materialization.get("type") == "incremental"
         and materialization.get("strategy") == "merge"
     )
+    is_snapshot = materialization.get("type") == "snapshot"
     if (context.is_job_execution or context.is_production) and not is_view:
         parsed = _without_dev_limits(parsed)
 
@@ -165,7 +177,57 @@ def run_sql_pipeline(
             )
         else:
             statement = f"CREATE TABLE {target} AS {translated}"
+    elif is_snapshot:
+        catalog, schema, table = _target_parts(target_fqn)
+        target_exists = adapter.table_exists(catalog, schema, table)
+        source_relation = f"(\n{translated}\n)"
+        inputs = collect_snapshot_preflight_inputs(
+            adapter,
+            source_relation=source_relation,
+            target_relation=target,
+            materialization=materialization,
+            target_exists=target_exists,
+        )
+        report = build_snapshot_preflight_report(materialization, inputs)
+        if not report.safe_to_apply:
+            rendered = "\n\n".join(finding.render() for finding in report.findings)
+            raise ValueError(rendered)
+
+        run_at = _snapshot_run_at(clock)
+        if target_exists:
+            source_columns = list(inputs.source_columns)
+            statements = build_snapshot_apply_sql(
+                target_relation=target,
+                source_relation=source_relation,
+                source_columns=source_columns,
+                materialization=materialization,
+                target=adapter.name,
+                run_at=run_at,
+            )
+            for current in statements:
+                adapter.execute_sql(current)
+            return ";\n".join(statements)
+        statement = (
+            f"CREATE TABLE {target} AS "
+            + build_snapshot_initial_select_sql(
+                source_relation=source_relation,
+                source_columns=list(inputs.source_columns),
+                materialization=materialization,
+                target=adapter.name,
+                run_at=run_at,
+            )
+        )
     else:
         statement = f"CREATE OR REPLACE TABLE {target} AS {translated}"
     adapter.execute_sql(statement)
     return statement
+
+
+def _snapshot_run_at(clock: Callable[[], datetime] | None) -> datetime:
+    now = clock or (lambda: datetime.now(timezone.utc))
+    value = now()
+    if not isinstance(value, datetime):
+        raise TypeError("Snapshot clock must return datetime values.")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Snapshot clock must return timezone-aware datetimes.")
+    return value.astimezone(timezone.utc)

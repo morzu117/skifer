@@ -255,8 +255,8 @@ def test_capability_error_schemas_cover_all_capabilities_exactly():
     assert covered == ALL_CAPABILITIES
 
 
-def test_databricks_capabilities_exclude_unimplemented_write_strategies():
-    assert DATABRICKS_CAPABILITIES.isdisjoint({CAP_SNAPSHOT})
+def test_databricks_capabilities_include_implemented_write_strategies():
+    assert CAP_SNAPSHOT in DATABRICKS_CAPABILITIES
     assert CAP_VIEW in DATABRICKS_CAPABILITIES
     assert CAP_INCREMENTAL in DATABRICKS_CAPABILITIES
 
@@ -278,7 +278,7 @@ def test_incremental_capability_enables_implemented_merge_strategy():
     )
 
 
-def test_capability_matrix_still_refuses_unimplemented_snapshot_materialization():
+def test_snapshot_capability_enables_implemented_snapshot_strategy():
     parsed = parse_to_ir(
         {
             "tables": [{"name": "orders"}],
@@ -292,7 +292,6 @@ def test_capability_matrix_still_refuses_unimplemented_snapshot_materialization(
         }
     )
 
-    with pytest.raises(UnsupportedCapabilityError, match="snapshot"):
-        assert_supported(
-            parsed, adapter_name="databricks", supported=DATABRICKS_CAPABILITIES
-        )
+    assert_supported(
+        parsed, adapter_name="databricks", supported=DATABRICKS_CAPABILITIES
+    )

@@ -50,6 +50,7 @@ DATABRICKS_CAPABILITIES: frozenset[str] = frozenset(
         CAP_DEV_LIMIT,
         CAP_DROP_DUPLICATES,
         CAP_PREPROCESS_QUALIFY,
+        CAP_SNAPSHOT,
     }
 )
 

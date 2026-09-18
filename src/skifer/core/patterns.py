@@ -120,6 +120,7 @@ class PipelinePatterns:
                 target_fqn,
                 context=e.context,
                 allow_raw_sql=e.context.env_config().get("allow_raw_sql", True),
+                clock=e._clock,
             )
             return
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.abc
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -12,14 +12,14 @@ import pytest
 import yaml
 
 from skifer.core.adapters.duckdb import DuckDBAdapter, DuckDBAdapterError
-from skifer.core.capabilities_matrix import (
-    CAP_SNAPSHOT,
-    UnsupportedCapabilityError,
-)
+from skifer.core.capabilities_matrix import UnsupportedCapabilityError
 from skifer.core.context import ExecutionContext
 from skifer.core.core import SkiferEngine
+from skifer.core.dialect import quote_fqn
 from skifer.core.ir import parse_to_ir
+from skifer.core.merge_sql import build_snapshot_apply_sql
 from skifer.core.registry import RuleRegistry
+from skifer.core.schema_loader import parse_schema
 from skifer.core.sql_compiler import SqlCompilationError, compile_select
 from skifer.core.sql_runner import _target_parts, run_sql_pipeline
 
@@ -62,6 +62,79 @@ def _register_rule(names, *, kind, result):
             return df
     names.append(name)
     return name
+
+
+RUN_1 = datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc)
+RUN_2 = datetime(2026, 1, 2, 9, 0, tzinfo=timezone.utc)
+RUN_3 = datetime(2026, 1, 3, 9, 0, tzinfo=timezone.utc)
+T1 = datetime(2026, 1, 1, 0, 0)
+T2 = datetime(2026, 1, 2, 0, 0)
+
+
+def _snapshot_schema(strategy, *, on_missing="ignore"):
+    if strategy == "timestamp":
+        mat = {
+            "type": "snapshot",
+            "strategy": "timestamp",
+            "unique_key": ["order_id"],
+            "updated_at": "modified_at",
+            "on_missing": on_missing,
+        }
+    else:
+        mat = {
+            "type": "snapshot",
+            "strategy": "check",
+            "unique_key": ["order_id"],
+            "check_columns": ["status", "amount"],
+            "on_missing": on_missing,
+        }
+    if on_missing == "close":
+        mat["max_closed_ratio"] = 1.0
+    return {
+        "materialization": mat,
+        "tables": [{"name": "source.orders", "alias": "orders"}],
+    }
+
+
+def _prepare_snapshot_tables(adapter, strategy):
+    adapter.execute_sql("CREATE SCHEMA IF NOT EXISTS source")
+    adapter.execute_sql("CREATE SCHEMA IF NOT EXISTS gold")
+    adapter.execute_sql("DROP TABLE IF EXISTS source.orders")
+    adapter.execute_sql("DROP TABLE IF EXISTS gold.orders")
+    if strategy == "timestamp":
+        adapter.execute_sql(
+            "CREATE TABLE source.orders("
+            "order_id INTEGER, status VARCHAR, amount INTEGER, modified_at TIMESTAMP)"
+        )
+    else:
+        adapter.execute_sql(
+            "CREATE TABLE source.orders("
+            "order_id INTEGER, status VARCHAR, amount INTEGER)"
+        )
+
+
+def _replace_snapshot_source(adapter, strategy, rows):
+    adapter.execute_sql("DELETE FROM source.orders")
+    if not rows:
+        return
+    if strategy == "timestamp":
+        values = ", ".join(
+            f"({order_id}, '{status}', {amount}, TIMESTAMP '{modified_at}')"
+            for order_id, status, amount, modified_at in rows
+        )
+    else:
+        values = ", ".join(
+            f"({order_id}, '{status}', {amount})"
+            for order_id, status, amount in rows
+        )
+    adapter.execute_sql(f"INSERT INTO source.orders VALUES {values}")
+
+
+def _snapshot_rows(adapter):
+    return adapter.fetch(
+        'SELECT "order_id", "status", "amount", "valid_from", "valid_to" '
+        'FROM "gold"."orders" ORDER BY "order_id", "valid_from"'
+    )
 
 
 def test_duckdb_pipeline_filter_join_projection_and_sql_rule(
@@ -163,38 +236,18 @@ def test_python_rule_is_refused_by_adapter_capability(duck_adapter, registered_r
         )
 
 
-@pytest.mark.parametrize(
-    ("materialization", "capability"),
-    [
-        (
-            {
-                "type": "snapshot",
-                "strategy": "timestamp",
-                "unique_key": ["order_id"],
-                "updated_at": "modified_at",
-                "on_missing": "close",
-            },
-            CAP_SNAPSHOT,
-        ),
-    ],
-)
-def test_duckdb_refuses_unimplemented_materialization_by_name(
-    duck_adapter, materialization, capability
-):
-    with pytest.raises(UnsupportedCapabilityError) as exc_info:
-        run_sql_pipeline(
-            duck_adapter,
-            {
-                "tables": [{"name": "source.orders"}],
-                "materialization": materialization,
-            },
-            "gold.orders",
-            context=_context(),
-        )
-
-    message = str(exc_info.value)
-    assert "duckdb" in message
-    assert capability in message
+def test_snapshot_strategy_unknown_is_still_rejected():
+    with pytest.raises(ValueError, match=r"Unknown 'strategy'.*snapshot"):
+        parse_schema("""
+materialization:
+  type: snapshot
+  strategy: hash
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: ignore
+tables:
+  - name: source.orders
+""")
 
 
 def test_duckdb_view_tracks_source_changes(duck_adapter):
@@ -477,6 +530,227 @@ def test_duckdb_incremental_merge_refuses_source_target_column_divergence(
     message = str(exc_info.value)
     assert "source-only columns: ['note']" in message
     assert "target-only columns: ['status']" in message
+
+
+@pytest.mark.parametrize("strategy", ["timestamp", "check"])
+def test_duckdb_snapshot_first_run_and_unchanged_second_run_noop(duck_adapter, strategy):
+    _prepare_snapshot_tables(duck_adapter, strategy)
+    if strategy == "timestamp":
+        rows = [(1, "steady", 10, "2026-01-01 00:00:00"), (2, "old", 20, "2026-01-02 00:00:00")]
+        expected_from = {1: T1, 2: T2}
+    else:
+        rows = [(1, "steady", 10), (2, "old", 20)]
+        expected_from = {1: RUN_1.replace(tzinfo=None), 2: RUN_1.replace(tzinfo=None)}
+    _replace_snapshot_source(duck_adapter, strategy, rows)
+    schema = _snapshot_schema(strategy)
+
+    first = run_sql_pipeline(
+        duck_adapter, schema, "gold.orders", context=_context(), clock=lambda: RUN_1
+    )
+    second = run_sql_pipeline(
+        duck_adapter, schema, "gold.orders", context=_context(), clock=lambda: RUN_2
+    )
+
+    assert first.startswith('CREATE TABLE "gold"."orders" AS SELECT ')
+    assert "UPDATE " in second
+    assert "INSERT INTO" in second
+    assert "SET *" not in second
+    assert "INSERT *" not in second
+    assert _snapshot_rows(duck_adapter) == [
+        {
+            "order_id": order_id,
+            "status": status,
+            "amount": amount,
+            "valid_from": expected_from[order_id],
+            "valid_to": None,
+        }
+        for order_id, status, amount, *_ in rows
+    ]
+
+
+@pytest.mark.parametrize("strategy", ["timestamp", "check"])
+def test_duckdb_snapshot_changed_key_closes_and_inserts_current(duck_adapter, strategy):
+    _prepare_snapshot_tables(duck_adapter, strategy)
+    if strategy == "timestamp":
+        _replace_snapshot_source(duck_adapter, strategy, [(1, "old", 10, "2026-01-01 00:00:00")])
+        run_sql_pipeline(
+            duck_adapter, _snapshot_schema(strategy), "gold.orders", context=_context(), clock=lambda: RUN_1
+        )
+        _replace_snapshot_source(duck_adapter, strategy, [(1, "new", 15, "2026-01-02 00:00:00")])
+        new_from = T2
+    else:
+        _replace_snapshot_source(duck_adapter, strategy, [(1, "old", 10)])
+        run_sql_pipeline(
+            duck_adapter, _snapshot_schema(strategy), "gold.orders", context=_context(), clock=lambda: RUN_1
+        )
+        _replace_snapshot_source(duck_adapter, strategy, [(1, "new", 15)])
+        new_from = RUN_2.replace(tzinfo=None)
+
+    statement = run_sql_pipeline(
+        duck_adapter, _snapshot_schema(strategy), "gold.orders", context=_context(), clock=lambda: RUN_2
+    )
+
+    assert "SET *" not in statement
+    assert "INSERT *" not in statement
+    assert _snapshot_rows(duck_adapter) == [
+        {
+            "order_id": 1,
+            "status": "old",
+            "amount": 10,
+            "valid_from": T1 if strategy == "timestamp" else RUN_1.replace(tzinfo=None),
+            "valid_to": new_from,
+        },
+        {
+            "order_id": 1,
+            "status": "new",
+            "amount": 15,
+            "valid_from": new_from,
+            "valid_to": None,
+        },
+    ]
+
+
+@pytest.mark.parametrize("strategy", ["timestamp", "check"])
+def test_duckdb_snapshot_new_key_inserts_current_version(duck_adapter, strategy):
+    _prepare_snapshot_tables(duck_adapter, strategy)
+    first_rows = [(1, "old", 10, "2026-01-01 00:00:00")] if strategy == "timestamp" else [(1, "old", 10)]
+    second_rows = (
+        [(1, "old", 10, "2026-01-01 00:00:00"), (2, "new", 20, "2026-01-02 00:00:00")]
+        if strategy == "timestamp"
+        else [(1, "old", 10), (2, "new", 20)]
+    )
+    _replace_snapshot_source(duck_adapter, strategy, first_rows)
+    run_sql_pipeline(
+        duck_adapter, _snapshot_schema(strategy), "gold.orders", context=_context(), clock=lambda: RUN_1
+    )
+    _replace_snapshot_source(duck_adapter, strategy, second_rows)
+
+    run_sql_pipeline(
+        duck_adapter, _snapshot_schema(strategy), "gold.orders", context=_context(), clock=lambda: RUN_2
+    )
+
+    assert _snapshot_rows(duck_adapter) == [
+        {
+            "order_id": 1,
+            "status": "old",
+            "amount": 10,
+            "valid_from": T1 if strategy == "timestamp" else RUN_1.replace(tzinfo=None),
+            "valid_to": None,
+        },
+        {
+            "order_id": 2,
+            "status": "new",
+            "amount": 20,
+            "valid_from": T2 if strategy == "timestamp" else RUN_2.replace(tzinfo=None),
+            "valid_to": None,
+        },
+    ]
+
+
+@pytest.mark.parametrize("strategy", ["timestamp", "check"])
+@pytest.mark.parametrize("on_missing", ["close", "ignore"])
+def test_duckdb_snapshot_missing_key_policy(duck_adapter, strategy, on_missing):
+    _prepare_snapshot_tables(duck_adapter, strategy)
+    first_rows = (
+        [(1, "kept", 10, "2026-01-01 00:00:00"), (2, "missing", 20, "2026-01-01 00:00:00")]
+        if strategy == "timestamp"
+        else [(1, "kept", 10), (2, "missing", 20)]
+    )
+    second_rows = [(1, "kept", 10, "2026-01-01 00:00:00")] if strategy == "timestamp" else [(1, "kept", 10)]
+    _replace_snapshot_source(duck_adapter, strategy, first_rows)
+    schema = _snapshot_schema(strategy, on_missing=on_missing)
+    run_sql_pipeline(
+        duck_adapter, schema, "gold.orders", context=_context(), clock=lambda: RUN_1
+    )
+    _replace_snapshot_source(duck_adapter, strategy, second_rows)
+
+    run_sql_pipeline(
+        duck_adapter, schema, "gold.orders", context=_context(), clock=lambda: RUN_2
+    )
+
+    missing = [row for row in _snapshot_rows(duck_adapter) if row["order_id"] == 2][0]
+    assert missing["valid_to"] == (
+        RUN_2.replace(tzinfo=None) if on_missing == "close" else None
+    )
+
+
+@pytest.mark.parametrize("strategy", ["timestamp", "check"])
+def test_duckdb_snapshot_bounds_are_continuous_across_three_versions(duck_adapter, strategy):
+    _prepare_snapshot_tables(duck_adapter, strategy)
+    schema = _snapshot_schema(strategy)
+    runs = [
+        (RUN_1, [(1, "v1", 10, "2026-01-01 00:00:00")] if strategy == "timestamp" else [(1, "v1", 10)]),
+        (RUN_2, [(1, "v2", 20, "2026-01-02 00:00:00")] if strategy == "timestamp" else [(1, "v2", 20)]),
+        (RUN_3, [(1, "v3", 30, "2026-01-03 00:00:00")] if strategy == "timestamp" else [(1, "v3", 30)]),
+    ]
+    for run_at, rows in runs:
+        _replace_snapshot_source(duck_adapter, strategy, rows)
+        run_sql_pipeline(
+            duck_adapter, schema, "gold.orders", context=_context(), clock=lambda run_at=run_at: run_at
+        )
+
+    rows = _snapshot_rows(duck_adapter)
+    assert rows[0]["valid_to"] == rows[1]["valid_from"]
+    assert rows[1]["valid_to"] == rows[2]["valid_from"]
+    assert rows[2]["valid_to"] is None
+
+
+@pytest.mark.parametrize("strategy", ["timestamp", "check"])
+def test_duckdb_snapshot_preflight_refusal_leaves_target_unchanged(duck_adapter, strategy):
+    _prepare_snapshot_tables(duck_adapter, strategy)
+    clean_rows = [(1, "old", 10, "2026-01-01 00:00:00")] if strategy == "timestamp" else [(1, "old", 10)]
+    _replace_snapshot_source(duck_adapter, strategy, clean_rows)
+    schema = _snapshot_schema(strategy)
+    run_sql_pipeline(
+        duck_adapter, schema, "gold.orders", context=_context(), clock=lambda: RUN_1
+    )
+    before = _snapshot_rows(duck_adapter)
+    duplicate_rows = (
+        [(1, "old", 10, "2026-01-01 00:00:00"), (1, "new", 20, "2026-01-02 00:00:00")]
+        if strategy == "timestamp"
+        else [(1, "old", 10), (1, "new", 20)]
+    )
+    _replace_snapshot_source(duck_adapter, strategy, duplicate_rows)
+
+    with pytest.raises(ValueError, match="unique_key.*not unique"):
+        run_sql_pipeline(
+            duck_adapter, schema, "gold.orders", context=_context(), clock=lambda: RUN_2
+        )
+
+    assert _snapshot_rows(duck_adapter) == before
+
+
+@pytest.mark.parametrize("strategy", ["timestamp", "check"])
+def test_duckdb_snapshot_rerun_after_interrupted_close_converges(duck_adapter, strategy):
+    _prepare_snapshot_tables(duck_adapter, strategy)
+    schema = _snapshot_schema(strategy)
+    first_rows = [(1, "old", 10, "2026-01-01 00:00:00")] if strategy == "timestamp" else [(1, "old", 10)]
+    second_rows = [(1, "new", 20, "2026-01-02 00:00:00")] if strategy == "timestamp" else [(1, "new", 20)]
+    _replace_snapshot_source(duck_adapter, strategy, first_rows)
+    run_sql_pipeline(
+        duck_adapter, schema, "gold.orders", context=_context(), clock=lambda: RUN_1
+    )
+    _replace_snapshot_source(duck_adapter, strategy, second_rows)
+    materialization = schema["materialization"]
+    statements = build_snapshot_apply_sql(
+        target_relation=quote_fqn("gold.orders", target="duckdb"),
+        source_relation=quote_fqn("source.orders", target="duckdb"),
+        source_columns=duck_adapter.list_relation_columns(quote_fqn("source.orders", target="duckdb")),
+        materialization=materialization,
+        target="duckdb",
+        run_at=RUN_2,
+    )
+    duck_adapter.execute_sql(statements[0])
+
+    run_sql_pipeline(
+        duck_adapter, schema, "gold.orders", context=_context(), clock=lambda: RUN_3
+    )
+
+    rows = _snapshot_rows(duck_adapter)
+    assert len(rows) == 2
+    assert rows[0]["valid_to"] == rows[1]["valid_from"]
+    assert rows[1]["status"] == "new"
+    assert rows[1]["valid_to"] is None
 
 
 def test_sql_rule_rewrite_uses_resolved_source_columns(
