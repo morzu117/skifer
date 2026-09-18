@@ -337,13 +337,14 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 > | Encore liés à Spark | `observability/history.py`, `observability/metadata_store.py` | atteignent `backend.spark` et utilisent `createDataFrame`, `.write.format("delta")`, `.collect()` |
 >
 > La première famille paraît facile à porter — il « suffirait » d'implémenter ces méthodes sur `DuckDBAdapter`.
-> **C'est le piège.** Elles sont **14** sur `SparkBackend`, contre un Protocol `Adapter` de **20 membres** :
-> les exiger de chaque adaptateur ferait passer la frontière à 34, et rendrait chaque nouvel entrepôt presque
-> deux fois plus cher. C'est exactement le Protocol à ~40 méthodes que le Plan 26 a supprimé (§1.4).
+> **C'est le piège.** Elles sont **16** sur `SparkBackend` — compte corrigé le 18 septembre 2026, la première
+> mesure en annonçait 14 et oubliait `get_incident` et `list_incidents` — contre un Protocol `Adapter` de
+> **20 membres** : les exiger de chaque adaptateur porterait la frontière à 36, et rendrait chaque nouvel
+> entrepôt presque deux fois plus cher. C'est exactement le Protocol à ~40 méthodes que le Plan 26 a supprimé (§1.4).
 
 | # | Question | Recommandation |
 |---|---|---|
-| D12 | Où vit la logique de registre | **Validée le 18 septembre 2026.** Un registre SQL générique écrit **une seule fois**, au-dessus du Protocol mince (`execute_sql`, `fetch`, `ensure_schema_exists`, `list_relation_columns`). Aucun membre ajouté à `Adapter` : la frontière reste à 20 membres au lieu de 34. Les 14 méthodes de `SparkBackend` restent en place — aucune régression Databricks — et deviennent à terme des appels au registre générique. |
+| D12 | Où vit la logique de registre | **Validée le 18 septembre 2026.** Un registre SQL générique écrit **une seule fois**, au-dessus du Protocol mince (`execute_sql`, `fetch`, `ensure_schema_exists`, `list_relation_columns`). Aucun membre ajouté à `Adapter` : la frontière reste à 20 membres au lieu de 36. Les 16 méthodes de `SparkBackend` restent en place — aucune régression Databricks — et deviennent à terme des appels au registre générique. |
 
 **Découpage proposé** :
 
