@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added write-strategy equivalence tests running the same YAML through both engines,
+  twice, with the source changed in between: `view`, `incremental append` with and without
+  a watermark, `incremental merge` and both SCD2 snapshot strategies. A single run proves
+  nothing here — it fills an empty table, where every strategy and a plain overwrite are
+  indistinguishable. Each test was checked by mutation: turning append into an overwrite,
+  a view into a table, an unchanged row into a changed one, or making the SQL path ignore
+  the injected clock each makes exactly one of them fail. (Plan 39.4.6)
 - Added SCD2 `materialization: snapshot` on both engines, with `valid_from`/`valid_to`
   bounds that meet exactly, so a key's history has neither gap nor overlap. The preflight
   runs before every write and nothing is emitted unless it is clean. An unchanged row
