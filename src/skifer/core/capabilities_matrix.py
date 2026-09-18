@@ -77,6 +77,21 @@ _YAML_CONSTRUCTIONS = {
 }
 
 
+def _loader_needs_engine(table) -> bool:
+    """True unless the loader is declared kind='sql' and therefore portable.
+
+    An unregistered loader counts as needing an engine: treating an unimported
+    module as portable would let a pipeline pass the capability check and fail
+    later, which is the opposite of what this matrix is for.
+    """
+    from skifer.core.registry import RuleRegistry
+
+    try:
+        return RuleRegistry.get_loader_spec(table.loader_name).kind != "sql"
+    except (ValueError, AttributeError):
+        return True
+
+
 def required_capabilities(parsed: ParsedSchema) -> frozenset[str]:
     """Return the adapter capabilities required by one parsed pipeline."""
     required: set[str] = set()
@@ -104,7 +119,7 @@ def required_capabilities(parsed: ParsedSchema) -> frozenset[str]:
             required.update(required_capabilities(parse_to_ir(partial.schema)))
 
     for table in parsed.tables:
-        if table.is_loader:
+        if table.is_loader and _loader_needs_engine(table):
             required.add(CAP_LOADERS)
         if table.source_type:
             required.add(CAP_FILE_SOURCES)

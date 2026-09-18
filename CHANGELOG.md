@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added portable loaders: `@RuleRegistry.register_loader(kind="sql")` returns a SQL relation
+  expression instead of a DataFrame, and lands where an adapter puts a file source's
+  relation — so one YAML runs on Spark and on the compiled SQL path and returns the same
+  rows. sqlglot carries the expression to each dialect, rewriting a `VALUES` constructor as
+  `UNNEST([STRUCT(...)])` for BigQuery, work the loader never has to know about. A portable
+  loader declaring `backend` is refused at registration, since it could then reach for Spark
+  and compile everywhere while running in one place; it answers to `allow_raw_sql` like
+  `expr:` and kind='sql' rules; and an unregistered loader stays classified as needing an
+  engine rather than being assumed portable. (Plan 39.3.5, decision D8)
 - Added `skifer graph`, the inter-pipeline dataset graph built from the metadata registry
   without Spark: an edge exists when a pipeline reads a table another pipeline produces.
   A declared table with no indexed producer is reported as an external source rather than

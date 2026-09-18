@@ -412,8 +412,20 @@ class SchemaInterpreter:
 
                 is_streaming_table = bool(t.get("streaming"))
                 if t.get("source_type") == "loader":
-                    loader_func = RuleRegistry.get_loader(t["function_name"])
-                    df = loader_func(ctx.config, backend=b, **t.get("arguments", {}))
+                    spec = RuleRegistry.get_loader_spec(t["function_name"])
+                    if spec.kind == "sql":
+                        # One YAML, both engines: the loader returns a relation and
+                        # Spark reads it with the same SQL the compiled path embeds.
+                        from skifer.core.ir import parse_to_ir  # noqa: PLC0415
+                        from skifer.core.sql_compiler import sql_loader_relation  # noqa: PLC0415
+
+                        relation = sql_loader_relation(
+                            parse_to_ir({"tables": [t]}).tables[0],
+                            ctx.env_config().get("allow_raw_sql", True),
+                        )
+                        df = b.sql(f"SELECT * FROM {relation}")
+                    else:
+                        df = spec.func(ctx.config, backend=b, **t.get("arguments", {}))
                 elif "source" in t:
                     src_conf = t["source"]
                     logger.info(

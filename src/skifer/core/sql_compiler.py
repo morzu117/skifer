@@ -315,10 +315,11 @@ def _reject_uncompilable(
 
     for t in parsed.tables:
         label = t.alias or t.name
-        if t.is_loader:
+        if t.is_loader and _loader_kind(t) != "sql":
             raise SqlCompilationError(
                 f"table '{label}': Python loaders cannot be compiled to SQL. "
-                "Ingest into a catalog table first, then reference that table."
+                "Declare the loader with kind='sql' so it returns a SQL relation "
+                "expression, or ingest into a catalog table first and reference that."
             )
         if t.source_type and resolve_source is None:
             raise SqlCompilationError(
@@ -358,6 +359,56 @@ def _reject_uncompilable(
 # Compilation
 # ---------------------------------------------------------------------------
 
+
+def _loader_kind(table: ParsedTable) -> str:
+    """Return a loader's declared kind, or 'dataframe' when it cannot be known.
+
+    An unregistered loader stays conservatively classified as a DataFrame one, so
+    an unimported module produces the documented refusal rather than a compilation
+    that silently assumed portability.
+    """
+    from skifer.core.registry import RuleRegistry
+
+    try:
+        return RuleRegistry.get_loader_spec(table.loader_name).kind
+    except (ValueError, AttributeError):
+        return "dataframe"
+
+
+def sql_loader_relation(table: ParsedTable, allow_raw_sql: bool = True) -> str:
+    """Call a kind='sql' loader and validate the relation expression it returns.
+
+    The result lands exactly where an adapter's file-source relation lands, so a
+    portable loader is the user-space counterpart of ``Adapter.resolve_source``.
+    It is raw SQL written by a human, so it answers to ``allow_raw_sql`` like an
+    ``expr:`` operation or a kind='sql' rule — governing one and not the others
+    would leave the same door open under a different name.
+    """
+    from skifer.core.registry import RuleRegistry
+
+    if not allow_raw_sql:
+        raise SqlCompilationError(
+            f"table '{table.name}': loader '{table.loader_name}' is declared as "
+            "kind='sql', which is raw SQL and is disabled by "
+            "'allow_raw_sql: false' on this environment."
+        )
+    spec = RuleRegistry.get_loader_spec(table.loader_name)
+    try:
+        relation = spec.func(**(table.loader_args or {}))
+    except TypeError as exc:
+        raise SqlCompilationError(
+            f"table '{table.name}': loader '{table.loader_name}' could not be called "
+            f"with the YAML 'arguments:' {sorted(table.loader_args or {})}: {exc}"
+        ) from exc
+    if not isinstance(relation, str) or not relation.strip():
+        raise SqlCompilationError(
+            f"table '{table.name}': loader '{table.loader_name}' is declared as "
+            f"kind='sql' but returned {type(relation).__name__}, not a non-empty SQL "
+            "relation expression."
+        )
+    return relation.strip()
+
+
 def _compile_table_cte(
     table: Any,
     resolve_table: Callable[[str], str],
@@ -390,11 +441,12 @@ def _compile_table_cte(
     if group_predicates:
         predicates.append("(" + " OR ".join(group_predicates) + ")")
 
-    relation = (
-        resolve_source(table)
-        if table.source_type and resolve_source is not None
-        else quote_fqn(resolve_table(table.name))
-    )
+    if table.is_loader:
+        relation = sql_loader_relation(table, allow_raw_sql)
+    elif table.source_type and resolve_source is not None:
+        relation = resolve_source(table)
+    else:
+        relation = quote_fqn(resolve_table(table.name))
     sql = f"SELECT {projection} FROM {relation}"
     if predicates:
         sql += "\n  WHERE " + " AND ".join(predicates)

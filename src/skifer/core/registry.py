@@ -17,6 +17,24 @@ logger = logging.getLogger(__name__)
 #: Valid rule kinds.
 VALID_KINDS = frozenset({"projection", "aggregation", "transform", "sql"})
 
+#: Valid loader kinds.
+VALID_LOADER_KINDS = frozenset({"dataframe", "sql"})
+
+
+@dataclass
+class LoaderSpec:
+    """Metadata container for a registered Data Loader.
+
+    ``kind="dataframe"`` is the historical loader: Python builds a DataFrame and
+    therefore needs an engine. ``kind="sql"`` returns a SQL **relation expression**
+    instead, which is placed exactly where an adapter's file-source relation goes —
+    so a portable loader is the user-space counterpart of ``resolve_source``.
+    """
+
+    name: str
+    func: Callable
+    kind: str  # "dataframe" | "sql"
+
 
 @dataclass
 class RuleSpec:
@@ -114,22 +132,51 @@ class RuleRegistry:
         return decorator
 
     @classmethod
-    def register_loader(cls, name=None):
+    def register_loader(cls, name=None, kind="dataframe"):
         """
         Decorator to register a Data Loader function.
-        
+
         Args:
             name (str, optional): The name to register the loader under. If not provided,
                                   the function's name will be used.
-        
+            kind (str): ``"dataframe"`` (default, historical: receives the engine and
+                        returns a DataFrame) or ``"sql"`` (returns a SQL relation
+                        expression and runs on any adapter).
+
         Returns:
             function: The decorator function.
         """
+        if kind not in VALID_LOADER_KINDS:
+            raise ValueError(
+                f"Invalid loader kind '{kind}'. Valid kinds: {sorted(VALID_LOADER_KINDS)}."
+            )
+
         def decorator(func):
             loader_name = name if name else func.__name__
-            cls._loaders[loader_name] = func
+            if kind == "sql":
+                parameters = inspect.signature(func).parameters
+                # A portable loader must not see the engine. Accepting `backend`
+                # here would let one reach for Spark and compile everywhere but run
+                # in one place — the failure would surface at the client, not here.
+                forbidden = sorted({"backend", "config"} & set(parameters))
+                if forbidden:
+                    raise ValueError(
+                        f"Loader '{loader_name}' is declared as kind='sql' but takes "
+                        f"{forbidden} — a portable loader receives only the YAML "
+                        "'arguments:' and never the engine."
+                    )
+            cls._loaders[loader_name] = LoaderSpec(
+                name=loader_name, func=func, kind=kind
+            )
             return func
         return decorator
+
+    @classmethod
+    def get_loader_spec(cls, name) -> "LoaderSpec":
+        """Retrieve a Data Loader with its kind."""
+        if name not in cls._loaders:
+            raise ValueError(f"Data Loader '{name}' not found.")
+        return cls._loaders[name]
 
     @classmethod
     def get_rule(cls, name) -> "RuleSpec":
@@ -170,7 +217,7 @@ class RuleRegistry:
         """
         if name not in cls._loaders:
             raise ValueError(f"Data Loader '{name}' not found.")
-        return cls._loaders[name]
+        return cls._loaders[name].func
     
     @classmethod
     def list_rules(cls):
