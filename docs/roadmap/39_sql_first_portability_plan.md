@@ -354,6 +354,20 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 - `skifer run --select <pipeline>[+]`, `skifer compile <pipeline> --target <adapter>` (SQL affiché, rien
   exécuté — l'équivalent de `dbt compile`, premier outil de skifer-plan).
 
+**Découpage** :
+
+| Tranche | Contenu | État |
+|---|---|---|
+| 39.6.1 | `skifer compile PIPELINE --target …` : SQL sur stdout, diagnostics sur stderr, aucune connexion ouverte | livrée |
+| 39.6.2 | Graphe inter-pipelines : arêtes implicites depuis l'index Plan 31, `skifer graph` — sans exécution | — |
+| 39.6.3 | `skifer run --select <pipeline>[+]` : ordre topologique et sélection | 39.6.2 |
+
+> **Ce que 39.6.1 a établi et qui vaut pour la suite.** La commande n'ouvre aucune connexion, donc elle ne peut
+> pas lire le catalogue. Une règle `kind="sql"` a besoin des colonnes de ses tables pour savoir si elle ajoute
+> ou réécrit une colonne : elle est donc **refusée**, avec le code `2`. C'est délibéré — du SQL plausible mais
+> faux serait pire qu'un refus, parce qu'il se copie-colle. Même règle pour 39.6.2 : un graphe qui devinerait
+> une arête ne vaut pas mieux qu'un graphe qui dit ce qu'il ne sait pas.
+
 ### Phase 39.7 — Adaptateur Snowflake — *15–25 j*
 `snowflake-connector-python` (pas Snowpark), `CLONE` (sandbox), `SWAP WITH`, tags, Dynamic Tables pour
 `materialized_view`, identité `CURRENT_USER()`. CI sur compte réel (coût à budgéter).
