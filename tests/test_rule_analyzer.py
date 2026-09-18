@@ -158,6 +158,17 @@ class TestAnalyzeRules:
         assert "_test_r1" in names
         assert "_test_r2" in names
 
+    def test_sql_rule_is_treated_as_opaque(self):
+        @RuleRegistry.register_rule(name="_test_sql", kind="sql")
+        def sql_rule():
+            return {"derived": "amount * 2"}
+
+        try:
+            profile = self.analyzer.analyze_rules(["_test_sql"])[0]
+            assert profile == RuleProfile(name="_test_sql", source_available=False)
+        finally:
+            RuleRegistry._rules.pop("_test_sql", None)
+
     def test_unavailable_rule_keeps_original_order_dependency(self):
         profiles = [
             RuleProfile(name="writer", output_columns=["col_a"], source_available=True),

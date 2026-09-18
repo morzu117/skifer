@@ -5,8 +5,8 @@ performs topological ordering within ``projection`` stages.
 Key concepts
 ------------
 * A **stage** is a maximal consecutive sequence of rules of the same ``kind``.
-* Consecutive ``projection`` stages are merged into a single ``select()`` call
-  (see ``RuleExecutor``).
+* Consecutive ``projection`` and ``sql`` rules are merged into a single
+  ``select()`` call (see ``RuleExecutor``).
 * ``aggregation`` stages sharing the same ``groupBy`` keys are merged into a
   single ``groupBy(...).agg(...)`` call.
 * ``transform`` stages are executed as-is (legacy ``df → df`` contract).
@@ -96,8 +96,9 @@ class RulePlanner:
 
         for name in rule_names:
             spec = RuleRegistry.get_rule(name)
-            if current_stage is None or spec.kind != current_stage.kind:
-                current_stage = RuleStage(kind=spec.kind)
+            stage_kind = "projection" if spec.kind == "sql" else spec.kind
+            if current_stage is None or stage_kind != current_stage.kind:
+                current_stage = RuleStage(kind=stage_kind)
                 stages.append(current_stage)
             current_stage.rules.append(spec)
 

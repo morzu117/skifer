@@ -4,10 +4,11 @@ objects produced by :class:`~skifer.core.rule_planner.RulePlanner`.
 
 Fusion strategies
 -----------------
-* **projection** stage: calls every rule function (which returns
-  ``dict[str, Column]``), collects all column definitions, and applies them in
-  a **single** ``select(*existing_cols, *new_cols)`` call.  This avoids the
-  O(N²) Catalyst plan re-traversal caused by chained ``withColumn()`` calls.
+* **projection** stage: calls every projection or SQL rule function, converts
+  SQL strings through the backend's ``expr`` primitive, collects all column
+  definitions, and applies them in a **single**
+  ``select(*existing_cols, *new_cols)`` call.  This avoids the O(N²) Catalyst
+  plan re-traversal caused by chained ``withColumn()`` calls.
 * **aggregation** stage with multiple rules sharing the same ``groupBy`` keys:
   merges all ``agg(...)`` expressions into a single ``groupBy(...).agg(...)``
   call.  Requires the rule function to carry an ``agg_keys`` attribute
@@ -28,6 +29,84 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _has_statement_separator(expression: str) -> bool:
+    """Return whether ``expression`` contains ``;`` outside a string literal."""
+    in_string = False
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if char == "'":
+            if in_string and index + 1 < len(expression) and expression[index + 1] == "'":
+                index += 2
+                continue
+            if index == 0 or expression[index - 1] != "\\":
+                in_string = not in_string
+        elif char == ";" and not in_string:
+            return True
+        index += 1
+    return False
+
+
+def validate_sql_rule_result(rule_name: str, result: object) -> dict[str, str]:
+    """Validate one ``kind='sql'`` result before it reaches an SQL engine.
+
+    ``allow_raw_sql`` intentionally does not govern these expressions. That
+    setting protects raw SQL authored in declarative YAML (the "what" layer),
+    while a registered rule is reviewed and deployed Python code in the "how"
+    layer, just like a projection rule that can already call ``F.expr``.
+
+    Structural validation is dependency-free. When the optional ``sqlglot``
+    package is installed, every value is additionally parsed as a Databricks
+    expression and statement roots such as SELECT/DDL/DML are rejected.
+    """
+    if not isinstance(result, dict):
+        raise TypeError(
+            f"Rule '{rule_name}' is declared as kind='sql' but returned "
+            f"{type(result).__name__} instead of dict[str, str]."
+        )
+
+    validated: dict[str, str] = {}
+    for column, expression in result.items():
+        if not isinstance(expression, str):
+            raise TypeError(
+                f"Rule '{rule_name}' column '{column}' is declared as kind='sql' but "
+                f"returned {type(expression).__name__}; expected a SQL expression string."
+            )
+        if not expression.strip():
+            raise ValueError(
+                f"Rule '{rule_name}' column '{column}' is declared as kind='sql' but "
+                "returned an empty SQL expression."
+            )
+        if _has_statement_separator(expression):
+            raise ValueError(
+                f"Rule '{rule_name}' column '{column}' contains a statement separator ';' "
+                "outside a string literal."
+            )
+
+        try:
+            import sqlglot  # noqa: PLC0415
+            from sqlglot import exp  # noqa: PLC0415
+            from sqlglot.errors import SqlglotError  # noqa: PLC0415
+        except ImportError:
+            pass
+        else:
+            try:
+                parsed = sqlglot.parse_one(expression, read="databricks")
+            except SqlglotError as exc:
+                raise ValueError(
+                    f"Rule '{rule_name}' column '{column}' is not a valid SQL expression: "
+                    f"{type(exc).__name__}."
+                ) from exc
+            if isinstance(parsed, (exp.Query, exp.DDL, exp.DML, exp.Command)):
+                raise ValueError(
+                    f"Rule '{rule_name}' column '{column}' must be a SQL expression, "
+                    f"not a {type(parsed).__name__} statement."
+                )
+
+        validated[column] = expression
+    return validated
+
+
 class RuleExecutor:
     """
     Applies an ordered list of :class:`RuleStage` objects to a DataFrame.
@@ -39,6 +118,9 @@ class RuleExecutor:
         stages = planner.plan(rule_names)
         df = executor.execute(df, stages)
     """
+
+    def __init__(self, backend=None) -> None:
+        self._backend = backend
 
     def execute(self, df: "DataFrame", stages: list["RuleStage"]) -> "DataFrame":
         """
@@ -82,7 +164,14 @@ class RuleExecutor:
         columns in the fused ``select()`` (which would raise
         ``AMBIGUOUS_REFERENCE``).
         """
-        from pyspark.sql import functions as F
+        if self._backend is None:
+            from pyspark.sql import functions as F
+
+            col = F.col
+            sql_expr = F.expr
+        else:
+            col = self._backend.col
+            sql_expr = self._backend.expr
 
         rule_names = [s.name for s in stage.rules]
         logger.debug("[Executor] Fusing %d projection rules: %s", len(stage.rules), rule_names)
@@ -90,7 +179,12 @@ class RuleExecutor:
         # Collect all new column definitions (ordered, last-writer wins for dupes)
         new_cols: dict[str, object] = {}
         for spec in stage.rules:
-            result = spec.func(df)
+            result = spec.func() if spec.kind == "sql" else spec.func(df)
+            if spec.kind == "sql":
+                result = {
+                    name: sql_expr(expression)
+                    for name, expression in validate_sql_rule_result(spec.name, result).items()
+                }
             if not isinstance(result, dict):
                 raise TypeError(
                     f"Rule '{spec.name}' is declared as kind='projection' but returned "
@@ -107,7 +201,7 @@ class RuleExecutor:
         # appended. Keeping a rewritten column out of `existing` avoids two
         # homonymous columns in the select (AMBIGUOUS_REFERENCE).
         select_exprs = [
-            new_cols[c].alias(c) if c in new_cols else F.col(c)
+            new_cols[c].alias(c) if c in new_cols else col(c)
             for c in df.columns
         ]
         select_exprs += [
@@ -115,6 +209,8 @@ class RuleExecutor:
             for col_name, col_expr in new_cols.items()
             if col_name not in df.columns
         ]
+        if self._backend is not None:
+            return self._backend.select(df, select_exprs)
         return df.select(*select_exprs)
 
     def _execute_aggregation_stage(self, df: "DataFrame", stage: "RuleStage") -> "DataFrame":

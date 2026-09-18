@@ -20,7 +20,7 @@ from skifer.core.registry import RuleRegistry
 from skifer.core.sandbox import SandboxResolver
 from skifer.core.rule_analyzer import RuleAnalyzer
 from skifer.core.rule_planner import RulePlanner
-from skifer.core.rule_executor import RuleExecutor
+from skifer.core.rule_executor import RuleExecutor, validate_sql_rule_result
 
 if TYPE_CHECKING:
     from skifer.core.context import ExecutionContext
@@ -187,8 +187,15 @@ class SchemaInterpreter:
             for rule_name in rules_list:
                 logger.info("   -> [Rule] Applying: %s", rule_name)
                 rule_spec = RuleRegistry.get_rule(rule_name)
-                result = rule_spec.func(df)
-                if rule_spec.kind == "projection":
+                result = rule_spec.func() if rule_spec.kind == "sql" else rule_spec.func(df)
+                if rule_spec.kind in ("projection", "sql"):
+                    if rule_spec.kind == "sql":
+                        result = {
+                            name: self._backend.expr(expression)
+                            for name, expression in validate_sql_rule_result(
+                                rule_spec.name, result
+                            ).items()
+                        }
                     if not isinstance(result, dict):
                         raise TypeError(
                             f"Rule '{rule_name}' is declared as kind='projection' but returned "
@@ -202,7 +209,7 @@ class SchemaInterpreter:
             return df
 
         planner = RulePlanner()
-        executor = RuleExecutor()
+        executor = RuleExecutor(backend=self._backend)
         stages = planner.plan(rules_list)
 
         for stage in stages:

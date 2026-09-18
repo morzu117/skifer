@@ -16,12 +16,12 @@ from skifer.core.capabilities_matrix import (
     required_capabilities,
 )
 from skifer.core.ir import parse_to_ir
+from skifer.core.registry import RuleRegistry
 
 
 @pytest.mark.parametrize(
     ("schema", "expected"),
     [
-        ({"business_rules": ["enrich"]}, CAP_PYTHON_RULES),
         (
             {"tables": [{"name": "orders", "source": {"type": "csv"}}]},
             CAP_FILE_SOURCES,
@@ -68,6 +68,34 @@ from skifer.core.ir import parse_to_ir
 )
 def test_required_capabilities_detects_each_yaml_construction(schema, expected):
     assert required_capabilities(parse_to_ir(schema)) == frozenset({expected})
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("projection", frozenset({CAP_PYTHON_RULES})),
+        ("aggregation", frozenset({CAP_PYTHON_RULES})),
+        ("transform", frozenset({CAP_PYTHON_RULES})),
+        ("sql", frozenset()),
+    ],
+)
+def test_business_rule_capability_depends_on_registered_kind(kind, expected):
+    name = f"_capability_{kind}"
+
+    if kind == "sql":
+        @RuleRegistry.register_rule(name=name, kind=kind)
+        def rule():
+            return {"derived": "amount * 2"}
+    else:
+        @RuleRegistry.register_rule(name=name, kind=kind)
+        def rule(df):
+            return {}
+
+    try:
+        parsed = parse_to_ir({"business_rules": [name]})
+        assert required_capabilities(parsed) == expected
+    finally:
+        RuleRegistry._rules.pop(name, None)
 
 
 def test_ordinary_schema_requires_no_capability():

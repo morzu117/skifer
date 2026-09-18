@@ -44,6 +44,9 @@ _SQL_JOIN_TYPES: dict[str, str] = {
 #: Sub-select alias for the pre-aggregation projection.
 _AGG_SOURCE_ALIAS = "_skifer_src"
 
+#: Sub-select alias for the projection produced by portable SQL rules.
+_RULE_SOURCE_ALIAS = "_skifer_rules"
+
 #: Materialization keys that are part of the *definition* of a materialized view.
 #: A change to any of them must trigger CREATE OR REPLACE, so they are hashed
 #: alongside the compiled SELECT. ``refresh`` is deliberately excluded: it drives
@@ -277,10 +280,23 @@ def _reject_uncompilable(
 ) -> None:
     """Raise SqlCompilationError for every construct with no faithful SQL form."""
     if parsed.business_rules:
-        raise SqlCompilationError(
-            f"Python business_rules {list(parsed.business_rules)} cannot be compiled to SQL. "
-            "Materialize them upstream in a silver table, then join/aggregate that table here."
-        )
+        from skifer.core.registry import RuleRegistry
+
+        python_rules = []
+        for rule_name in parsed.business_rules:
+            try:
+                spec = RuleRegistry.get_rule(rule_name)
+            except ValueError as exc:
+                raise SqlCompilationError(
+                    f"Unknown business_rules rule '{rule_name}': {exc}"
+                ) from exc
+            if spec.kind != "sql":
+                python_rules.append(rule_name)
+        if python_rules:
+            raise SqlCompilationError(
+                f"Python business_rules {python_rules} cannot be compiled to SQL. "
+                "Materialize them upstream in a silver table, then join/aggregate that table here."
+            )
     if persisted_definition and parsed.dev_limit:
         raise SqlCompilationError(
             "schema-level 'dev_limit' cannot be compiled to SQL — a frozen LIMIT in a "
@@ -410,11 +426,102 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
     return sql
 
 
+def _known_join_columns(
+    parsed: ParsedSchema,
+    resolve_table: Callable[[str], str],
+    resolve_columns: Callable[[str], list[str]] | None,
+) -> tuple[set[str], bool]:
+    """Return known join columns and whether the relation schemas are complete.
+
+    Explicit table projections and partial outputs are known without catalog
+    access. For an unprojected catalog table, ``resolve_columns`` may supply the
+    schema using the already-resolved FQN. The boolean is false when at least one
+    relation remains opaque, so absence from the set cannot be mistaken for
+    proof that a column is new.
+    """
+    known: set[str] = set()
+    complete = True
+    for partial in parsed.partials:
+        child = parse_to_ir(partial.schema)
+        if child.select_final:
+            known.update(spec.target for spec in child.select_final)
+        elif child.aggregate:
+            known.update(child.aggregate.group_by)
+            known.update(measure.target for measure in child.aggregate.measures)
+        else:
+            complete = False
+    for table in parsed.tables:
+        if table.fields:
+            known.update(spec.target for spec in table.fields)
+        elif resolve_columns is not None:
+            known.update(resolve_columns(resolve_table(table.name)))
+        else:
+            complete = False
+    return known, complete
+
+
+def _compile_sql_rule_source(
+    parsed: ParsedSchema,
+    join_tree: str,
+    resolve_table: Callable[[str], str],
+    resolve_columns: Callable[[str], list[str]] | None,
+) -> str:
+    """Compile portable rules only when rewrite semantics can be proved.
+
+    Guessing whether a target already exists can emit two homonymous columns.
+    Depending on the engine and downstream projection, that either raises an
+    ambiguity error at execution or writes a table different from Spark's
+    replacement semantics, so an opaque input schema is refused instead.
+    """
+    if not parsed.business_rules:
+        return join_tree
+
+    from skifer.core.registry import RuleRegistry
+    from skifer.core.rule_executor import validate_sql_rule_result
+
+    expressions: dict[str, str] = {}
+    owners: dict[str, str] = {}
+    for rule_name in parsed.business_rules:
+        spec = RuleRegistry.get_rule(rule_name)
+        try:
+            result = validate_sql_rule_result(spec.name, spec.func())
+        except (TypeError, ValueError) as exc:
+            raise SqlCompilationError(str(exc)) from exc
+        expressions.update(result)
+        owners.update(dict.fromkeys(result, spec.name))
+
+    known_columns, schemas_complete = _known_join_columns(
+        parsed, resolve_table, resolve_columns
+    )
+    rewritten = []
+    for column in expressions:
+        if column in known_columns:
+            rewritten.append(column)
+        elif not schemas_complete:
+            raise SqlCompilationError(
+                f"SQL rule '{owners[column]}' targets column '{column}', but the compiler "
+                "cannot determine whether that column already exists. Declare explicit "
+                "'fields' projections for the relevant tables, or provide a column "
+                "resolver via resolve_columns."
+            )
+    star = "*"
+    if rewritten:
+        star += " EXCEPT (" + ", ".join(quote_ident(column) for column in rewritten) + ")"
+    projection = [star]
+    projection.extend(
+        f"{expression} AS {quote_ident(column)}"
+        for column, expression in expressions.items()
+    )
+    inner = f"SELECT {', '.join(projection)}\n  FROM {join_tree}"
+    return f"(\n  {inner}\n) AS {quote_ident(_RULE_SOURCE_ALIAS)}"
+
+
 def compile_select(
     parsed: ParsedSchema,
     resolve_table: Callable[[str], str] | None = None,
     allow_raw_sql: bool = True,
     *,
+    resolve_columns: Callable[[str], list[str]] | None = None,
     persisted_definition: bool = True,
 ) -> str:
     """
@@ -424,6 +531,12 @@ def compile_select(
         parsed:        The schema IR (``parse_to_ir(schema_dict)``).
         resolve_table: Maps a declared table name to its actual FQN (sandbox
                        resolution). Defaults to identity.
+        resolve_columns: Maps an already-resolved table FQN to its column names.
+                         This lets the pure compiler prove whether an SQL rule
+                         adds or rewrites a column without querying a catalog or
+                         guessing from expression text. When input schemas remain
+                         unknown, compilation is refused because duplicate column
+                         names can fail as ambiguous or diverge from Spark output.
         allow_raw_sql: When False, ``expr:`` and the ``sql`` filter operator raise.
         persisted_definition: Keep constructs with unstable refresh semantics out
                               of persisted definitions. Set False for one-off batch
@@ -447,6 +560,7 @@ def compile_select(
                 parse_to_ir(partial.schema),
                 resolve_table=resolve,
                 allow_raw_sql=allow_raw_sql,
+                resolve_columns=resolve_columns,
                 persisted_definition=persisted_definition,
             )
         except SqlCompilationError as exc:
@@ -462,12 +576,15 @@ def compile_select(
     )
     ctes = ",\n".join(cte_parts)
     join_tree = _compile_join_tree(parsed)
+    rule_source = _compile_sql_rule_source(
+        parsed, join_tree, resolve, resolve_columns
+    )
     add_columns = [compile_column_spec(f, allow_raw_sql) for f in parsed.add_columns]
 
     if parsed.aggregate:
         agg = parsed.aggregate
         inner_projection = ", ".join(["*"] + add_columns)
-        inner = f"SELECT {inner_projection}\n  FROM {join_tree}"
+        inner = f"SELECT {inner_projection}\n  FROM {rule_source}"
         outputs = [quote_ident(k) for k in agg.group_by]
         outputs += [compile_measure(m) for m in agg.measures]
         body = (
@@ -478,11 +595,11 @@ def compile_select(
             body += "\nHAVING " + " AND ".join(compile_filter(h, allow_raw_sql) for h in agg.having)
     elif parsed.select_final:
         projection = ", ".join(compile_column_spec(f, allow_raw_sql) for f in parsed.select_final)
-        body = f"SELECT {projection}\nFROM {join_tree}"
+        body = f"SELECT {projection}\nFROM {rule_source}"
     else:
         # keep_all_columns (or neither) — pass every column through, plus add_columns.
         projection = ", ".join(["*"] + add_columns)
-        body = f"SELECT {projection}\nFROM {join_tree}"
+        body = f"SELECT {projection}\nFROM {rule_source}"
 
     return f"WITH {ctes}\n{body}"
 

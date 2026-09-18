@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added portable `kind="sql"` business rules: a rule returns validated SQL expressions,
+  runs on Spark through the backend `expr` primitive and compiles into the SQL path, so the
+  same pipeline stays portable across engines. The compiler refuses to guess whether a rule
+  rewrites an existing column: it proves it from explicit projections or an optional column
+  resolver, and fails closed otherwise. (Plan 39.2.3)
 - Batch SQL compilation now supports recursive `partials:` CTEs, `drop_duplicates_on`
   through `QUALIFY`, and table/schema `dev_limit`. Persisted definitions keep refusing
   all three, since a refresh could freeze a different row or a truncated result. (Plan 39.2.2)

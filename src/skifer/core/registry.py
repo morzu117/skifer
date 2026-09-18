@@ -4,6 +4,7 @@ Registry module to manage dynamic registration of Business Rules and Data Loader
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: Valid rule kinds.
-VALID_KINDS = frozenset({"projection", "aggregation", "transform"})
+VALID_KINDS = frozenset({"projection", "aggregation", "transform", "sql"})
 
 
 @dataclass
@@ -23,7 +24,7 @@ class RuleSpec:
 
     name: str
     func: Callable
-    kind: str  # "projection" | "aggregation" | "transform"
+    kind: str  # "projection" | "aggregation" | "transform" | "sql"
     # Lazy AST-analysis cache — not part of the public dataclass init.
     _profile: "RuleProfile | None" = field(default=None, init=False, compare=False, repr=False)
 
@@ -36,8 +37,13 @@ class RuleSpec:
         """Return the cached AST profile, computing it on first access."""
         if self._profile is None:
             # Lazy import to avoid circular dependency (rule_analyzer → registry).
-            from skifer.core.rule_analyzer import RuleAnalyzer  # noqa: PLC0415
-            self._profile = RuleAnalyzer().analyze_rule(self.func, self.name)
+            from skifer.core.rule_analyzer import RuleAnalyzer, RuleProfile  # noqa: PLC0415
+            if self.kind == "sql":
+                # SQL expressions are deliberately opaque to the Python AST
+                # analyzer. SQL parsing belongs to execution-time validation.
+                self._profile = RuleProfile(name=self.name, source_available=False)
+            else:
+                self._profile = RuleAnalyzer().analyze_rule(self.func, self.name)
         return self._profile
 
 
@@ -57,7 +63,7 @@ class RuleRegistry:
             name (str, optional): The name to register the rule under. If not provided,
                                   the function's name will be used.
             kind (str): Rule execution kind — ``"projection"`` (default),
-                        ``"aggregation"``, or ``"transform"``.
+                        ``"aggregation"``, ``"transform"``, or ``"sql"``.
 
                         * **projection** — the function must return
                           ``dict[str, Column]``.  All consecutive projection
@@ -70,6 +76,11 @@ class RuleRegistry:
                         * **transform** — escape hatch for complex logic; the
                           function must return a ``DataFrame`` (legacy
                           ``df → df`` contract).
+                        * **sql** — the function must return ``dict[str, str]``
+                          mapping target columns to SQL expressions. It takes no
+                          DataFrame argument and must be callable with no
+                          arguments. These rules run on both the Spark and
+                          compiled-SQL paths.
 
         Returns:
             function: The original function (unchanged), so the decorator is
@@ -83,6 +94,19 @@ class RuleRegistry:
 
         def decorator(func):
             rule_name = name if name else func.__name__
+            if kind == "sql":
+                required_parameters = [
+                    parameter
+                    for parameter in inspect.signature(func).parameters.values()
+                    if parameter.default is inspect.Parameter.empty
+                    and parameter.kind
+                    not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                ]
+                if required_parameters:
+                    raise TypeError(
+                        f"SQL rule '{rule_name}' does not receive a DataFrame; "
+                        "kind='sql' functions must be callable without arguments."
+                    )
             if rule_name in cls._rules:
                 logger.warning("Overwriting existing rule: %s", rule_name)
             cls._rules[rule_name] = RuleSpec(name=rule_name, func=func, kind=kind)

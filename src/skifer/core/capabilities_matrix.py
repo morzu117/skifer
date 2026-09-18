@@ -55,7 +55,19 @@ def required_capabilities(parsed: ParsedSchema) -> frozenset[str]:
     """Return the adapter capabilities required by one parsed pipeline."""
     required: set[str] = set()
     if parsed.business_rules:
-        required.add(CAP_PYTHON_RULES)
+        from skifer.core.registry import RuleRegistry
+
+        for rule_name in parsed.business_rules:
+            try:
+                rule = RuleRegistry.get_rule(rule_name)
+            except ValueError:
+                # Unknown rules remain conservatively classified as Python;
+                # the execution/compiler boundary will issue the named error.
+                required.add(CAP_PYTHON_RULES)
+                break
+            if rule.kind != "sql":
+                required.add(CAP_PYTHON_RULES)
+                break
     if parsed.dev_limit:
         required.add(CAP_DEV_LIMIT)
 
