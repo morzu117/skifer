@@ -61,6 +61,7 @@ def run_sql_pipeline(
         parsed,
         resolve_table=resolve_table,
         allow_raw_sql=allow_raw_sql,
+        resolve_source=adapter.resolve_source,
         resolve_columns=adapter.list_columns,
         persisted_definition=False,
     )

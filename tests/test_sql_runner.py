@@ -216,6 +216,71 @@ def test_missing_source_for_column_resolution_names_the_table(
         )
 
 
+def test_run_sql_pipeline_reads_filters_and_writes_csv_source(
+    duck_adapter, tmp_path
+):
+    path = tmp_path / "orders.csv"
+    path.write_text(
+        "order_id;status;amount\n1;complete;10\n2;pending;20\n3;complete;30\n",
+        encoding="utf-8",
+    )
+    duck_adapter.ensure_schema_exists("gold")
+    schema = {
+        "tables": [
+            {
+                "name": "raw_orders",
+                "alias": "orders",
+                "source": {
+                    "type": "csv",
+                    "path": str(path),
+                    "options": {
+                        "header": "true",
+                        "inferSchema": "true",
+                        "sep": ";",
+                    },
+                },
+                "filter": [
+                    {"column": "status", "operator": "equals", "value": "complete"}
+                ],
+            }
+        ],
+        "select_final": [
+            ["order_id", "id"],
+            ["amount", "amount", ["cast:double"]],
+        ],
+    }
+
+    run_sql_pipeline(
+        duck_adapter,
+        schema,
+        "gold.completed_orders",
+        context=_context(),
+    )
+
+    assert duck_adapter.fetch(
+        'SELECT * FROM "gold"."completed_orders" ORDER BY "id"'
+    ) == [{"id": 1, "amount": 10.0}, {"id": 3, "amount": 30.0}]
+
+
+def test_run_sql_pipeline_still_refuses_delta_source(duck_adapter, tmp_path):
+    schema = {
+        "tables": [
+            {
+                "name": "delta_rows",
+                "source": {"type": "delta", "path": str(tmp_path / "delta")},
+            }
+        ]
+    }
+
+    with pytest.raises(DuckDBAdapterError, match="duckdb.*delta"):
+        run_sql_pipeline(
+            duck_adapter,
+            schema,
+            "gold.delta_rows",
+            context=_context(),
+        )
+
+
 @pytest.mark.parametrize(
     ("context", "expected_count"),
     [

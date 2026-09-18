@@ -698,8 +698,8 @@ tables:
 keep_all_columns: true
 """)
 
-    def test_file_source_rejected(self):
-        with pytest.raises(SqlCompilationError, match="file sources"):
+    def test_file_source_without_resolver_keeps_exact_refusal(self):
+        with pytest.raises(SqlCompilationError) as exc_info:
             _compile("""
 tables:
   - name: raw_orders
@@ -709,6 +709,27 @@ tables:
       path: /tmp/orders.csv
 keep_all_columns: true
 """)
+
+        assert str(exc_info.value) == (
+            "table 'r': file sources ('source.type: csv') cannot be compiled to SQL — "
+            "reference a Unity Catalog table instead (ingest in bronze first)."
+        )
+
+    def test_file_source_resolver_supplies_relation_verbatim(self):
+        sql = _compile(
+            """
+tables:
+  - name: raw_orders
+    alias: r
+    source:
+      type: csv
+      path: /tmp/orders.csv
+keep_all_columns: true
+""",
+            resolve_source=lambda table: f"adapter_reader('{table.source_path}')",
+        )
+
+        assert "SELECT * FROM adapter_reader('/tmp/orders.csv')" in sql
 
     def test_dev_limit_rejected(self):
         with pytest.raises(SqlCompilationError, match="dev_limit"):

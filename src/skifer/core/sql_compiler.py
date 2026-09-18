@@ -20,7 +20,14 @@ import json
 import logging
 from typing import Any, Callable
 
-from skifer.core.ir import ParsedColumnSpec, ParsedOp, ParsedSchema, _parse_op, parse_to_ir
+from skifer.core.ir import (
+    ParsedColumnSpec,
+    ParsedOp,
+    ParsedSchema,
+    ParsedTable,
+    _parse_op,
+    parse_to_ir,
+)
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, resolve_filter_operator
 
 logger = logging.getLogger(__name__)
@@ -276,7 +283,10 @@ def compile_measure(measure: Any) -> str:
 # ---------------------------------------------------------------------------
 
 def _reject_uncompilable(
-    parsed: ParsedSchema, *, persisted_definition: bool = True
+    parsed: ParsedSchema,
+    *,
+    resolve_source: Callable[[ParsedTable], str] | None = None,
+    persisted_definition: bool = True,
 ) -> None:
     """Raise SqlCompilationError for every construct with no faithful SQL form."""
     if parsed.business_rules:
@@ -310,7 +320,7 @@ def _reject_uncompilable(
                 f"table '{label}': Python loaders cannot be compiled to SQL. "
                 "Ingest into a catalog table first, then reference that table."
             )
-        if t.source_type:
+        if t.source_type and resolve_source is None:
             raise SqlCompilationError(
                 f"table '{label}': file sources ('source.type: {t.source_type}') cannot be "
                 "compiled to SQL — reference a Unity Catalog table instead (ingest in bronze first)."
@@ -353,6 +363,7 @@ def _compile_table_cte(
     resolve_table: Callable[[str], str],
     allow_raw_sql: bool,
     *,
+    resolve_source: Callable[[ParsedTable], str] | None,
     persisted_definition: bool,
     schema_dev_limit: int | None,
 ) -> str:
@@ -379,7 +390,12 @@ def _compile_table_cte(
     if group_predicates:
         predicates.append("(" + " OR ".join(group_predicates) + ")")
 
-    sql = f"SELECT {projection} FROM {quote_fqn(resolve_table(table.name))}"
+    relation = (
+        resolve_source(table)
+        if table.source_type and resolve_source is not None
+        else quote_fqn(resolve_table(table.name))
+    )
+    sql = f"SELECT {projection} FROM {relation}"
     if predicates:
         sql += "\n  WHERE " + " AND ".join(predicates)
     if table.drop_duplicates_on:
@@ -530,6 +546,7 @@ def compile_select(
     resolve_table: Callable[[str], str] | None = None,
     allow_raw_sql: bool = True,
     *,
+    resolve_source: Callable[[ParsedTable], str] | None = None,
     resolve_columns: Callable[[str], list[str]] | None = None,
     persisted_definition: bool = True,
 ) -> str:
@@ -546,6 +563,9 @@ def compile_select(
                          guessing from expression text. When input schemas remain
                          unknown, compilation is refused because duplicate column
                          names can fail as ambiguous or diverge from Spark output.
+        resolve_source: Maps a file-backed table IR to the adapter-specific SQL
+                        relation placed verbatim in its CTE ``FROM`` clause. When
+                        absent, file sources retain their historical refusal.
         allow_raw_sql: When False, ``expr:`` and the ``sql`` filter operator raise.
         persisted_definition: Keep constructs with unstable refresh semantics out
                               of persisted definitions. Set False for one-off batch
@@ -560,7 +580,11 @@ def compile_select(
                              SQL equivalent (Python rules, loaders, file sources…).
     """
     resolve = resolve_table or (lambda name: name)
-    _reject_uncompilable(parsed, persisted_definition=persisted_definition)
+    _reject_uncompilable(
+        parsed,
+        resolve_source=resolve_source,
+        persisted_definition=persisted_definition,
+    )
 
     cte_parts = []
     for partial in parsed.partials:
@@ -569,6 +593,7 @@ def compile_select(
                 parse_to_ir(partial.schema),
                 resolve_table=resolve,
                 allow_raw_sql=allow_raw_sql,
+                resolve_source=resolve_source,
                 resolve_columns=resolve_columns,
                 persisted_definition=persisted_definition,
             )
@@ -580,7 +605,7 @@ def compile_select(
         cte_parts.append(f"{quote_ident(partial.alias)} AS (\n  {child_sql}\n)")
     cte_parts.extend(
         f"{quote_ident(t.alias)} AS (\n  "
-        f"{_compile_table_cte(t, resolve, allow_raw_sql, persisted_definition=persisted_definition, schema_dev_limit=parsed.dev_limit)}\n)"
+        f"{_compile_table_cte(t, resolve, allow_raw_sql, resolve_source=resolve_source, persisted_definition=persisted_definition, schema_dev_limit=parsed.dev_limit)}\n)"
         for t in parsed.tables
     )
     ctes = ",\n".join(cte_parts)

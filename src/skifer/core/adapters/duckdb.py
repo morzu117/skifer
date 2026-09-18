@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-from skifer.core.capabilities_matrix import CAP_DEV_LIMIT, CAP_DROP_DUPLICATES
+from skifer.core.capabilities_matrix import (
+    CAP_DEV_LIMIT,
+    CAP_DROP_DUPLICATES,
+    CAP_FILE_SOURCES,
+)
 from skifer.core.dialect import quote_fqn, quote_ident
+from skifer.core.ir import ParsedTable
+from skifer.core.sql_compiler import escape_sql_string
 
 
 class DuckDBAdapterError(RuntimeError):
@@ -26,12 +33,111 @@ class DuckDBAdapter:
 
     @property
     def capabilities(self) -> frozenset[str]:
-        return frozenset({CAP_DEV_LIMIT, CAP_DROP_DUPLICATES})
+        return frozenset({CAP_DEV_LIMIT, CAP_DROP_DUPLICATES, CAP_FILE_SOURCES})
 
     @property
     def connection(self) -> Any:
         """Expose the injected connection for explicit lifecycle management."""
         return self._connection
+
+    def resolve_source(self, table: ParsedTable) -> str:
+        """Return DuckDB's relation expression for one file-backed table.
+
+        Supported Spark options are deliberately allowlisted and translated:
+        CSV ``header`` -> ``header``, ``sep`` -> ``delim``, and
+        ``inferSchema`` -> ``auto_detect`` when true or ``all_varchar`` when
+        false; Parquet ``mergeSchema`` -> ``union_by_name``; JSON
+        ``multiLine`` -> ``format``. DuckDB already infers CSV types by default,
+        so ``inferSchema: true`` is accepted as an explicit but redundant
+        request. Every other option is refused instead of being ignored.
+        """
+        source_type = table.source_type
+        readers = {
+            "csv": "read_csv",
+            "parquet": "read_parquet",
+            "json": "read_json_auto",
+        }
+        if source_type not in readers:
+            raise DuckDBAdapterError(
+                f"Adapter 'duckdb' does not support file source format {source_type!r}."
+            )
+        if not isinstance(table.source_path, str) or not table.source_path:
+            raise DuckDBAdapterError(
+                f"Adapter 'duckdb' requires a non-empty path for file source "
+                f"format {source_type!r}."
+            )
+        if not isinstance(table.source_options, Mapping):
+            raise DuckDBAdapterError(
+                f"Adapter 'duckdb' requires source options for format "
+                f"{source_type!r} to be a mapping."
+            )
+
+        allowed = {
+            "csv": frozenset({"header", "inferSchema", "sep"}),
+            "parquet": frozenset({"mergeSchema"}),
+            "json": frozenset({"multiLine"}),
+        }[source_type]
+        unknown = sorted(set(table.source_options) - allowed, key=str)
+        if unknown:
+            raise DuckDBAdapterError(
+                f"Adapter 'duckdb' does not support source option {unknown[0]!r} "
+                f"for file source format {source_type!r}."
+            )
+
+        arguments = [self._string_literal(table.source_path)]
+        if source_type == "csv":
+            if "header" in table.source_options:
+                arguments.append(
+                    "header = " + self._boolean_option(table, "header")
+                )
+            if "inferSchema" in table.source_options:
+                infer = self._boolean_option(table, "inferSchema")
+                arguments.append(
+                    "auto_detect = TRUE" if infer == "TRUE" else "all_varchar = TRUE"
+                )
+            if "sep" in table.source_options:
+                arguments.append(
+                    "delim = "
+                    + self._string_option(table, "sep", allow_empty=False)
+                )
+        elif source_type == "parquet" and "mergeSchema" in table.source_options:
+            arguments.append(
+                "union_by_name = " + self._boolean_option(table, "mergeSchema")
+            )
+        elif source_type == "json" and "multiLine" in table.source_options:
+            multiline = self._boolean_option(table, "multiLine")
+            json_format = "unstructured" if multiline == "TRUE" else "newline_delimited"
+            arguments.append("format = " + self._string_literal(json_format))
+
+        return f"{readers[source_type]}({', '.join(arguments)})"
+
+    @staticmethod
+    def _string_literal(value: str) -> str:
+        return "'" + escape_sql_string(value) + "'"
+
+    @classmethod
+    def _string_option(
+        cls, table: ParsedTable, name: str, *, allow_empty: bool
+    ) -> str:
+        value = table.source_options[name]
+        if not isinstance(value, str) or (not allow_empty and not value):
+            raise DuckDBAdapterError(
+                f"Adapter 'duckdb' source option {name!r} for file source format "
+                f"{table.source_type!r} must be a non-empty string."
+            )
+        return cls._string_literal(value)
+
+    @staticmethod
+    def _boolean_option(table: ParsedTable, name: str) -> str:
+        value = table.source_options[name]
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        if isinstance(value, str) and value.lower() in {"true", "false"}:
+            return value.upper()
+        raise DuckDBAdapterError(
+            f"Adapter 'duckdb' source option {name!r} for file source format "
+            f"{table.source_type!r} must be true or false."
+        )
 
     @staticmethod
     def _reject_catalog(catalog: str | None, operation: str) -> None:
