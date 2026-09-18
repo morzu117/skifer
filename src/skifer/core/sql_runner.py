@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Callable
 
-from skifer.core.capabilities_matrix import assert_supported
+from skifer.core.capabilities_matrix import CAP_FILE_SOURCES, assert_supported
 from skifer.core.dialect import quote_fqn, transpile
 from skifer.core.ir import ParsedSchema, parse_to_ir
 from skifer.core.sql_compiler import compile_select
@@ -61,7 +61,11 @@ def run_sql_pipeline(
         parsed,
         resolve_table=resolve_table,
         allow_raw_sql=allow_raw_sql,
-        resolve_source=adapter.resolve_source,
+        resolve_source=(
+            adapter.resolve_source
+            if CAP_FILE_SOURCES in adapter.capabilities
+            else None
+        ),
         resolve_columns=adapter.list_columns,
         persisted_definition=False,
     )

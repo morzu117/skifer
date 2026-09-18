@@ -133,6 +133,32 @@ def test_duckdb_reads_csv_values_with_header_and_nonstandard_separator(tmp_path)
         connection.close()
 
 
+def test_duckdb_emits_spark_file_option_defaults(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    csv_path = tmp_path / "rows.csv"
+    csv_path.write_text("1,alpha\n", encoding="utf-8")
+    connection = duckdb.connect()
+    adapter = DuckDBAdapter(connection)
+    try:
+        csv_relation = adapter.resolve_source(_source_table("csv", csv_path))
+        assert "header = FALSE" in csv_relation
+        assert "all_varchar = TRUE" in csv_relation
+        assert "delim = ','" in csv_relation
+        assert "names = ['_c0', '_c1']" in csv_relation
+
+        parquet_relation = adapter.resolve_source(
+            _source_table("parquet", tmp_path / "rows.parquet")
+        )
+        assert "union_by_name = FALSE" in parquet_relation
+
+        json_relation = adapter.resolve_source(
+            _source_table("json", tmp_path / "rows.json")
+        )
+        assert "format = 'newline_delimited'" in json_relation
+    finally:
+        connection.close()
+
+
 def test_duckdb_reads_parquet_values(tmp_path):
     duckdb = pytest.importorskip("duckdb")
     path = tmp_path / "orders.parquet"
@@ -183,7 +209,7 @@ def test_duckdb_reads_csv_whose_path_contains_an_apostrophe(tmp_path):
         )
         assert "''" in relation
         assert adapter.fetch(f"SELECT * FROM {relation}") == [
-            {"id": 7, "label": "safe"}
+            {"id": "7", "label": "safe"}
         ]
     finally:
         connection.close()

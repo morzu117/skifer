@@ -47,9 +47,9 @@ class DuckDBAdapter:
         CSV ``header`` -> ``header``, ``sep`` -> ``delim``, and
         ``inferSchema`` -> ``auto_detect`` when true or ``all_varchar`` when
         false; Parquet ``mergeSchema`` -> ``union_by_name``; JSON
-        ``multiLine`` -> ``format``. DuckDB already infers CSV types by default,
-        so ``inferSchema: true`` is accepted as an explicit but redundant
-        request. Every other option is refused instead of being ignored.
+        ``multiLine`` -> ``format``. Spark defaults are emitted explicitly so
+        DuckDB auto-detection cannot silently change the input. Every other
+        option is refused instead of being ignored.
         """
         source_type = table.source_type
         readers = {
@@ -86,27 +86,30 @@ class DuckDBAdapter:
 
         arguments = [self._string_literal(table.source_path)]
         if source_type == "csv":
-            if "header" in table.source_options:
-                arguments.append(
-                    "header = " + self._boolean_option(table, "header")
-                )
-            if "inferSchema" in table.source_options:
-                infer = self._boolean_option(table, "inferSchema")
-                arguments.append(
-                    "auto_detect = TRUE" if infer == "TRUE" else "all_varchar = TRUE"
-                )
-            if "sep" in table.source_options:
-                arguments.append(
-                    "delim = "
-                    + self._string_option(table, "sep", allow_empty=False)
-                )
-        elif source_type == "parquet" and "mergeSchema" in table.source_options:
-            arguments.append(
-                "union_by_name = " + self._boolean_option(table, "mergeSchema")
+            header = self._boolean_option(table, "header", default=False)
+            infer = self._boolean_option(table, "inferSchema", default=False)
+            separator = (
+                self._string_option(table, "sep", allow_empty=False)
+                if "sep" in table.source_options
+                else self._string_literal(",")
             )
-        elif source_type == "json" and "multiLine" in table.source_options:
-            multiline = self._boolean_option(table, "multiLine")
-            json_format = "unstructured" if multiline == "TRUE" else "newline_delimited"
+            arguments.extend(
+                [
+                    "header = " + header,
+                    "auto_detect = TRUE" if infer == "TRUE" else "all_varchar = TRUE",
+                    "delim = " + separator,
+                ]
+            )
+            if header == "FALSE":
+                arguments.append("names = " + self._spark_csv_column_names(arguments))
+        elif source_type == "parquet":
+            arguments.append(
+                "union_by_name = "
+                + self._boolean_option(table, "mergeSchema", default=False)
+            )
+        elif source_type == "json":
+            multiline = self._boolean_option(table, "multiLine", default=False)
+            json_format = "auto" if multiline == "TRUE" else "newline_delimited"
             arguments.append("format = " + self._string_literal(json_format))
 
         return f"{readers[source_type]}({', '.join(arguments)})"
@@ -127,8 +130,29 @@ class DuckDBAdapter:
             )
         return cls._string_literal(value)
 
+    def _spark_csv_column_names(self, arguments: list[str]) -> str:
+        relation = f"read_csv({', '.join(arguments)})"
+        try:
+            cursor = self._connection.execute(f"SELECT * FROM {relation} LIMIT 0")
+        except Exception as exc:
+            raise DuckDBAdapterError(
+                f"Adapter 'duckdb' could not inspect CSV source {arguments[0]} "
+                "to reproduce Spark header=false column names."
+            ) from exc
+        names = [f"_c{index}" for index, _ in enumerate(cursor.description or [])]
+        return "[" + ", ".join(self._string_literal(name) for name in names) + "]"
+
     @staticmethod
-    def _boolean_option(table: ParsedTable, name: str) -> str:
+    def _boolean_option(
+        table: ParsedTable, name: str, *, default: bool | None = None
+    ) -> str:
+        if name not in table.source_options:
+            if default is None:
+                raise DuckDBAdapterError(
+                    f"Adapter 'duckdb' requires source option {name!r} for file "
+                    f"source format {table.source_type!r}."
+                )
+            return "TRUE" if default else "FALSE"
         value = table.source_options[name]
         if isinstance(value, bool):
             return "TRUE" if value else "FALSE"

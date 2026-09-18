@@ -281,6 +281,32 @@ def test_run_sql_pipeline_still_refuses_delta_source(duck_adapter, tmp_path):
         )
 
 
+def test_run_sql_pipeline_does_not_access_file_hook_without_capability(duck_adapter):
+    class AdapterWithoutFileSources:
+        name = "duckdb"
+        capabilities = frozenset()
+
+        def list_columns(self, fqn):
+            return duck_adapter.list_columns(fqn)
+
+        def execute_sql(self, sql):
+            return duck_adapter.execute_sql(sql)
+
+    duck_adapter.execute_sql("CREATE SCHEMA source")
+    duck_adapter.execute_sql("CREATE TABLE source.rows(id INTEGER)")
+    duck_adapter.execute_sql("INSERT INTO source.rows VALUES (1)")
+    duck_adapter.ensure_schema_exists("gold")
+
+    run_sql_pipeline(
+        AdapterWithoutFileSources(),
+        {"tables": [{"name": "source.rows"}], "select_final": [["id", "id"]]},
+        "gold.rows",
+        context=_context(),
+    )
+
+    assert duck_adapter.fetch('SELECT * FROM "gold"."rows"') == [{"id": 1}]
+
+
 @pytest.mark.parametrize(
     ("context", "expected_count"),
     [

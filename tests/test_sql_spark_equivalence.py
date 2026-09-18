@@ -1,8 +1,8 @@
 """Construction-level result equivalence between Spark and compiled DuckDB SQL.
 
-Both paths consume the same rows from physical tables: managed local Delta tables
-for the DataFrame interpreter and DuckDB tables for the compiled SQL path.  The
-comparison is deliberately shared by every deterministic case in this module.
+Both paths consume the same physical input: shared file paths for file-source cases,
+and matching managed tables otherwise.  The comparison is deliberately shared by
+every deterministic case in this module.
 """
 
 from __future__ import annotations
@@ -289,6 +289,134 @@ def _assert_schema_equivalent(runtime, schema, *, context=None):
     spark_df = _spark_result(runtime, schema, context=context)
     duck_columns, duck_rows = _duck_result(runtime, schema)
     assert_spark_duckdb_equivalent(spark_df, duck_columns, duck_rows)
+
+
+def _file_source_schema(source_type, path, options=None):
+    return _normalized_schema(
+        {
+            "tables": [
+                {
+                    "name": "physical_file",
+                    "alias": "source",
+                    "source": {
+                        "type": source_type,
+                        "path": str(path),
+                        "options": options or {},
+                    },
+                }
+            ],
+            "keep_all_columns": True,
+        }
+    )
+
+
+def test_csv_with_header_file_source_equivalence(equivalence_runtime, tmp_path):
+    path = tmp_path / "with_header.csv"
+    path.write_text("id,label\n1,alpha\n2,beta\n", encoding="utf-8")
+
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _file_source_schema("csv", path, {"header": "true"}),
+    )
+
+
+def test_csv_without_header_file_source_equivalence(equivalence_runtime, tmp_path):
+    path = tmp_path / "without_header.csv"
+    path.write_text("id;label\n1;alpha\n2;beta\n", encoding="utf-8")
+
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _file_source_schema("csv", path),
+    )
+
+
+def test_csv_nonstandard_separator_file_source_equivalence(
+    equivalence_runtime, tmp_path
+):
+    path = tmp_path / "semicolon.csv"
+    path.write_text("id;amount\n1;10.5\n2;20.25\n", encoding="utf-8")
+
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _file_source_schema(
+            "csv",
+            path,
+            {"header": "true", "inferSchema": "true", "sep": ";"},
+        ),
+    )
+
+
+def test_csv_explicit_infer_schema_false_file_source_equivalence(
+    equivalence_runtime, tmp_path
+):
+    path = tmp_path / "text_types.csv"
+    path.write_text("id,active\n007,true\n", encoding="utf-8")
+
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _file_source_schema(
+            "csv", path, {"header": "true", "inferSchema": "false"}
+        ),
+    )
+
+
+def test_multiline_json_file_source_equivalence(equivalence_runtime, tmp_path):
+    path = tmp_path / "multiline.json"
+    path.write_text(
+        '[\n  {"id": 1, "label": "alpha"},\n  {"id": 2, "label": "beta"}\n]\n',
+        encoding="utf-8",
+    )
+
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _file_source_schema("json", path, {"multiLine": "true"}),
+    )
+
+
+def test_newline_delimited_json_file_source_equivalence(
+    equivalence_runtime, tmp_path
+):
+    path = tmp_path / "newline_delimited.json"
+    path.write_text(
+        '{"id": 1, "label": "alpha"}\n{"id": 2, "label": "beta"}\n',
+        encoding="utf-8",
+    )
+
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _file_source_schema("json", path),
+    )
+
+
+def test_parquet_file_source_equivalence(equivalence_runtime, tmp_path):
+    directory = tmp_path / "parquet_source"
+    equivalence_runtime.spark.createDataFrame(
+        [(1, "alpha"), (2, "beta")], ["id", "label"]
+    ).coalesce(1).write.mode("overwrite").parquet(str(directory))
+    path = next(directory.glob("part-*.parquet"))
+
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _file_source_schema("parquet", path),
+    )
+
+
+def test_parquet_merge_schema_file_source_equivalence(
+    equivalence_runtime, tmp_path
+):
+    directory = tmp_path / "merged_parquet_source"
+    equivalence_runtime.spark.createDataFrame(
+        [(1, "alpha")], ["id", "label"]
+    ).coalesce(1).write.mode("overwrite").parquet(str(directory))
+    equivalence_runtime.spark.createDataFrame(
+        [(2, 20.5)], ["id", "amount"]
+    ).coalesce(1).write.mode("append").parquet(str(directory))
+    path = directory / "*.parquet"
+
+    _assert_schema_equivalent(
+        equivalence_runtime,
+        _file_source_schema("parquet", path, {"mergeSchema": "true"}),
+    )
 
 
 FILTER_CASES = [
