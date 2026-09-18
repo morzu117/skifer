@@ -206,9 +206,37 @@ unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
 ### Phase 39.4 — Stratégies d'écriture — *10–15 j*
 - `materialization: table|view|incremental|snapshot` ; `incremental: {strategy: append|merge, unique_key,
   watermark_column}` ; `snapshot: {strategy: timestamp|check, unique_key}` (SCD2 : `valid_from`/`valid_to`).
-- Compilé par dialecte : `MERGE INTO` (Databricks, Snowflake, BigQuery, DuckDB ≥ 1.x — à vérifier, sinon
-  `DELETE + INSERT` transactionnel).
+- Compilé par dialecte : `MERGE INTO` (Databricks, Snowflake, BigQuery, DuckDB).
 - Mode Spark : `merge` réutilise le chemin upsert existant (Plan 27), pas un second.
+
+> **Deux mesures faites le 18 septembre 2026, avant découpage.**
+>
+> **`MERGE INTO` est natif sur DuckDB 1.5.5** — exécuté, avec `WHEN MATCHED` et `WHEN NOT MATCHED`. Le repli
+> `DELETE + INSERT` transactionnel envisagé dans ce plan n'est donc pas nécessaire : la question est close.
+>
+> **`UPDATE SET *` / `INSERT *` ne se transpile pas.** `sqlglot` laisse ces formes passer **verbatim** vers
+> Snowflake et BigQuery, qui les refusent : ce sont des extensions Databricks/DuckDB. Un `MERGE` compilé avec
+> des étoiles paraîtrait donc portable, passerait la transpilation sans erreur, et échouerait chez le premier
+> client Snowflake. **La phase émet des listes de colonnes explicites**, obtenues par
+> `Adapter.list_relation_columns` (livré en 39.3.3). C'est le même piège que `format = 'auto'` en 39.3.2 :
+> une correspondance qui a l'air juste parce que rien ne proteste.
+
+**Découpage en tranches** :
+
+| Tranche | Contenu | Dépend de |
+|---|---|---|
+| 39.4.1 | Grammaire et IR : `type: view\|incremental\|snapshot`, validation au load, refus nominatifs, capacités. Aucun changement d'exécution. | 39.3 |
+| 39.4.2 | `view` : `CREATE OR REPLACE VIEW` sur le chemin SQL ; `table` explicité comme stratégie parmi d'autres | 39.4.1 |
+| 39.4.3 | `incremental: append` : `INSERT INTO`, création si la cible est absente, sur les deux chemins | 39.4.1 |
+| 39.4.4 | `incremental: merge` : `MERGE INTO` à colonnes explicites ; le chemin Spark réutilise le MERGE du Plan 27 | 39.4.3 |
+| 39.4.5 | `snapshot` SCD2 : `valid_from`/`valid_to`, stratégies `timestamp` et `check` | 39.4.4 |
+| 39.4.6 | Équivalence Spark ↔ DuckDB des quatre stratégies | 39.4.5 |
+
+> **Condition d'acceptation de 39.4.6.** Une stratégie incrémentale ne se prouve pas en un run : le premier
+> remplit une table vide et ne distingue `append` ni de `merge` ni d'un `CREATE TABLE AS`. Chaque test
+> d'équivalence de cette phase exécute donc le pipeline **au moins deux fois**, avec une source modifiée entre
+> les deux — une ligne nouvelle, une ligne mise à jour, une ligne inchangée — et compare l'état final des deux
+> moteurs. Un test à un seul run serait vert sur une implémentation qui écrase tout à chaque exécution.
 
 ### Phase 39.5 — Qualité, publication certifiée, registres — *10–15 j*
 - `PublicationCoordinator` : staging → checks (déjà SQL) → `swap_tables` atomique / quarantaine via adaptateur.
