@@ -184,6 +184,14 @@ unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
 | 39.3.2 | Sources fichier CSV / Parquet / JSON, défauts d'options alignés sur Spark | livrée |
 | 39.3.3 | Colonnes résolues depuis la source : règles `kind="sql"` sur tables fichier | livrée |
 | 39.3.4 | Exemples du dépôt exécutés et comparés sur les deux moteurs | livrée |
+| 39.3.5 | Loaders `kind="sql"` : une expression de relation, portable sur les deux moteurs (décision D8) | — |
+
+> **Phase 39.3 rouverte le 18 septembre 2026.** La décision D8 a été prise après la clôture de la phase, et
+> son implémentation appartient topiquement ici — c'est la dernière construction YAML qui force un pipeline à
+> rester sur Spark. Le rattacher à une phase ultérieure aurait rangé le travail là où personne ne le chercherait.
+> Mesure faite avant de trancher : `sqlglot` transpile `SELECT * FROM VALUES (…) AS t(a, b)` vers DuckDB et
+> Snowflake en parenthésant, et vers BigQuery en `UNNEST([STRUCT(…)])`. Le loader écrit donc du Spark SQL, et la
+> portabilité est acquise sans qu'il ait à la connaître.
 
 > **Critère de sortie corrigé le 18 septembre 2026, après exécution.** Le critère d'origine — « les exemples 01,
 > 02, 05, 06, 07, 13 passent en mode SQL » — a été écrit avant d'avoir rien exécuté. Sondés un par un sur le
@@ -335,7 +343,7 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 
 | # | Question | Recommandation |
 |---|---|---|
-| D12 | Où vit la logique de registre | **Un registre SQL générique écrit une seule fois**, au-dessus du Protocol mince (`execute_sql`, `fetch`, `ensure_schema_exists`, `list_relation_columns`). Aucun membre ajouté à `Adapter`. Les 14 méthodes de `SparkBackend` restent en place — aucune régression Databricks — et deviennent à terme des appels au registre générique. **À valider.** |
+| D12 | Où vit la logique de registre | **Validée le 18 septembre 2026.** Un registre SQL générique écrit **une seule fois**, au-dessus du Protocol mince (`execute_sql`, `fetch`, `ensure_schema_exists`, `list_relation_columns`). Aucun membre ajouté à `Adapter` : la frontière reste à 20 membres au lieu de 34. Les 14 méthodes de `SparkBackend` restent en place — aucune régression Databricks — et deviennent à terme des appels au registre générique. |
 
 **Découpage proposé** :
 
@@ -404,7 +412,7 @@ exemple `24_sql_mode_duckdb`, un `25_incremental_snapshot`, guide « venir de db
 | D5 | Périmètre Spark-only assumé en v1 | streaming, serving MLflow, règles PySpark, MV via SQL warehouse |
 | D6 | Ordre des adaptateurs | DuckDB → Snowflake → BigQuery ; Fabric Warehouse/Postgres/Trino ensuite selon demande |
 | D7 | Dépendances | `sqlglot` + `duckdb` dans un extra `[sql]` ; le cœur s'importe sans eux (comme `[tracing]`, `[mcp]`) |
-| D8 | Loaders portables — **ouverte, à trancher avant 39.6** | Un `source_type: loader` est une fonction Python rendant un DataFrame : rien ne le traduit en SQL. Deux voies — un loader `kind="sql"` rendant une expression de relation (symétrique des règles `kind="sql"`), ou le maintien du refus nominatif hors Spark. Trouvée en 39.3.4 en mesurant l'exemple 07. |
+| D8 | Loaders portables | **Validée le 18 septembre 2026.** Un loader `kind="sql"` rend une **expression de relation** placée là où `Adapter.resolve_source` place déjà la sienne — un loader SQL est donc l'équivalent, côté utilisateur, de ce que l'adaptateur fait pour une source fichier. Soumis à `allow_raw_sql` comme les règles `kind="sql"`. Le loader Python reste refusé nominativement hors Spark. |
 | D9 | SCD2 — ligne disparue de la source | **Validée.** `on_missing` obligatoire, aucun défaut. Voir la spécification de 39.4.5 |
 | D10 | SCD2 — rayon d'action d'un run | **Validée.** `max_closed_ratio: 0.2` par défaut, ajustable ; au-delà le run refuse et rapporte |
 | D11 | SCD2 — donnée arrivée en retard | **Validée.** `on_late_arrival: refuse` par défaut ; la réinsertion chronologique est hors v1 |
