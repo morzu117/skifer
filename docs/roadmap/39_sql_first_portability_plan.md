@@ -238,6 +238,72 @@ unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
 > les deux — une ligne nouvelle, une ligne mise à jour, une ligne inchangée — et compare l'état final des deux
 > moteurs. Un test à un seul run serait vert sur une implémentation qui écrase tout à chaque exécution.
 
+#### Spécification de 39.4.5 — SCD2 : refuser, puis suggérer
+
+> **Décidé le 18 septembre 2026 avec l'utilisateur.** Le SCD2 n'est pas une traduction mécanique : c'est
+> l'endroit du framework où une erreur de déclaration détruit des données **sans rien signaler**. Cette tranche
+> livre donc autant de garde-fous que d'écriture.
+
+**Les cinq pièges.** Quatre corrompent durablement en silence ; le cinquième est invisible par construction.
+
+| # | Piège | Sans garde-fou |
+|---|---|---|
+| 1 | `unique_key` non unique dans le lot | Deux lignes courantes (`valid_to IS NULL`) pour une même clé ; toute jointure aval fait un fanout |
+| 2 | Ligne disparue de la source | Soit elle reste courante à jamais, soit on la ferme — et fermer un **extrait partiel** pris pour un snapshot complet ferme toute la table en un run |
+| 3 | `updated_at` à `NULL` | La ligne n'est ni nouvelle ni inchangée : comparaison indécidable |
+| 4 | `updated_at` en arrière | Donnée en retard, plus ancienne que la version courante : réécrire l'histoire en silence |
+| 5 | **Dérive de schéma entre deux runs** | 39.4 émet des **listes de colonnes explicites** (Snowflake refuse `UPDATE SET *`). Une colonne **ajoutée** à la source est donc silencieusement ignorée : la cible ne la voit jamais, et aucune erreur n'est levée |
+
+**Les trois décisions produit.**
+
+| # | Question | Décision |
+|---|---|---|
+| D9 | Ligne disparue | **`on_missing` est obligatoire** — pas de défaut. Un schéma `snapshot` qui ne le déclare pas est refusé au chargement. Skifer ne peut pas deviner si le pipeline lit un snapshot complet ou un delta, et se tromper ferme toute la table : un défaut serait ici une supposition à conséquence durable |
+| D10 | Rayon d'action | **Garde-fou avec seuil par défaut ajustable.** `max_closed_ratio: 0.2` ; un run qui fermerait une part supérieure des lignes ouvertes **refuse** et rapporte. C'est exactement le run qui vide une table sans erreur, et dbt n'a rien de tel |
+| D11 | Donnée en retard | **Refuser et rapporter.** `on_late_arrival: refuse` par défaut. Réinsérer chronologiquement est le plus correct sémantiquement et de loin le plus coûteux (toute version postérieure doit être réécrite) : hors v1 |
+
+**Grammaire ajoutée par cette tranche** (39.4.1 a livré le reste ; `on_missing` y devient requis — ce n'est pas
+une régression de 39.4.1, aucun schéma `snapshot` ne s'exécute avant 39.4.5) :
+
+```yaml
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close          # close | ignore — REQUIS, aucun défaut
+  max_closed_ratio: 0.2      # défaut ; 1.0 désactive le garde-fou
+  on_late_arrival: refuse    # refuse (défaut) | ignore
+```
+
+**Le préflight.** Il tourne **avant toute écriture** `snapshot`, sur les deux chemins, et il est fail-closed.
+Sa forme reprend celle que le projet a déjà éprouvée avec `SemanticSynchronizer` : un rapport dont
+`safe_to_apply` est faux **dès qu'il y a une suggestion**, et qui n'écrit rien tant que ce n'est pas propre
+(`semantic/sync.py:60-77`). Ne pas créer un second mécanisme de rapport.
+
+**Chaque constat porte le fragment YAML à coller** — c'est la demande explicite de l'utilisateur, et la
+différence entre un refus utile et un refus qui laisse l'auteur chercher. Exemple pour le piège 1 :
+
+```text
+[snapshot] REFUSED — 'unique_key' [order_id] is not unique in this batch:
+  412 keys carry more than one row. SCD2 cannot decide which is current.
+  Suggested — deduplicate on the key, declaring the order explicitly:
+    quality_checks:
+      drop_duplicates_on: [order_id]
+    preprocess:
+      qualify: {order_by: "modified_at DESC"}
+  or extend the key so it identifies one row.
+```
+
+**Aucune suggestion n'est jamais appliquée d'office** — règle de la maison : `--promote` refuse plutôt que
+d'écraser, `adaptive accept` garantit la non-destruction au niveau syscall.
+
+**Messages sans valeurs de données** : un constat nomme les **colonnes** et un **compte**, jamais les valeurs
+fautives. C'est déjà la règle des alertes d'incident (Plan 31).
+
+**CLI** : `skifer snapshot check <pipeline>`, codes de sortie alignés sur `skifer semantic sync --check`
+(`0` propre · `1` erreur technique · `2` constat · `3` refus), pour qu'une CI puisse le porter.
+
 ### Phase 39.5 — Qualité, publication certifiée, registres — *10–15 j*
 - `PublicationCoordinator` : staging → checks (déjà SQL) → `swap_tables` atomique / quarantaine via adaptateur.
   Snowflake `SWAP WITH`, BigQuery copy job + rename, DuckDB transaction.
@@ -289,6 +355,9 @@ exemple `24_sql_mode_duckdb`, un `25_incremental_snapshot`, guide « venir de db
 | D6 | Ordre des adaptateurs | DuckDB → Snowflake → BigQuery ; Fabric Warehouse/Postgres/Trino ensuite selon demande |
 | D7 | Dépendances | `sqlglot` + `duckdb` dans un extra `[sql]` ; le cœur s'importe sans eux (comme `[tracing]`, `[mcp]`) |
 | D8 | Loaders portables — **ouverte, à trancher avant 39.6** | Un `source_type: loader` est une fonction Python rendant un DataFrame : rien ne le traduit en SQL. Deux voies — un loader `kind="sql"` rendant une expression de relation (symétrique des règles `kind="sql"`), ou le maintien du refus nominatif hors Spark. Trouvée en 39.3.4 en mesurant l'exemple 07. |
+| D9 | SCD2 — ligne disparue de la source | **Validée.** `on_missing` obligatoire, aucun défaut. Voir la spécification de 39.4.5 |
+| D10 | SCD2 — rayon d'action d'un run | **Validée.** `max_closed_ratio: 0.2` par défaut, ajustable ; au-delà le run refuse et rapporte |
+| D11 | SCD2 — donnée arrivée en retard | **Validée.** `on_late_arrival: refuse` par défaut ; la réinsertion chronologique est hors v1 |
 
 ## 7. Risques
 
