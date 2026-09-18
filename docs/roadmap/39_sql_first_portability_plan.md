@@ -231,7 +231,7 @@ unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
 | 39.4.4 | `incremental: merge` : `MERGE INTO` à colonnes explicites sur les deux chemins | livrée |
 | 39.4.5.1 | Garde-fous SCD2 et préflight : six constats, chacun portant son fragment YAML | livrée |
 | 39.4.5.2 | Écriture SCD2 : `timestamp` et `check`, préflight obligatoire, reprise convergente | livrée |
-| 39.4.6 | Équivalence Spark ↔ DuckDB des quatre stratégies | — |
+| 39.4.6 | Équivalence Spark ↔ DuckDB des quatre stratégies | livrée |
 
 > **Le préflight compte six constats, pas cinq.** Le sixième — une clé à `NULL` — a été trouvé en relisant
 > 39.4.5.1 et mesuré sur DuckDB : une ligne à clé nulle passe le contrôle de doublons (`GROUP BY` rend un
