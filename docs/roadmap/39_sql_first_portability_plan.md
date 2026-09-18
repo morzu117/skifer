@@ -223,14 +223,20 @@ unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
 
 **Découpage en tranches** :
 
-| Tranche | Contenu | Dépend de |
+| Tranche | Contenu | État |
 |---|---|---|
-| 39.4.1 | Grammaire et IR : `type: view\|incremental\|snapshot`, validation au load, refus nominatifs, capacités. Aucun changement d'exécution. | 39.3 |
-| 39.4.2 | `view` : `CREATE OR REPLACE VIEW` sur le chemin SQL ; `table` explicité comme stratégie parmi d'autres | 39.4.1 |
-| 39.4.3 | `incremental: append` : `INSERT INTO`, création si la cible est absente, sur les deux chemins | 39.4.1 |
-| 39.4.4 | `incremental: merge` : `MERGE INTO` à colonnes explicites ; le chemin Spark réutilise le MERGE du Plan 27 | 39.4.3 |
-| 39.4.5 | `snapshot` SCD2 : `valid_from`/`valid_to`, stratégies `timestamp` et `check` | 39.4.4 |
-| 39.4.6 | Équivalence Spark ↔ DuckDB des quatre stratégies | 39.4.5 |
+| 39.4.1 | Grammaire et IR : `type: view\|incremental\|snapshot`, validation au load, refus nominatifs, capacités | livrée |
+| 39.4.2 | `view` : `CREATE OR REPLACE VIEW`, compilée comme définition persistée | livrée |
+| 39.4.3 | `incremental: append` : `INSERT INTO`, création si la cible est absente, borne de watermark | livrée |
+| 39.4.4 | `incremental: merge` : `MERGE INTO` à colonnes explicites sur les deux chemins | livrée |
+| 39.4.5.1 | Garde-fous SCD2 et préflight : six constats, chacun portant son fragment YAML | livrée |
+| 39.4.5.2 | Écriture SCD2 : `timestamp` et `check`, préflight obligatoire, reprise convergente | livrée |
+| 39.4.6 | Équivalence Spark ↔ DuckDB des quatre stratégies | — |
+
+> **Le préflight compte six constats, pas cinq.** Le sixième — une clé à `NULL` — a été trouvé en relisant
+> 39.4.5.1 et mesuré sur DuckDB : une ligne à clé nulle passe le contrôle de doublons (`GROUP BY` rend un
+> groupe d'un) puis ne s'apparie jamais à sa propre version, `t.key = s.key` n'étant jamais vrai pour `NULL`.
+> Elle serait réinsérée à chaque run et la table grossirait en silence.
 
 > **Condition d'acceptation de 39.4.6.** Une stratégie incrémentale ne se prouve pas en un run : le premier
 > remplit une table vide et ne distingue `append` ni de `merge` ni d'un `CREATE TABLE AS`. Chaque test
