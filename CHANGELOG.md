@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The engine and adapter of an environment are now resolved by a single shared function.
+  The pre-Spark peek in the engine and `ExecutionContext` previously re-implemented the same
+  environment resolution, so a future divergence would have started a Spark session for an
+  environment asking for the SQL runtime. (Plan 39.3.1)
 - Fixed a cross join with declared keys compiling to an unconditional `CROSS JOIN`.
   The DataFrame path applies the key condition, so the same YAML returned a filtered
   result on Spark and a cartesian product in SQL — including in materialized views,
@@ -22,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the first end-to-end DuckDB SQL execution path: a pipeline compiles, transpiles
+  and materializes as a DuckDB table without importing PySpark, with context-aware
+  `dev_limit` handling and catalog-backed column resolution for SQL rules. (Plan 39.3.1)
 - Added construction-level equivalence tests between the Spark DataFrame path and the
   compiled SQL executed on DuckDB: filters, joins, aggregates, column operations, nested
   partials, portable SQL rules, deduplication and `dev_limit`. Non-deterministic cases

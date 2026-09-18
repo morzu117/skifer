@@ -252,6 +252,61 @@ def test_dev_limit_obeys_execution_context(duck_adapter, context, expected_count
     assert schema["tables"][0]["dev_limit"] == 2
 
 
+@pytest.mark.parametrize(
+    "context",
+    [_context(is_job=True), _context(is_production=True)],
+    ids=["job", "production"],
+)
+def test_nested_partial_dev_limit_is_ignored_outside_interactive_mode(
+    duck_adapter, context
+):
+    duck_adapter.execute_sql("CREATE SCHEMA source")
+    duck_adapter.ensure_schema_exists("gold")
+    duck_adapter.execute_sql(
+        "CREATE TABLE source.rows AS SELECT * FROM VALUES (1), (2), (3), (4) "
+        "AS rows(id)"
+    )
+    schema = {
+        "partials": [
+            {
+                "alias": "middle_rows",
+                "schema": {
+                    "partials": [
+                        {
+                            "alias": "leaf_rows",
+                            "schema": {
+                                "tables": [
+                                    {
+                                        "name": "source.rows",
+                                        "alias": "rows",
+                                        "dev_limit": 1,
+                                    }
+                                ],
+                                "dev_limit": 1,
+                                "select_final": [["id", "id"]],
+                            },
+                        }
+                    ],
+                    "select_final": [["id", "id"]],
+                },
+            }
+        ],
+        "select_final": [["id", "id"]],
+    }
+
+    executed = run_sql_pipeline(
+        duck_adapter,
+        schema,
+        "gold.nested_rows",
+        context=context,
+    )
+
+    assert duck_adapter.fetch(
+        'SELECT * FROM "gold"."nested_rows" ORDER BY "id"'
+    ) == [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}]
+    assert "LIMIT" not in executed
+
+
 def test_sql_engine_initializes_when_pyspark_is_unimportable(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

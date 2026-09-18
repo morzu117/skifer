@@ -11,6 +11,45 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+def resolve_runtime_mode(
+    config: dict, force_env: str | None
+) -> tuple[str, str]:
+    """Resolve and validate the engine/adapter pair for one environment."""
+    environments = config.get("environments", {})
+    selected_env = force_env or config.get("default_env")
+    if selected_env is None and isinstance(environments, dict) and len(environments) == 1:
+        selected_env = next(iter(environments))
+
+    env_config = {}
+    if isinstance(environments, dict):
+        target = str(selected_env).casefold()
+        env_config = next(
+            (
+                value
+                for key, value in environments.items()
+                if str(key).casefold() == target and isinstance(value, dict)
+            ),
+            {},
+        )
+
+    engine = env_config.get("engine", "spark")
+    allowed_engines = {"spark", "sql"}
+    if engine not in allowed_engines:
+        raise ValueError(
+            f"Invalid config key 'engine': received {engine!r}; "
+            f"allowed values are {sorted(allowed_engines)}."
+        )
+
+    adapter = env_config.get("adapter", "databricks")
+    allowed_adapters = {"databricks", "duckdb", "snowflake", "bigquery"}
+    if adapter not in allowed_adapters:
+        raise ValueError(
+            f"Invalid config key 'adapter': received {adapter!r}; "
+            f"allowed values are {sorted(allowed_adapters)}."
+        )
+    return engine, adapter
+
+
 @dataclass
 class ExecutionContext:
     """
@@ -82,25 +121,13 @@ class ExecutionContext:
 
     def engine_mode(self) -> str:
         """Execution engine selected for the active environment."""
-        value = self.env_config().get("engine", "spark")
-        allowed = {"spark", "sql"}
-        if value not in allowed:
-            raise ValueError(
-                f"Invalid config key 'engine': received {value!r}; "
-                f"allowed values are {sorted(allowed)}."
-            )
-        return value
+        engine, _ = resolve_runtime_mode(self.config, self.env)
+        return engine
 
     def adapter_name(self) -> str:
         """Runtime adapter selected for the active environment."""
-        value = self.env_config().get("adapter", "databricks")
-        allowed = {"databricks", "duckdb", "snowflake", "bigquery"}
-        if value not in allowed:
-            raise ValueError(
-                f"Invalid config key 'adapter': received {value!r}; "
-                f"allowed values are {sorted(allowed)}."
-            )
-        return value
+        _, adapter = resolve_runtime_mode(self.config, self.env)
+        return adapter
 
     @property
     def default_params(self) -> dict:

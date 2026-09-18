@@ -17,7 +17,7 @@ from skifer.core.rule_analyzer import RuleAnalyzer
 from skifer.core.sandbox import SandboxResolver
 from skifer.core.schema_loader import _find_file_upwards as _find_file_upwards_fn
 from skifer.core import environment as _env
-from skifer.core.context import ExecutionContext
+from skifer.core.context import ExecutionContext, resolve_runtime_mode
 from skifer.core.interpreter import SchemaInterpreter
 from skifer.core.patterns import PipelinePatterns
 from skifer.observability.tracing import (
@@ -45,6 +45,21 @@ _LOCAL_LINEAGE_DATASET_NAMESPACE = "skifer://local"
 _LINEAGE_HOSTNAME_ALLOWLIST = re.compile(
     r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
 )
+
+
+def _peek_runtime_mode(
+    config_path: str | None, force_env: str | None
+) -> tuple[str, str]:
+    """Read only enough config to select a backend before importing Spark."""
+    if not config_path:
+        return "spark", "databricks"
+    try:
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle) or {}
+        return resolve_runtime_mode(config, force_env)
+    except (AttributeError, OSError, TypeError, yaml.YAMLError):
+        # The normal config loader below owns the actionable diagnostic.
+        return "spark", "databricks"
 
 
 def _resolve_lineage_dataset_namespace(lineage_config, *, is_local, environ) -> str:
@@ -228,30 +243,8 @@ class SkiferEngine:
         # factory. The ordinary Spark/Databricks initialization below is otherwise
         # byte-for-byte the historical path.
         hinted_config_path = config_path or self._find_file_upwards("config.yaml")
-        sql_runtime_requested = False
-        if hinted_config_path:
-            try:
-                with open(hinted_config_path, "r", encoding="utf-8") as handle:
-                    hinted_config = yaml.safe_load(handle) or {}
-                environments = hinted_config.get("environments", {})
-                hinted_env = force_env or hinted_config.get("default_env")
-                if hinted_env is None and len(environments) == 1:
-                    hinted_env = next(iter(environments))
-                matched = next(
-                    (
-                        value
-                        for key, value in environments.items()
-                        if key.casefold() == str(hinted_env).casefold()
-                    ),
-                    {},
-                )
-                sql_runtime_requested = (
-                    matched.get("engine", "spark"),
-                    matched.get("adapter", "databricks"),
-                ) == ("sql", "duckdb")
-            except (AttributeError, OSError, TypeError, yaml.YAMLError):
-                # The normal config loader below owns the actionable diagnostic.
-                pass
+        hinted_runtime = _peek_runtime_mode(hinted_config_path, force_env)
+        sql_runtime_requested = hinted_runtime == ("sql", "duckdb")
 
         if sql_runtime_requested:
             self.spark = None
