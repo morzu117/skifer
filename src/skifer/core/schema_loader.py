@@ -18,9 +18,11 @@ from skifer.core.constants import (
     DEFAULT_STREAMING_TRIGGER,
     MATERIALIZATION_ALLOWED_KEYS,
     VALID_CONTRACT_STATUSES,
+    VALID_INCREMENTAL_STRATEGIES,
     VALID_MATERIALIZATION_TYPES,
     VALID_MV_REFRESH_MODES,
     VALID_MV_SCHEDULE_PREFIXES,
+    VALID_SNAPSHOT_STRATEGIES,
     VALID_SOURCE_TYPES,
     VALID_STREAMING_SOURCE_TYPES,
 )
@@ -1075,13 +1077,17 @@ def _normalize_aggregate(schema_dict):
 
 def _normalize_materialization(schema_dict):
     """
-    Normalize the top-level ``materialization:`` block (Plan 27).
+    Normalize the top-level ``materialization:`` block (Plans 27, 28 and 39).
 
     Accepts the string shorthand (``materialization: streaming_table``) or the
     dict form. Allowed keys depend on the type (``MATERIALIZATION_ALLOWED_KEYS``),
     so streaming options cannot leak onto a materialized view and vice versa.
     Normalizes in place with defaults applied. No-op when the key is absent
     (batch schemas keep their exact current shape).
+
+    Snapshot is SCD2 with fixed output columns ``valid_from`` and ``valid_to``;
+    ``valid_to`` is NULL for the current version. Their names are deliberately
+    not configurable in v1, and no redundant ``is_current`` column is produced.
     """
     if "materialization" not in schema_dict:
         return
@@ -1117,7 +1123,127 @@ def _normalize_materialization(schema_dict):
         )
 
     normalized = {"type": mat_type}
-    if mat_type == "streaming_table":
+    if mat_type == "incremental":
+        if "strategy" not in mat:
+            raise ValueError(
+                "[materialization] 'strategy' is required for type 'incremental'. "
+                f"Expected one of: {sorted(VALID_INCREMENTAL_STRATEGIES)}."
+            )
+        strategy = mat["strategy"]
+        if not isinstance(strategy, str):
+            raise ValueError(
+                "[materialization] 'strategy' for type 'incremental' must be a string. "
+                f"Expected one of: {sorted(VALID_INCREMENTAL_STRATEGIES)}."
+            )
+        strategy = strategy.strip().lower()
+        if strategy not in VALID_INCREMENTAL_STRATEGIES:
+            raise ValueError(
+                f"[materialization] Unknown 'strategy' '{strategy}' for type 'incremental'. "
+                f"Expected one of: {sorted(VALID_INCREMENTAL_STRATEGIES)}."
+            )
+        normalized["strategy"] = strategy
+
+        unique_key = mat.get("unique_key")
+        if strategy == "merge":
+            if (
+                not isinstance(unique_key, list)
+                or not unique_key
+                or not all(isinstance(key, str) and key.strip() for key in unique_key)
+            ):
+                raise ValueError(
+                    "[materialization] 'strategy: merge' requires 'unique_key' — a "
+                    "non-empty list of column names."
+                )
+            normalized["unique_key"] = [key.strip() for key in unique_key]
+            if "watermark_column" in mat:
+                raise ValueError(
+                    "[materialization] 'watermark_column' is only allowed with "
+                    "'strategy: append', not 'strategy: merge'."
+                )
+        else:
+            if "unique_key" in mat:
+                raise ValueError(
+                    "[materialization] 'unique_key' is not allowed with "
+                    "'strategy: append'; it is required only for 'strategy: merge'."
+                )
+            if "watermark_column" in mat:
+                watermark_column = mat["watermark_column"]
+                if not isinstance(watermark_column, str) or not watermark_column.strip():
+                    raise ValueError(
+                        "[materialization] 'watermark_column' must be a non-empty "
+                        "column name with 'strategy: append'."
+                    )
+                normalized["watermark_column"] = watermark_column.strip()
+
+    elif mat_type == "snapshot":
+        if "strategy" not in mat:
+            raise ValueError(
+                "[materialization] 'strategy' is required for type 'snapshot'. "
+                f"Expected one of: {sorted(VALID_SNAPSHOT_STRATEGIES)}."
+            )
+        strategy = mat["strategy"]
+        if not isinstance(strategy, str):
+            raise ValueError(
+                "[materialization] 'strategy' for type 'snapshot' must be a string. "
+                f"Expected one of: {sorted(VALID_SNAPSHOT_STRATEGIES)}."
+            )
+        strategy = strategy.strip().lower()
+        if strategy not in VALID_SNAPSHOT_STRATEGIES:
+            raise ValueError(
+                f"[materialization] Unknown 'strategy' '{strategy}' for type 'snapshot'. "
+                f"Expected one of: {sorted(VALID_SNAPSHOT_STRATEGIES)}."
+            )
+        normalized["strategy"] = strategy
+
+        unique_key = mat.get("unique_key")
+        if (
+            not isinstance(unique_key, list)
+            or not unique_key
+            or not all(isinstance(key, str) and key.strip() for key in unique_key)
+        ):
+            raise ValueError(
+                "[materialization] type 'snapshot' requires 'unique_key' — a "
+                "non-empty list of column names."
+            )
+        normalized["unique_key"] = [key.strip() for key in unique_key]
+
+        if strategy == "timestamp":
+            updated_at = mat.get("updated_at")
+            if not isinstance(updated_at, str) or not updated_at.strip():
+                raise ValueError(
+                    "[materialization] 'strategy: timestamp' requires 'updated_at' — "
+                    "a non-empty column name."
+                )
+            normalized["updated_at"] = updated_at.strip()
+            if "check_columns" in mat:
+                raise ValueError(
+                    "[materialization] 'check_columns' is only allowed with "
+                    "'strategy: check', not 'strategy: timestamp'."
+                )
+        else:
+            if "updated_at" in mat:
+                raise ValueError(
+                    "[materialization] 'updated_at' is only allowed with "
+                    "'strategy: timestamp', not 'strategy: check'."
+                )
+            check_columns = mat.get("check_columns")
+            if (
+                not isinstance(check_columns, list)
+                or not check_columns
+                or not all(
+                    isinstance(column, str) and column.strip()
+                    for column in check_columns
+                )
+            ):
+                raise ValueError(
+                    "[materialization] 'strategy: check' requires 'check_columns' — "
+                    "a non-empty list of column names."
+                )
+            normalized["check_columns"] = [
+                column.strip() for column in check_columns
+            ]
+
+    elif mat_type == "streaming_table":
         trigger = mat.get("trigger", DEFAULT_STREAMING_TRIGGER)
         is_valid_trigger = isinstance(trigger, str) and (
             trigger == "available_now"
@@ -1214,6 +1340,101 @@ def _normalize_materialization(schema_dict):
         normalized["refresh"] = refresh.strip().lower()
 
     schema_dict["materialization"] = normalized
+
+
+def _partial_dev_limit_errors(schema_dict, mat_type, path):
+    """Report every ``dev_limit`` declared inside nested partials, named by path."""
+    errors: list[str] = []
+    for partial in schema_dict.get("partials", []):
+        if not isinstance(partial, dict):
+            continue
+        child = partial.get("schema")
+        if not isinstance(child, dict):
+            continue
+        alias = partial.get("alias", "?")
+        child_path = (*path, alias)
+        label = " > ".join(child_path)
+        if "dev_limit" in child:
+            errors.append(
+                f"  [{mat_type}] partial '{label}': 'dev_limit' is incompatible with "
+                f"'materialization: {mat_type}' — a partial feeds the parent output, "
+                "so truncating it truncates a cumulative target durably."
+            )
+        for table in child.get("tables", []):
+            if isinstance(table, dict) and "dev_limit" in table:
+                table_label = table.get("alias") or table.get("name", "?")
+                errors.append(
+                    f"  [{mat_type}] partial '{label}' table '{table_label}': "
+                    f"'dev_limit' is incompatible with 'materialization: {mat_type}' — "
+                    "a partial feeds the parent output, so truncating it truncates a "
+                    "cumulative target durably."
+                )
+        errors.extend(_partial_dev_limit_errors(child, mat_type, child_path))
+    return errors
+
+
+def _validate_write_strategy_schema(schema_dict):
+    """Cross-validate Plan 39 batch write strategies before any execution."""
+    mat = schema_dict.get("materialization")
+    if not mat:
+        return
+    mat_type = mat.get("type")
+
+    if mat_type == "view":
+        if schema_dict.get("data_product"):
+            raise ValueError(
+                "Schema validation failed with 1 error(s):\n"
+                "  [view] 'data_product' is incompatible with 'materialization: view' — "
+                "a view is not materialized, so there is nothing to certify."
+            )
+        return
+    if mat_type not in ("incremental", "snapshot"):
+        return
+
+    errors: list[str] = []
+    for table in schema_dict.get("tables", []):
+        label = table.get("alias") or table.get("name", "?")
+        if table.get("streaming"):
+            errors.append(
+                f"  [{mat_type}] table '{label}': 'streaming: true' is incompatible "
+                f"with 'materialization: {mat_type}' — cumulative batch strategies "
+                "cannot consume a streaming DataFrame."
+            )
+        if "dev_limit" in table:
+            errors.append(
+                f"  [{mat_type}] table '{label}': 'dev_limit' is incompatible with "
+                f"'materialization: {mat_type}' — truncating a cumulative target can "
+                "cause durable data loss."
+            )
+
+    sink = schema_dict.get("sink")
+    if sink and sink.get("type") in ("postgres", "jdbc"):
+        errors.append(
+            f"  [{mat_type}] 'sink' type 'postgres'/'jdbc' is incompatible with "
+            f"'materialization: {mat_type}' — these strategies require a managed "
+            "table target."
+        )
+    if "dev_limit" in schema_dict:
+        errors.append(
+            f"  [{mat_type}] schema-level 'dev_limit' is incompatible with "
+            f"'materialization: {mat_type}' — truncating a cumulative target can "
+            "cause durable data loss."
+        )
+    # A partial feeds the parent's output, so a limit declared inside one truncates
+    # the very rows a cumulative write accumulates. The hazard is the parent's
+    # materialization, which the child cannot see — so the parent checks for it.
+    errors.extend(_partial_dev_limit_errors(schema_dict, mat_type, path=()))
+    if schema_dict.get("data_product"):
+        errors.append(
+            f"  [{mat_type}] 'data_product' is incompatible with "
+            f"'materialization: {mat_type}' — certified publication stages and "
+            "promotes a complete table and cannot yet compose with cumulative writes."
+        )
+
+    if errors:
+        raise ValueError(
+            f"Schema validation failed with {len(errors)} error(s):\n" + "\n".join(errors)
+        )
 
 
 def _validate_materialized_view(schema_dict):
@@ -1614,9 +1835,10 @@ def _normalize_schema(schema_dict, params=None, base_dir=None, seen_paths=None):
     # cross-validated without running Spark.
     _normalize_agent_ready_metadata(schema_dict)
 
-    # Materialization (Plan 27 streaming, Plan 28 materialized views):
+    # Materialization (Plan 27 streaming, Plan 28 views, Plan 39 write strategies):
     # normalize once, then cross-validate each type.
     _normalize_materialization(schema_dict)
+    _validate_write_strategy_schema(schema_dict)
     _validate_streaming(schema_dict)
     _validate_materialized_view(schema_dict)
 

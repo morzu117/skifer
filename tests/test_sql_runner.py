@@ -12,7 +12,12 @@ import pytest
 import yaml
 
 from skifer.core.adapters.duckdb import DuckDBAdapter, DuckDBAdapterError
-from skifer.core.capabilities_matrix import UnsupportedCapabilityError
+from skifer.core.capabilities_matrix import (
+    CAP_INCREMENTAL,
+    CAP_SNAPSHOT,
+    CAP_VIEW,
+    UnsupportedCapabilityError,
+)
 from skifer.core.context import ExecutionContext
 from skifer.core.core import SkiferEngine
 from skifer.core.ir import parse_to_ir
@@ -158,6 +163,41 @@ def test_python_rule_is_refused_by_adapter_capability(duck_adapter, registered_r
             "gold.orders",
             context=_context(),
         )
+
+
+@pytest.mark.parametrize(
+    ("materialization", "capability"),
+    [
+        ({"type": "view"}, CAP_VIEW),
+        ({"type": "incremental", "strategy": "append"}, CAP_INCREMENTAL),
+        (
+            {
+                "type": "snapshot",
+                "strategy": "timestamp",
+                "unique_key": ["order_id"],
+                "updated_at": "modified_at",
+            },
+            CAP_SNAPSHOT,
+        ),
+    ],
+)
+def test_duckdb_refuses_unimplemented_materialization_by_name(
+    duck_adapter, materialization, capability
+):
+    with pytest.raises(UnsupportedCapabilityError) as exc_info:
+        run_sql_pipeline(
+            duck_adapter,
+            {
+                "tables": [{"name": "source.orders"}],
+                "materialization": materialization,
+            },
+            "gold.orders",
+            context=_context(),
+        )
+
+    message = str(exc_info.value)
+    assert "duckdb" in message
+    assert capability in message
 
 
 def test_sql_rule_rewrite_uses_resolved_source_columns(

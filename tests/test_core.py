@@ -7,6 +7,12 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, TimestampType, DoubleType, FloatType
 
 from skifer.core.spark_backend import SparkBackend
+from skifer.core.capabilities_matrix import (
+    CAP_INCREMENTAL,
+    CAP_SNAPSHOT,
+    CAP_VIEW,
+    UnsupportedCapabilityError,
+)
 from skifer.core.ir import ParsedFilter, _parse_op
 from skifer.core.context import ExecutionContext
 from skifer.core.core import SkiferEngine
@@ -813,6 +819,43 @@ def test_run_process_to_table_accepts_and_returns_injected_run_id(mocker):
         intermediate_mode="inline",
         run_id=run_id,
     )
+
+
+@pytest.mark.parametrize(
+    ("materialization", "capability"),
+    [
+        ({"type": "view"}, CAP_VIEW),
+        ({"type": "incremental", "strategy": "append"}, CAP_INCREMENTAL),
+        (
+            {
+                "type": "snapshot",
+                "strategy": "timestamp",
+                "unique_key": ["order_id"],
+                "updated_at": "modified_at",
+            },
+            CAP_SNAPSHOT,
+        ),
+    ],
+)
+def test_databricks_refuses_unimplemented_materialization_by_name(
+    mocker, materialization, capability
+):
+    engine = _engine_for_run_id_tests(mocker)
+
+    with pytest.raises(UnsupportedCapabilityError) as exc_info:
+        engine.run_process_to_table(
+            {
+                "tables": [{"name": "silver.orders"}],
+                "materialization": materialization,
+            },
+            "gold",
+            "orders",
+        )
+
+    message = str(exc_info.value)
+    assert "databricks" in message
+    assert capability in message
+    engine._patterns.run_process_to_table.assert_not_called()
 
 
 def test_run_from_yaml_mints_and_returns_same_run_id(mocker):

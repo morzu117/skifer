@@ -2,15 +2,19 @@ import pytest
 
 from skifer.core.capabilities_matrix import (
     ALL_CAPABILITIES,
+    DATABRICKS_CAPABILITIES,
     CAP_DEV_LIMIT,
     CAP_DROP_DUPLICATES,
     CAP_FILE_SOURCES,
     CAP_JDBC_SINK,
+    CAP_INCREMENTAL,
     CAP_LOADERS,
     CAP_MATERIALIZED_VIEW,
     CAP_PREPROCESS_QUALIFY,
     CAP_PYTHON_RULES,
     CAP_STREAMING,
+    CAP_SNAPSHOT,
+    CAP_VIEW,
     UnsupportedCapabilityError,
     assert_supported,
     required_capabilities,
@@ -42,6 +46,22 @@ from skifer.core.registry import RuleRegistry
         (
             {"materialization": {"type": "materialized_view"}},
             CAP_MATERIALIZED_VIEW,
+        ),
+        ({"materialization": {"type": "view"}}, CAP_VIEW),
+        (
+            {"materialization": {"type": "incremental", "strategy": "append"}},
+            CAP_INCREMENTAL,
+        ),
+        (
+            {
+                "materialization": {
+                    "type": "snapshot",
+                    "strategy": "timestamp",
+                    "unique_key": ["id"],
+                    "updated_at": "modified_at",
+                }
+            },
+            CAP_SNAPSHOT,
         ),
         ({"sink": {"type": "jdbc"}}, CAP_JDBC_SINK),
         ({"dev_limit": 10}, CAP_DEV_LIMIT),
@@ -139,30 +159,68 @@ def test_assert_supported_accepts_all_capabilities():
     )
 
 
-def test_assert_supported_names_every_missing_capability_deterministically():
-    parsed = parse_to_ir(
-        {
-            "business_rules": ["enrich"],
-            "partials": [{"alias": "nested"}],
-            "dev_limit": 10,
-            "tables": [
-                {
-                    "name": "file_orders",
-                    "source": {"type": "csv"},
-                    "streaming": True,
-                    "quality_checks": {"drop_duplicates_on": ["id"]},
-                    "preprocess": {"qualify": {"limit": 1}},
-                },
-                {
-                    "name": "loaded_orders",
-                    "source_type": "loader",
-                    "function_name": "load_orders",
-                },
-            ],
-            "materialization": {"type": "materialized_view"},
-            "sink": {"type": "jdbc"},
-        }
-    )
+_CAPABILITY_ERROR_SCHEMAS = (
+    {
+        "business_rules": ["enrich"],
+        "dev_limit": 10,
+        "tables": [
+            {
+                "name": "file_orders",
+                "source": {"type": "csv", "path": "/tmp/orders.csv"},
+                "quality_checks": {"drop_duplicates_on": ["id"]},
+                "preprocess": {"qualify": {"limit": 1}},
+            },
+            {
+                "name": "loaded_orders",
+                "source_type": "loader",
+                "function_name": "load_orders",
+            },
+        ],
+        "materialization": {"type": "table"},
+        "sink": {"type": "jdbc"},
+    },
+    {
+        "tables": [{"name": "events", "streaming": True}],
+        "materialization": {"type": "streaming_table"},
+    },
+    {
+        "tables": [{"name": "silver.orders"}],
+        "materialization": {"type": "materialized_view"},
+    },
+    {
+        "tables": [{"name": "silver.orders"}],
+        "materialization": {"type": "view"},
+    },
+    {
+        "tables": [{"name": "silver.orders"}],
+        "materialization": {"type": "incremental", "strategy": "append"},
+    },
+    {
+        "tables": [{"name": "silver.orders"}],
+        "materialization": {
+            "type": "snapshot",
+            "strategy": "timestamp",
+            "unique_key": ["id"],
+            "updated_at": "modified_at",
+        },
+    },
+)
+
+
+@pytest.mark.parametrize(
+    "schema",
+    _CAPABILITY_ERROR_SCHEMAS,
+    ids=lambda schema: schema["materialization"]["type"],
+)
+def test_assert_supported_names_every_missing_capability_deterministically(schema):
+    """Parameterize by materialization because root materializations are exclusive.
+
+    Keeping each materialization at the root proves the diagnostic on product-valid
+    shapes; putting mutually exclusive writes in partials would test ignored output
+    semantics that a partial cannot validly declare.
+    """
+    parsed = parse_to_ir(schema)
+    required = required_capabilities(parsed)
 
     messages = []
     for _ in range(2):
@@ -174,8 +232,28 @@ def test_assert_supported_names_every_missing_capability_deterministically():
 
     assert messages[0] == messages[1]
     assert "tiny" in messages[0]
-    for capability in sorted(ALL_CAPABILITIES):
+    for capability in sorted(required):
         assert capability in messages[0]
-    positions = [messages[0].index(capability) for capability in sorted(ALL_CAPABILITIES)]
+    positions = [
+        messages[0].index(f"{capability} (required")
+        for capability in sorted(required)
+    ]
     assert positions == sorted(positions)
     assert "YAML" in messages[0]
+
+
+def test_capability_error_schemas_cover_all_capabilities_exactly():
+    covered = frozenset().union(
+        *(
+            required_capabilities(parse_to_ir(schema))
+            for schema in _CAPABILITY_ERROR_SCHEMAS
+        )
+    )
+
+    assert covered == ALL_CAPABILITIES
+
+
+def test_databricks_capabilities_exclude_unimplemented_write_strategies():
+    assert DATABRICKS_CAPABILITIES.isdisjoint(
+        {CAP_VIEW, CAP_INCREMENTAL, CAP_SNAPSHOT}
+    )

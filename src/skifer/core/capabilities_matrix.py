@@ -13,6 +13,9 @@ CAP_FILE_SOURCES = "file_sources"
 CAP_LOADERS = "loaders"
 CAP_STREAMING = "streaming"
 CAP_MATERIALIZED_VIEW = "materialized_view"
+CAP_VIEW = "view"
+CAP_INCREMENTAL = "incremental"
+CAP_SNAPSHOT = "snapshot"
 CAP_JDBC_SINK = "jdbc_sink"
 CAP_DEV_LIMIT = "dev_limit"
 CAP_DROP_DUPLICATES = "drop_duplicates"
@@ -25,13 +28,28 @@ ALL_CAPABILITIES: frozenset[str] = frozenset(
         CAP_LOADERS,
         CAP_STREAMING,
         CAP_MATERIALIZED_VIEW,
+        CAP_VIEW,
+        CAP_INCREMENTAL,
+        CAP_SNAPSHOT,
         CAP_JDBC_SINK,
         CAP_DEV_LIMIT,
         CAP_DROP_DUPLICATES,
         CAP_PREPROCESS_QUALIFY,
     }
 )
-DATABRICKS_CAPABILITIES = ALL_CAPABILITIES
+DATABRICKS_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        CAP_PYTHON_RULES,
+        CAP_FILE_SOURCES,
+        CAP_LOADERS,
+        CAP_STREAMING,
+        CAP_MATERIALIZED_VIEW,
+        CAP_JDBC_SINK,
+        CAP_DEV_LIMIT,
+        CAP_DROP_DUPLICATES,
+        CAP_PREPROCESS_QUALIFY,
+    }
+)
 
 
 class UnsupportedCapabilityError(ValueError):
@@ -44,6 +62,9 @@ _YAML_CONSTRUCTIONS = {
     CAP_LOADERS: "tables[].source_type: loader",
     CAP_STREAMING: "tables[].streaming: true",
     CAP_MATERIALIZED_VIEW: "materialization: materialized_view",
+    CAP_VIEW: "materialization: view",
+    CAP_INCREMENTAL: "materialization: incremental",
+    CAP_SNAPSHOT: "materialization: snapshot",
     CAP_JDBC_SINK: "sink.type: jdbc or postgres",
     CAP_DEV_LIMIT: "dev_limit: or tables[].dev_limit:",
     CAP_DROP_DUPLICATES: "tables[].quality_checks.drop_duplicates_on:",
@@ -90,8 +111,17 @@ def required_capabilities(parsed: ParsedSchema) -> frozenset[str]:
             required.add(CAP_DROP_DUPLICATES)
 
     materialization = parsed.materialization or {}
-    if materialization.get("type") == "materialized_view":
-        required.add(CAP_MATERIALIZED_VIEW)
+    materialization_capabilities = {
+        "materialized_view": CAP_MATERIALIZED_VIEW,
+        "view": CAP_VIEW,
+        "incremental": CAP_INCREMENTAL,
+        "snapshot": CAP_SNAPSHOT,
+    }
+    materialization_capability = materialization_capabilities.get(
+        materialization.get("type")
+    )
+    if materialization_capability is not None:
+        required.add(materialization_capability)
 
     sink = parsed.sink or {}
     if sink.get("type") in ("postgres", "jdbc"):

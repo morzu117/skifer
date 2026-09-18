@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the `view`, `incremental` and `snapshot` write strategies to the `materialization:`
+  grammar, validated at load time with `strategy`, `unique_key`, `watermark_column`,
+  `updated_at` and `check_columns`. No adapter declares these capabilities yet, so a schema
+  using one is refused by name on both the Spark and the SQL path rather than silently
+  falling back to a full overwrite. `dev_limit` is refused for cumulative strategies,
+  including when it is declared inside a nested partial, where truncating the rows feeding
+  the parent would corrupt the target durably. (Plan 39.4.1)
 - Added a repository example and parity tests proving one YAML produces identical rows on
   local Spark and on the compiled DuckDB SQL path. Examples 01, 05 and 06 are compared by the
   strict equivalence helper, and the shipped configuration exposes a `LOCAL_SQL` environment
