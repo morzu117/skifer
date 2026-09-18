@@ -45,12 +45,15 @@ DATABRICKS_CAPABILITIES: frozenset[str] = frozenset(
         CAP_STREAMING,
         CAP_MATERIALIZED_VIEW,
         CAP_VIEW,
+        CAP_INCREMENTAL,
         CAP_JDBC_SINK,
         CAP_DEV_LIMIT,
         CAP_DROP_DUPLICATES,
         CAP_PREPROCESS_QUALIFY,
     }
 )
+
+IMPLEMENTED_INCREMENTAL_STRATEGIES: frozenset[str] = frozenset({"append"})
 
 
 class UnsupportedCapabilityError(ValueError):
@@ -144,6 +147,16 @@ def assert_supported(
     """Refuse a pipeline that requires capabilities absent from its adapter."""
     missing = sorted(required_capabilities(parsed) - supported)
     if not missing:
+        materialization = parsed.materialization or {}
+        if materialization.get("type") == "incremental":
+            strategy = materialization.get("strategy")
+            if strategy not in IMPLEMENTED_INCREMENTAL_STRATEGIES:
+                supported_strategies = sorted(IMPLEMENTED_INCREMENTAL_STRATEGIES)
+                raise UnsupportedCapabilityError(
+                    f"Adapter '{adapter_name}' does not support "
+                    f"materialization: incremental strategy {strategy!r}. "
+                    f"Supported strategies: {supported_strategies}."
+                )
         return
     details = "; ".join(
         f"{capability} (required by YAML '{_YAML_CONSTRUCTIONS[capability]}')"

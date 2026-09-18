@@ -82,5 +82,41 @@ class TestEngineWithBackend:
         # FakeBackend should record the write
         assert any("fact_orders" in fqn for fqn in backend._written)
 
+    def test_incremental_append_watermark_with_fake_backend(self):
+        """The DataFrame path appends only rows beyond the target watermark."""
+        backend = FakeBackend(
+            tables={
+                "silver.orders": [
+                    {"order_id": 1, "updated_at": 1},
+                    {"order_id": 2, "updated_at": 2},
+                ]
+            }
+        )
+        backend._missing_tables.add("gold.fact_orders")
+        engine = _make_minimal_engine(backend)
+        schema = {
+            "materialization": {
+                "type": "incremental",
+                "strategy": "append",
+                "watermark_column": "updated_at",
+            },
+            "tables": [{"name": "silver.orders", "alias": "ord"}],
+        }
+
+        engine.run_process_to_table(schema, "gold", "fact_orders")
+        backend._tables["silver.orders"] = [
+            {"order_id": 1, "updated_at": 1},
+            {"order_id": 2, "updated_at": 2},
+            {"order_id": 3, "updated_at": 3},
+            {"order_id": 4, "updated_at": 4},
+        ]
+        engine.run_process_to_table(schema, "gold", "fact_orders")
+
+        assert backend._written["`gold`.`fact_orders`"] == [
+            {"order_id": 1, "updated_at": 1},
+            {"order_id": 2, "updated_at": 2},
+            {"order_id": 3, "updated_at": 3},
+            {"order_id": 4, "updated_at": 4},
+        ]
 
 

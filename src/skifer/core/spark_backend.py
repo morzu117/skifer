@@ -635,8 +635,13 @@ class SparkBackend:
                 "Declare 'materialization: streaming_table' in the schema so the "
                 "engine uses the streaming write path."
             )
+        if mode not in ("overwrite", "append"):
+            raise ValueError(
+                f"[write_table] Unsupported write mode {mode!r}. "
+                "Valid modes: ['overwrite', 'append']."
+            )
         label = fqn.replace("`", "").split(".")[-1]
-        write_dataframe(df, fqn, label, self._is_local, self._spark)
+        write_dataframe(df, fqn, label, self._is_local, self._spark, mode=mode)
 
     def write_staging(self, df: Any, fqn: str) -> None:
         """Write one exact certified-publication staging table.

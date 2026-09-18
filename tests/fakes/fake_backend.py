@@ -226,6 +226,20 @@ class FakeBackend:
     def execute_sql(self, sql: str) -> Any:
         return None
 
+    def fetch(self, query: str) -> list[dict]:
+        import re
+
+        match = re.fullmatch(
+            r"SELECT MAX\(`([^`]+)`\) AS `([^`]+)` FROM `([^`]+)`\.`([^`]+)`",
+            query,
+        )
+        if not match:
+            raise NotImplementedError(f"[FakeBackend] Unsupported fetch query: {query}")
+        column, alias, schema, table = match.groups()
+        rows = self._tables.get(f"{schema}.{table}", [])
+        values = [row.get(column) for row in rows if row.get(column) is not None]
+        return [{alias: max(values) if values else None}]
+
     def check_catalog_access(self, catalog: str) -> bool:
         return True
 
@@ -252,7 +266,16 @@ class FakeBackend:
             raise ValueError(
                 f"[write_table] Cannot batch-write a streaming DataFrame to '{fqn}'."
             )
-        self._written[fqn] = list(df._rows)
+        clean = fqn.replace("`", "")
+        if mode == "overwrite":
+            rows = list(df._rows)
+        elif mode == "append":
+            rows = [*self._tables.get(clean, []), *df._rows]
+        else:
+            raise ValueError(f"[write_table] Unsupported write mode {mode!r}.")
+        self._written[fqn] = rows
+        self._tables[clean] = rows
+        self._missing_tables.discard(clean)
 
     def write_staging(self, df: FakeDataFrame, fqn: str) -> None:
         self.write_table(df, fqn)

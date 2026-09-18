@@ -13,7 +13,6 @@ import yaml
 
 from skifer.core.adapters.duckdb import DuckDBAdapter, DuckDBAdapterError
 from skifer.core.capabilities_matrix import (
-    CAP_INCREMENTAL,
     CAP_SNAPSHOT,
     UnsupportedCapabilityError,
 )
@@ -167,7 +166,6 @@ def test_python_rule_is_refused_by_adapter_capability(duck_adapter, registered_r
 @pytest.mark.parametrize(
     ("materialization", "capability"),
     [
-        ({"type": "incremental", "strategy": "append"}, CAP_INCREMENTAL),
         (
             {
                 "type": "snapshot",
@@ -196,6 +194,27 @@ def test_duckdb_refuses_unimplemented_materialization_by_name(
     message = str(exc_info.value)
     assert "duckdb" in message
     assert capability in message
+
+
+def test_duckdb_refuses_incremental_merge_strategy(duck_adapter):
+    with pytest.raises(UnsupportedCapabilityError) as exc_info:
+        run_sql_pipeline(
+            duck_adapter,
+            {
+                "tables": [{"name": "source.orders"}],
+                "materialization": {
+                    "type": "incremental",
+                    "strategy": "merge",
+                    "unique_key": ["order_id"],
+                },
+            },
+            "gold.orders",
+            context=_context(),
+        )
+
+    message = str(exc_info.value)
+    assert "incremental strategy 'merge'" in message
+    assert "append" in message
 
 
 def test_duckdb_view_tracks_source_changes(duck_adapter):
@@ -266,6 +285,88 @@ def test_duckdb_view_rejects_unstable_persisted_definition_constructs(
             "gold.orders_v",
             context=_context(is_job=True),
         )
+
+
+def test_duckdb_incremental_append_accumulates_across_runs(duck_adapter):
+    duck_adapter.execute_sql("CREATE SCHEMA source")
+    duck_adapter.execute_sql("CREATE SCHEMA gold")
+    duck_adapter.execute_sql("CREATE TABLE source.orders(order_id INTEGER)")
+    duck_adapter.execute_sql("INSERT INTO source.orders VALUES (1), (2)")
+    schema = {
+        "materialization": {"type": "incremental", "strategy": "append"},
+        "tables": [{"name": "source.orders", "alias": "orders"}],
+    }
+
+    first = run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+    duck_adapter.execute_sql("DELETE FROM source.orders")
+    duck_adapter.execute_sql("INSERT INTO source.orders VALUES (3), (4)")
+    second = run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+
+    assert first.startswith('CREATE TABLE "gold"."orders" AS ')
+    assert second.startswith('INSERT INTO "gold"."orders" ')
+    assert duck_adapter.fetch('SELECT * FROM "gold"."orders" ORDER BY "order_id"') == [
+        {"order_id": 1},
+        {"order_id": 2},
+        {"order_id": 3},
+        {"order_id": 4},
+    ]
+
+
+def test_duckdb_incremental_append_watermark_inserts_only_new_rows(duck_adapter):
+    duck_adapter.execute_sql("CREATE SCHEMA source")
+    duck_adapter.execute_sql("CREATE SCHEMA gold")
+    duck_adapter.execute_sql(
+        "CREATE TABLE source.orders(order_id INTEGER, updated_at INTEGER)"
+    )
+    duck_adapter.execute_sql("INSERT INTO source.orders VALUES (1, 1), (2, 2)")
+    schema = {
+        "materialization": {
+            "type": "incremental",
+            "strategy": "append",
+            "watermark_column": "updated_at",
+        },
+        "tables": [{"name": "source.orders", "alias": "orders"}],
+    }
+
+    run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+    duck_adapter.execute_sql("DELETE FROM source.orders")
+    duck_adapter.execute_sql(
+        "INSERT INTO source.orders VALUES (1, 1), (2, 2), (3, 3), (4, 4)"
+    )
+    run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+
+    assert duck_adapter.fetch(
+        'SELECT * FROM "gold"."orders" ORDER BY "order_id"'
+    ) == [
+        {"order_id": 1, "updated_at": 1},
+        {"order_id": 2, "updated_at": 2},
+        {"order_id": 3, "updated_at": 3},
+        {"order_id": 4, "updated_at": 4},
+    ]
+
+
+def test_duckdb_incremental_append_watermark_unchanged_source_noops(duck_adapter):
+    duck_adapter.execute_sql("CREATE SCHEMA source")
+    duck_adapter.execute_sql("CREATE SCHEMA gold")
+    duck_adapter.execute_sql(
+        "CREATE TABLE source.orders(order_id INTEGER, updated_at INTEGER)"
+    )
+    duck_adapter.execute_sql("INSERT INTO source.orders VALUES (1, 1), (2, 2)")
+    schema = {
+        "materialization": {
+            "type": "incremental",
+            "strategy": "append",
+            "watermark_column": "updated_at",
+        },
+        "tables": [{"name": "source.orders", "alias": "orders"}],
+    }
+
+    run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+    run_sql_pipeline(duck_adapter, schema, "gold.orders", context=_context())
+
+    assert duck_adapter.fetch(
+        'SELECT COUNT(*) AS "row_count" FROM "gold"."orders"'
+    ) == [{"row_count": 2}]
 
 
 def test_sql_rule_rewrite_uses_resolved_source_columns(

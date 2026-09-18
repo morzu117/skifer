@@ -674,6 +674,50 @@ class SkiferEngine:
         """Drops a table if it exists. Delegates to backend."""
         self._get_backend().drop_table(fqn)
 
+    @staticmethod
+    def _target_parts(fqn: str) -> tuple[str | None, str, str]:
+        clean = fqn.replace("`", "")
+        parts = [part for part in clean.split(".") if part]
+        if len(parts) == 2:
+            return None, parts[0], parts[1]
+        if len(parts) == 3:
+            return parts[0], parts[1], parts[2]
+        raise ValueError(
+            f"Incremental materialization requires a two- or three-part target FQN, got {fqn!r}."
+        )
+
+    def _target_exists(self, fqn: str) -> bool:
+        catalog, schema, table = self._target_parts(fqn)
+        return self._get_backend().table_exists(catalog, schema, table)
+
+    def _target_max_value(self, fqn: str, column: str):
+        from skifer.core.sql_compiler import quote_ident
+
+        alias = "_skifer_max_watermark"
+        rows = self._get_backend().fetch(
+            f"SELECT MAX({quote_ident(column)}) AS {quote_ident(alias)} FROM {fqn}"
+        )
+        return rows[0].get(alias) if rows else None
+
+    def _apply_incremental_append_bound(self, df, fqn: str, materialization: dict):
+        watermark_column = materialization.get("watermark_column")
+        if not watermark_column or not self._target_exists(fqn):
+            return df
+        max_value = self._target_max_value(fqn, watermark_column)
+        if max_value is None:
+            return df
+        # The bound is strictly greater than the previous maximum. Using >= would
+        # reinsert every row on the last processed boundary on each run.
+        if hasattr(df, "_rows"):
+            return self._get_backend().filter(
+                df,
+                lambda row: row.get(watermark_column) is not None
+                and row.get(watermark_column) > max_value,
+            )
+        from pyspark.sql import functions as F
+
+        return df.filter(F.col(f"`{watermark_column}`") > F.lit(max_value))
+
     def _write_dataframe(self, df, fqn, label, sink_config=None, materialization=None):
         """Writes a DataFrame to the configured sink."""
         if sink_config and sink_config.get("type") in ("postgres", "jdbc"):
@@ -700,6 +744,17 @@ class SkiferEngine:
                 "Run it through run_process_to_table/run_from_yaml, which route "
                 "views to the DDL path."
             )
+
+        if materialization and materialization.get("type") == "incremental":
+            strategy = materialization.get("strategy")
+            if strategy != "append":
+                raise NotImplementedError(
+                    "[incremental] strategy 'merge' is not implemented yet; "
+                    "only 'append' is supported."
+                )
+            df = self._apply_incremental_append_bound(df, fqn, materialization)
+            self._get_backend().write_table(df, fqn, mode="append")
+            return
 
         if materialization and materialization.get("type") == "streaming_table":
             self._get_backend().write_stream_table(

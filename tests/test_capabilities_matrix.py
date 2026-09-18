@@ -254,7 +254,24 @@ def test_capability_error_schemas_cover_all_capabilities_exactly():
 
 
 def test_databricks_capabilities_exclude_unimplemented_write_strategies():
-    assert DATABRICKS_CAPABILITIES.isdisjoint(
-        {CAP_INCREMENTAL, CAP_SNAPSHOT}
-    )
+    assert DATABRICKS_CAPABILITIES.isdisjoint({CAP_SNAPSHOT})
     assert CAP_VIEW in DATABRICKS_CAPABILITIES
+    assert CAP_INCREMENTAL in DATABRICKS_CAPABILITIES
+
+
+def test_incremental_capability_does_not_enable_merge_strategy():
+    parsed = parse_to_ir(
+        {
+            "tables": [{"name": "orders"}],
+            "materialization": {
+                "type": "incremental",
+                "strategy": "merge",
+                "unique_key": ["id"],
+            },
+        }
+    )
+
+    with pytest.raises(UnsupportedCapabilityError, match="merge.*append"):
+        assert_supported(
+            parsed, adapter_name="databricks", supported=DATABRICKS_CAPABILITIES
+        )
