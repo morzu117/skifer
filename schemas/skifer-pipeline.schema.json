@@ -862,6 +862,28 @@
               },
               "description": "snapshot check only \u2014 columns whose changes create a new SCD2 version."
             },
+            "on_missing": {
+              "type": "string",
+              "enum": [
+                "close",
+                "ignore"
+              ],
+              "description": "snapshot only \u2014 required policy for current target rows absent from the batch."
+            },
+            "max_closed_ratio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "snapshot with on_missing: close only \u2014 maximum share of current rows this run may close."
+            },
+            "on_late_arrival": {
+              "type": "string",
+              "enum": [
+                "ignore",
+                "refuse"
+              ],
+              "description": "snapshot timestamp only \u2014 policy for rows older than the current version of the same key."
+            },
             "trigger": {
               "type": "string",
               "description": "'available_now' (default \u2014 incremental batch) or 'interval:<duration>' (e.g. 'interval:30 seconds')."

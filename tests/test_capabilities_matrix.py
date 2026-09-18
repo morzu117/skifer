@@ -59,6 +59,7 @@ from skifer.core.registry import RuleRegistry
                     "strategy": "timestamp",
                     "unique_key": ["id"],
                     "updated_at": "modified_at",
+                    "on_missing": "close",
                 }
             },
             CAP_SNAPSHOT,
@@ -202,6 +203,7 @@ _CAPABILITY_ERROR_SCHEMAS = (
             "strategy": "timestamp",
             "unique_key": ["id"],
             "updated_at": "modified_at",
+            "on_missing": "close",
         },
     },
 )
@@ -285,6 +287,7 @@ def test_capability_matrix_still_refuses_unimplemented_snapshot_materialization(
                 "strategy": "timestamp",
                 "unique_key": ["id"],
                 "updated_at": "modified_at",
+                "on_missing": "close",
             },
         }
     )

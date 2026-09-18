@@ -23,6 +23,8 @@ from skifer.core.constants import (
     VALID_INCREMENTAL_STRATEGIES,
     VALID_MATERIALIZATION_TYPES,
     VALID_MV_REFRESH_MODES,
+    VALID_SNAPSHOT_ON_LATE_ARRIVAL,
+    VALID_SNAPSHOT_ON_MISSING,
     VALID_SNAPSHOT_STRATEGIES,
     VALID_SOURCE_TYPES,
 )
@@ -654,6 +656,31 @@ def generate_json_schema() -> dict:
                                 "description": (
                                     "snapshot check only — columns whose changes create a new "
                                     "SCD2 version."
+                                ),
+                            },
+                            "on_missing": {
+                                "type": "string",
+                                "enum": sorted(VALID_SNAPSHOT_ON_MISSING),
+                                "description": (
+                                    "snapshot only — required policy for current target rows "
+                                    "absent from the batch."
+                                ),
+                            },
+                            "max_closed_ratio": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1,
+                                "description": (
+                                    "snapshot with on_missing: close only — maximum share of "
+                                    "current rows this run may close."
+                                ),
+                            },
+                            "on_late_arrival": {
+                                "type": "string",
+                                "enum": sorted(VALID_SNAPSHOT_ON_LATE_ARRIVAL),
+                                "description": (
+                                    "snapshot timestamp only — policy for rows older than the "
+                                    "current version of the same key."
                                 ),
                             },
                             "trigger": {

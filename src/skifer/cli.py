@@ -27,6 +27,11 @@ SEMANTIC_EXIT_ERROR = 1
 SEMANTIC_EXIT_DRIFT = 2
 SEMANTIC_EXIT_CONFLICT = 3
 
+SNAPSHOT_EXIT_OK = 0
+SNAPSHOT_EXIT_ERROR = 1
+SNAPSHOT_EXIT_FINDING = 2
+SNAPSHOT_EXIT_REFUSAL = 3
+
 # Adaptive CLI contract: 0 success; 1 malformed/technical failure; argparse uses
 # 2 for command-line usage; 3 stale source definitions; 4 state/output conflict.
 ADAPTIVE_EXIT_OK = 0
@@ -1156,6 +1161,49 @@ def run_semantic_sync(pipeline_path: str, *, mode: str) -> int:
     return SEMANTIC_EXIT_OK
 
 
+def run_snapshot_check(pipeline_path: str, *, runner=None) -> int:
+    """Return the CI contract exit code for a snapshot preflight check.
+
+    Deliberately not yet exposed as ``skifer snapshot check``. Running the
+    preflight needs the compiled source relation and the existing target, which
+    the SCD2 write path brings (Plan 39.4.5.2). Registering the command now would
+    have shipped one that always returns 3 — the CI code meaning "your pipeline is
+    refused" — when the real cause is that Skifer has not built it yet.
+    """
+    try:
+        schema = _load_pipeline_ir(pipeline_path)
+    except Exception as exc:
+        print(f"[snapshot.check] Failed to inspect pipeline '{pipeline_path}': {exc}")
+        return SNAPSHOT_EXIT_ERROR
+
+    materialization = schema.materialization or {}
+    if materialization.get("type") != "snapshot":
+        print(
+            f"[snapshot.check] Refusing pipeline '{pipeline_path}': "
+            "materialization is not 'snapshot'."
+        )
+        return SNAPSHOT_EXIT_REFUSAL
+
+    if runner is None:
+        print(
+            f"[snapshot.check] Refusing pipeline '{pipeline_path}': no snapshot "
+            "preflight runner was provided. The preflight must run against the "
+            "compiled source and target relation before any SCD2 write."
+        )
+        return SNAPSHOT_EXIT_REFUSAL
+
+    try:
+        report = runner(schema)
+    except Exception as exc:
+        print(f"[snapshot.check] Failed to run preflight for '{pipeline_path}': {exc}")
+        return SNAPSHOT_EXIT_ERROR
+
+    _print_snapshot_report(pipeline_path, report)
+    if report.findings:
+        return SNAPSHOT_EXIT_FINDING
+    return SNAPSHOT_EXIT_OK
+
+
 def run_semantic_validate(pipeline_path: str, model_path: str) -> int:
     """Return the CI contract exit code for semantic model validation."""
     try:
@@ -1227,6 +1275,15 @@ def _sentinel_params(yaml_text: str) -> dict[str, str]:
 
 def _semantic_models_dir() -> str:
     return os.path.abspath("semantic_models")
+
+
+def _print_snapshot_report(pipeline_path: str, report) -> None:
+    print(
+        f"[snapshot.check] Pipeline '{pipeline_path}': "
+        f"{len(report.findings)} finding(s)."
+    )
+    for finding in report.findings:
+        print(finding.render())
 
 
 def _print_sync_report(pipeline_path: str, report) -> None:

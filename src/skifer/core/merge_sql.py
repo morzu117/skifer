@@ -10,6 +10,7 @@ def assert_merge_columns_match(
     source_columns: list[str],
     target_columns: list[str],
     unique_key: list[str],
+    label: str = "[incremental merge]",
 ) -> None:
     """Refuse a merge whose compiled source and existing target schemas differ."""
     source_set = set(source_columns)
@@ -28,7 +29,7 @@ def assert_merge_columns_match(
 
     if details:
         raise ValueError(
-            "[incremental merge] Source and target columns must match exactly; "
+            f"{label} Source and target columns must match exactly; "
             + "; ".join(details)
             + "."
         )

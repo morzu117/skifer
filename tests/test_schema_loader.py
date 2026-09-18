@@ -2030,6 +2030,7 @@ materialization:
   strategy: timestamp
   unique_key: [order_id]
   updated_at: modified_at
+  on_missing: close
 tables:
   - name: silver.orders
 """)
@@ -2039,6 +2040,9 @@ tables:
             "strategy": "timestamp",
             "unique_key": ["order_id"],
             "updated_at": "modified_at",
+            "on_missing": "close",
+            "max_closed_ratio": 0.2,
+            "on_late_arrival": "refuse",
         }
 
     def test_snapshot_check_normalizes_scd2_inputs(self):
@@ -2048,6 +2052,8 @@ materialization:
   strategy: check
   unique_key: [order_id]
   check_columns: [status, amount]
+  on_missing: ignore
+  on_late_arrival: ignore
 tables:
   - name: silver.orders
 """)
@@ -2057,7 +2063,24 @@ tables:
             "strategy": "check",
             "unique_key": ["order_id"],
             "check_columns": ["status", "amount"],
+            "on_missing": "ignore",
+            "on_late_arrival": "ignore",
         }
+
+    def test_snapshot_close_normalizes_explicit_closed_ratio(self):
+        schema = parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+  max_closed_ratio: 1.0
+tables:
+  - name: silver.orders
+""")
+
+        assert schema["materialization"]["max_closed_ratio"] == 1.0
 
     @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])
     def test_strategy_is_required(self, mat_type):
@@ -2155,6 +2178,7 @@ materialization:
   type: snapshot
   strategy: timestamp
   unique_key: [order_id]
+  on_missing: close
 tables:
   - name: t
 """)
@@ -2168,6 +2192,7 @@ materialization:
   unique_key: [order_id]
   updated_at: modified_at
   check_columns: [status]
+  on_missing: close
 tables:
   - name: t
 """)
@@ -2179,6 +2204,7 @@ materialization:
   type: snapshot
   strategy: check
   unique_key: [order_id]
+  on_missing: close
 tables:
   - name: t
 """)
@@ -2191,7 +2217,110 @@ materialization:
   strategy: timestamp
   unique_key: [order_id]
   updated_at: modified_at
+  on_missing: close
   check_columns: [status]
+tables:
+  - name: t
+""")
+
+    def test_snapshot_on_missing_is_required_with_no_default_rationale(self):
+        with pytest.raises(ValueError) as exc_info:
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+tables:
+  - name: t
+""")
+
+        message = str(exc_info.value)
+        assert "on_missing" in message
+        assert "no default" in message
+        assert "complete snapshot" in message
+        assert "partial extract" in message
+        assert "close the whole current table" in message
+
+    def test_snapshot_on_missing_must_be_known_policy(self):
+        with pytest.raises(ValueError, match=r"Unknown 'on_missing'.*close.*ignore"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: delete
+tables:
+  - name: t
+""")
+
+    def test_snapshot_on_missing_must_be_string(self):
+        with pytest.raises(ValueError, match=r"'on_missing'.*must be a string"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: 1
+tables:
+  - name: t
+""")
+
+    @pytest.mark.parametrize("ratio", ["-0.1", "1.1", "true", '"many"'])
+    def test_snapshot_max_closed_ratio_must_be_number_between_zero_and_one(self, ratio):
+        with pytest.raises(ValueError, match=r"'max_closed_ratio'.*between 0 and 1"):
+            parse_schema(f"""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+  max_closed_ratio: {ratio}
+tables:
+  - name: t
+""")
+
+    def test_snapshot_max_closed_ratio_is_rejected_when_missing_rows_are_ignored(self):
+        with pytest.raises(ValueError, match=r"'max_closed_ratio'.*on_missing: close"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: ignore
+  max_closed_ratio: 0.5
+tables:
+  - name: t
+""")
+
+    def test_snapshot_on_late_arrival_must_be_known_policy(self):
+        with pytest.raises(ValueError, match=r"Unknown 'on_late_arrival'.*ignore.*refuse"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+  on_late_arrival: reorder
+tables:
+  - name: t
+""")
+
+    def test_snapshot_on_late_arrival_must_be_string(self):
+        with pytest.raises(ValueError, match=r"'on_late_arrival'.*must be.*string"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+  on_late_arrival: 1
 tables:
   - name: t
 """)
@@ -2205,6 +2334,7 @@ materialization:
   strategy: check
   unique_key: [order_id]
   check_columns: %s
+  on_missing: close
 tables:
   - name: t
 """ % invalid_check_columns)
@@ -2215,7 +2345,8 @@ tables:
             return "type: incremental\n  strategy: append"
         return (
             "type: snapshot\n  strategy: timestamp\n"
-            "  unique_key: [order_id]\n  updated_at: modified_at"
+            "  unique_key: [order_id]\n  updated_at: modified_at\n"
+            "  on_missing: close"
         )
 
     @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])

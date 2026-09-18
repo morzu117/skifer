@@ -172,6 +172,7 @@ def test_python_rule_is_refused_by_adapter_capability(duck_adapter, registered_r
                 "strategy": "timestamp",
                 "unique_key": ["order_id"],
                 "updated_at": "modified_at",
+                "on_missing": "close",
             },
             CAP_SNAPSHOT,
         ),

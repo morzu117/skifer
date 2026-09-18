@@ -55,7 +55,16 @@ MATERIALIZATION_ALLOWED_KEYS: dict[str, frozenset[str]] = {
         {"type", "strategy", "unique_key", "watermark_column"}
     ),
     "snapshot": frozenset(
-        {"type", "strategy", "unique_key", "updated_at", "check_columns"}
+        {
+            "type",
+            "strategy",
+            "unique_key",
+            "updated_at",
+            "check_columns",
+            "on_missing",
+            "max_closed_ratio",
+            "on_late_arrival",
+        }
     ),
     "streaming_table": frozenset({"type", "trigger", "checkpoint", "write_mode", "keys"}),
     "materialized_view": frozenset(
@@ -66,6 +75,10 @@ MATERIALIZATION_ALLOWED_KEYS: dict[str, frozenset[str]] = {
 #: Strategies accepted by cumulative batch materializations (Plan 39.4.1).
 VALID_INCREMENTAL_STRATEGIES: frozenset[str] = frozenset({"append", "merge"})
 VALID_SNAPSHOT_STRATEGIES: frozenset[str] = frozenset({"timestamp", "check"})
+VALID_SNAPSHOT_ON_MISSING: frozenset[str] = frozenset({"close", "ignore"})
+VALID_SNAPSHOT_ON_LATE_ARRIVAL: frozenset[str] = frozenset({"refuse", "ignore"})
+DEFAULT_SNAPSHOT_MAX_CLOSED_RATIO: float = 0.2
+DEFAULT_SNAPSHOT_ON_LATE_ARRIVAL: str = "refuse"
 
 #: Default trigger for ``materialization: streaming_table``.
 DEFAULT_STREAMING_TRIGGER: str = "available_now"

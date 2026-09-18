@@ -828,6 +828,7 @@ def test_run_process_to_table_accepts_and_returns_injected_run_id(mocker):
                 "strategy": "timestamp",
                 "unique_key": ["order_id"],
                 "updated_at": "modified_at",
+                "on_missing": "close",
             },
             CAP_SNAPSHOT,
         ),

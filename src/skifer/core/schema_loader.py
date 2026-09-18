@@ -15,6 +15,8 @@ import yaml
 from skifer.core.constants import (
     CLASSIFICATION_LEVELS,
     DEFAULT_CONTRACT_STATUS,
+    DEFAULT_SNAPSHOT_MAX_CLOSED_RATIO,
+    DEFAULT_SNAPSHOT_ON_LATE_ARRIVAL,
     DEFAULT_STREAMING_TRIGGER,
     MATERIALIZATION_ALLOWED_KEYS,
     VALID_CONTRACT_STATUSES,
@@ -22,6 +24,8 @@ from skifer.core.constants import (
     VALID_MATERIALIZATION_TYPES,
     VALID_MV_REFRESH_MODES,
     VALID_MV_SCHEDULE_PREFIXES,
+    VALID_SNAPSHOT_ON_LATE_ARRIVAL,
+    VALID_SNAPSHOT_ON_MISSING,
     VALID_SNAPSHOT_STRATEGIES,
     VALID_SOURCE_TYPES,
     VALID_STREAMING_SOURCE_TYPES,
@@ -1206,6 +1210,66 @@ def _normalize_materialization(schema_dict):
                 "non-empty list of column names."
             )
         normalized["unique_key"] = [key.strip() for key in unique_key]
+
+        if "on_missing" not in mat:
+            raise ValueError(
+                "[materialization] type 'snapshot' requires 'on_missing' — "
+                "there is no default because Skifer cannot know whether this "
+                "pipeline reads a complete snapshot or a partial extract; guessing "
+                "wrong could close the whole current table in one run."
+            )
+        on_missing = mat["on_missing"]
+        if not isinstance(on_missing, str):
+            raise ValueError(
+                "[materialization] 'on_missing' for type 'snapshot' must be a string. "
+                f"Expected one of: {sorted(VALID_SNAPSHOT_ON_MISSING)}."
+            )
+        on_missing = on_missing.strip().lower()
+        if on_missing not in VALID_SNAPSHOT_ON_MISSING:
+            raise ValueError(
+                f"[materialization] Unknown 'on_missing' '{on_missing}' for type 'snapshot'. "
+                f"Expected one of: {sorted(VALID_SNAPSHOT_ON_MISSING)}."
+            )
+        normalized["on_missing"] = on_missing
+
+        if on_missing == "ignore":
+            if "max_closed_ratio" in mat:
+                raise ValueError(
+                    "[materialization] 'max_closed_ratio' only applies with "
+                    "'on_missing: close'; remove it when 'on_missing: ignore'."
+                )
+        else:
+            max_closed_ratio = mat.get(
+                "max_closed_ratio", DEFAULT_SNAPSHOT_MAX_CLOSED_RATIO
+            )
+            if (
+                isinstance(max_closed_ratio, bool)
+                or not isinstance(max_closed_ratio, (int, float))
+                or max_closed_ratio < 0
+                or max_closed_ratio > 1
+            ):
+                raise ValueError(
+                    "[materialization] 'max_closed_ratio' for type 'snapshot' must "
+                    "be a number between 0 and 1 inclusive."
+                )
+            normalized["max_closed_ratio"] = float(max_closed_ratio)
+
+        on_late_arrival = mat.get(
+            "on_late_arrival", DEFAULT_SNAPSHOT_ON_LATE_ARRIVAL
+        )
+        if not isinstance(on_late_arrival, str):
+            raise ValueError(
+                "[materialization] 'on_late_arrival' for type 'snapshot' must be "
+                f"a string. Expected one of: {sorted(VALID_SNAPSHOT_ON_LATE_ARRIVAL)}."
+            )
+        on_late_arrival = on_late_arrival.strip().lower()
+        if on_late_arrival not in VALID_SNAPSHOT_ON_LATE_ARRIVAL:
+            raise ValueError(
+                f"[materialization] Unknown 'on_late_arrival' '{on_late_arrival}' "
+                f"for type 'snapshot'. Expected one of: "
+                f"{sorted(VALID_SNAPSHOT_ON_LATE_ARRIVAL)}."
+            )
+        normalized["on_late_arrival"] = on_late_arrival
 
         if strategy == "timestamp":
             updated_at = mat.get("updated_at")

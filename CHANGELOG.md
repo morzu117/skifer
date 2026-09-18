@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the SCD2 snapshot guardrails: `on_missing` is required with no default, since
+  Skifer cannot tell a complete snapshot from a partial extract and guessing wrong closes
+  every row; `max_closed_ratio` (0.2) refuses a run that would close an unusual share of
+  open rows; `on_late_arrival` refuses data older than the version already current rather
+  than reordering history in silence. A fail-closed preflight reports six findings —
+  NULL keys, non-unique keys, over-wide closure, NULL `updated_at`, late arrivals and
+  column drift — each carrying the YAML fragment to paste, none ever applied on its own,
+  and none quoting a data value. Nothing writes in SCD2 yet: the guardrails ship before
+  the write they protect. (Plan 39.4.5.1)
 - Added incremental `strategy: merge`, compiled to a native `MERGE INTO` with explicit
   source and target column lists. The explicit lists are not a style choice: `UPDATE SET *`
   crosses sqlglot unchanged and is then rejected by Snowflake and BigQuery, so a merge built
