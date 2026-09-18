@@ -197,6 +197,31 @@ def test_duckdb_reads_json_values(tmp_path):
         connection.close()
 
 
+def test_duckdb_multiline_json_fails_loudly_where_spark_would_drop_records(tmp_path):
+    """Several JSON objects concatenated in one file must raise, never diverge.
+
+    Measured against Spark on this exact file: with ``multiLine: true`` Spark parses
+    a single JSON value and returns **one** row, silently dropping the second object.
+    DuckDB's ``format = 'auto'`` returns **two**. Rather than let the same YAML yield
+    a different row count with no error, the adapter emits ``format = 'array'``, which
+    is exact for a JSON array and raises for every other shape.
+    """
+    duckdb = pytest.importorskip("duckdb")
+    path = tmp_path / "concatenated.json"
+    path.write_text('{"id": 1, "label": "alpha"}\n{"id": 2, "label": "beta"}\n')
+    connection = duckdb.connect()
+    adapter = DuckDBAdapter(connection)
+    try:
+        relation = adapter.resolve_source(
+            _source_table("json", path, {"multiLine": "true"})
+        )
+        assert "format = 'array'" in relation
+        with pytest.raises(duckdb.Error):
+            adapter.fetch(f"SELECT * FROM {relation}")
+    finally:
+        connection.close()
+
+
 def test_duckdb_reads_csv_whose_path_contains_an_apostrophe(tmp_path):
     duckdb = pytest.importorskip("duckdb")
     path = tmp_path / "owner's orders.csv"

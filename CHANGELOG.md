@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed DuckDB file-source defaults to follow Spark rather than the warehouse: an absent
+  `header` or `inferSchema` no longer lets DuckDB auto-detect, which silently read a
+  different dataset than Spark from the same file. `multiLine: true` now maps to a JSON
+  array instead of auto-detection, measured against Spark: on several JSON objects
+  concatenated in one file Spark keeps only the first while auto-detection read them all.
+  The source resolver is also passed only to adapters declaring the `file_sources`
+  capability, so an adapter without it gets the documented refusal. (Plan 39.3.2)
 - The engine and adapter of an environment are now resolved by a single shared function.
   The pre-Spark peek in the engine and `ExecutionContext` previously re-implemented the same
   environment resolution, so a future divergence would have started a Spark session for an
@@ -26,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added file sources to the portable SQL path: the compiler delegates the source relation
+  to the adapter, and DuckDB reads CSV, Parquet and JSON with strict option translation and
+  escaped path literals. Spark option defaults are emitted explicitly and unknown options
+  are refused by name. (Plan 39.3.2)
 - Added the first end-to-end DuckDB SQL execution path: a pipeline compiles, transpiles
   and materializes as a DuckDB table without importing PySpark, with context-aware
   `dev_limit` handling and catalog-backed column resolution for SQL rules. (Plan 39.3.1)

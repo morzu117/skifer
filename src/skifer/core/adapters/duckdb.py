@@ -108,8 +108,17 @@ class DuckDBAdapter:
                 + self._boolean_option(table, "mergeSchema", default=False)
             )
         elif source_type == "json":
+            # ``multiLine: true`` maps to ``array``, never to ``auto``. Measured
+            # against Spark on the same physical files: for a JSON array both read
+            # the same rows, but for several objects concatenated in one file Spark
+            # parses a single JSON value and keeps only the first, where ``auto``
+            # reads them all — the same YAML returning a different row count with no
+            # error. ``array`` is exact where it applies and raises everywhere else,
+            # which is the trade this project makes: a loud failure over a silent
+            # divergence. A single JSON object spanning several lines is therefore
+            # unsupported here; wrap it in an array.
             multiline = self._boolean_option(table, "multiLine", default=False)
-            json_format = "auto" if multiline == "TRUE" else "newline_delimited"
+            json_format = "array" if multiline == "TRUE" else "newline_delimited"
             arguments.append("format = " + self._string_literal(json_format))
 
         return f"{readers[source_type]}({', '.join(arguments)})"
