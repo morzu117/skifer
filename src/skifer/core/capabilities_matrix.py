@@ -146,22 +146,35 @@ def assert_supported(
 ) -> None:
     """Refuse a pipeline that requires capabilities absent from its adapter."""
     missing = sorted(required_capabilities(parsed) - supported)
-    if not missing:
-        materialization = parsed.materialization or {}
-        if materialization.get("type") == "incremental":
-            strategy = materialization.get("strategy")
-            if strategy not in IMPLEMENTED_INCREMENTAL_STRATEGIES:
-                supported_strategies = sorted(IMPLEMENTED_INCREMENTAL_STRATEGIES)
-                raise UnsupportedCapabilityError(
-                    f"Adapter '{adapter_name}' does not support "
-                    f"materialization: incremental strategy {strategy!r}. "
-                    f"Supported strategies: {supported_strategies}."
-                )
+    if missing:
+        details = "; ".join(
+            f"{capability} (required by YAML '{_YAML_CONSTRUCTIONS[capability]}')"
+            for capability in missing
+        )
+        raise UnsupportedCapabilityError(
+            f"Adapter '{adapter_name}' does not support required capabilities: {details}."
+        )
+    _assert_strategy_implemented(parsed)
+
+
+def _assert_strategy_implemented(parsed: ParsedSchema) -> None:
+    """Refuse a declared strategy that no adapter implements yet.
+
+    This is deliberately **not** phrased as an adapter limitation. A capability
+    says what one adapter can do; this says what the framework has built. Naming
+    the adapter here would send the reader looking for another engine to switch
+    to, when every engine refuses it equally. Without the check, an unimplemented
+    strategy would fall through to the implemented one — a ``merge`` schema
+    appending duplicates instead of updating rows, and no error to show for it.
+    """
+    materialization = parsed.materialization or {}
+    if materialization.get("type") != "incremental":
         return
-    details = "; ".join(
-        f"{capability} (required by YAML '{_YAML_CONSTRUCTIONS[capability]}')"
-        for capability in missing
-    )
+    strategy = materialization.get("strategy")
+    if strategy in IMPLEMENTED_INCREMENTAL_STRATEGIES:
+        return
     raise UnsupportedCapabilityError(
-        f"Adapter '{adapter_name}' does not support required capabilities: {details}."
+        f"materialization: incremental strategy {strategy!r} is declared by the YAML "
+        f"grammar but not implemented yet, on any adapter. Implemented strategies: "
+        f"{sorted(IMPLEMENTED_INCREMENTAL_STRATEGIES)}."
     )

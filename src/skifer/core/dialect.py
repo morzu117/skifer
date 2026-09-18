@@ -49,8 +49,14 @@ def _import_sqlglot() -> tuple[Any, Any, Any, Any]:
     return sqlglot, exp, ErrorLevel, SqlglotError
 
 
-def _split_pivot_fqn(fqn: str) -> list[str]:
-    """Split a pivot FQN and remove its backtick quoting."""
+def split_fqn(fqn: str) -> list[str]:
+    """Split a qualified name on its dots, honouring backtick quoting.
+
+    Public because every caller that needs the parts of an FQN needs this exact
+    rule. A naive ``fqn.split(".")`` splits a backtick-quoted table name that
+    itself contains a dot into two parts, inventing a catalog out of the schema
+    name.
+    """
     parts: list[str] = []
     part: list[str] = []
     in_quotes = False
@@ -143,5 +149,5 @@ def quote_fqn(fqn: str, *, target: str) -> str:
         return quote_pivot_fqn(fqn)
 
     return ".".join(
-        quote_ident(part, target=target) for part in _split_pivot_fqn(fqn)
+        quote_ident(part, target=target) for part in split_fqn(fqn)
     )

@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `materialization: view`, compiled as a persisted definition and created with
+  `CREATE OR REPLACE VIEW` on both engines. `dev_limit` and `drop_duplicates_on` are
+  refused by name there rather than frozen into the definition, where they would have
+  truncated or reshuffled every future read instead of one run. (Plan 39.4.2)
+- Added `materialization: {type: incremental, strategy: append}`. A missing target is
+  created from the compiled query and later runs append to it, with an optional
+  `watermark_column` bounding the insert strictly above the maximum already stored.
+  `strategy: merge` is refused as not implemented on any adapter, so it can never fall
+  through to an append that would duplicate rows instead of updating them. (Plan 39.4.3)
 - Added the `view`, `incremental` and `snapshot` write strategies to the `materialization:`
   grammar, validated at load time with `strategy`, `unique_key`, `watermark_column`,
   `updated_at` and `check_columns`. No adapter declares these capabilities yet, so a schema

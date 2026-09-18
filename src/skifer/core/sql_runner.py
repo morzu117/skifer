@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any, Callable
 
 from skifer.core.capabilities_matrix import CAP_FILE_SOURCES, assert_supported
-from skifer.core.dialect import quote_fqn, quote_ident, transpile
+from skifer.core.dialect import quote_fqn, quote_ident, split_fqn, transpile
 from skifer.core.ir import ParsedSchema, ParsedTable, parse_to_ir
 from skifer.core.sql_compiler import compile_select
 
@@ -39,8 +39,15 @@ def _without_dev_limits(parsed: ParsedSchema) -> ParsedSchema:
 
 
 def _target_parts(target_fqn: str) -> tuple[str | None, str, str]:
-    clean = target_fqn.replace("`", "").replace('"', "")
-    parts = [part for part in clean.split(".") if part]
+    """Split the target FQN into (catalog, schema, table), honouring quoting.
+
+    Stripping the quotes first and splitting on every dot turned a table whose
+    name legitimately contains one into three parts: ```gold`.`my.table``` became
+    catalog ``gold``, schema ``my``, table ``table`` — and DuckDB then refused it
+    for carrying a catalog it never had. ``split_fqn`` is the rule the dialect
+    already applies everywhere else.
+    """
+    parts = [part for part in split_fqn(target_fqn) if part]
     if len(parts) == 2:
         return None, parts[0], parts[1]
     if len(parts) == 3:

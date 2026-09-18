@@ -21,7 +21,7 @@ from skifer.core.core import SkiferEngine
 from skifer.core.ir import parse_to_ir
 from skifer.core.registry import RuleRegistry
 from skifer.core.sql_compiler import SqlCompilationError, compile_select
-from skifer.core.sql_runner import run_sql_pipeline
+from skifer.core.sql_runner import _target_parts, run_sql_pipeline
 
 
 def _context(*, is_job=False, is_production=False):
@@ -215,6 +215,10 @@ def test_duckdb_refuses_incremental_merge_strategy(duck_adapter):
     message = str(exc_info.value)
     assert "incremental strategy 'merge'" in message
     assert "append" in message
+    # The refusal must not read as an adapter limitation. No adapter implements
+    # merge yet, so naming DuckDB here would send the reader shopping for another
+    # engine to switch to — and every one of them refuses it identically.
+    assert "duckdb" not in message.lower()
 
 
 def test_duckdb_view_tracks_source_changes(duck_adapter):
@@ -780,3 +784,16 @@ def test_sql_rule_column_resolution_applies_table_resolution(
     cursor = duck_adapter.read_table("gold.resolved_orders")
     assert [column[0] for column in cursor.description] == ["order_id", "status"]
     assert cursor.fetchall() == [(1, "READY")]
+
+
+def test_incremental_target_name_containing_a_dot_is_not_split_into_a_catalog():
+    """A quoted table name that contains a dot must stay one part.
+
+    Stripping quotes and splitting on every dot turned `gold`.`my.table` into a
+    three-part name, inventing catalog 'gold' — and DuckDB then refused it for
+    carrying a catalog it never had. The failure surfaced only for names with a
+    dot, so it would have reached whoever has one and nobody else.
+    """
+    assert _target_parts("gold.orders") == (None, "gold", "orders")
+    assert _target_parts("`gold`.`my.table`") == (None, "gold", "my.table")
+    assert _target_parts("cat.gold.orders") == ("cat", "gold", "orders")
