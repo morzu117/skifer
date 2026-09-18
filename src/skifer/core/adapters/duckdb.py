@@ -258,6 +258,18 @@ class DuckDBAdapter:
             ) from exc
         return [column[0] for column in (cursor.description or [])]
 
+    def list_relation_columns(self, relation: str) -> list[str]:
+        try:
+            cursor = self._connection.execute(f"SELECT * FROM {relation} LIMIT 0")
+        except Exception as exc:
+            display_relation = relation.replace('"', "")
+            raise DuckDBAdapterError(
+                f"Adapter 'duckdb' cannot resolve columns for relation {relation!r} "
+                f"({display_relation!r}); "
+                "the relation does not exist or is not readable."
+            ) from exc
+        return [column[0] for column in (cursor.description or [])]
+
     def list_schemas(self, catalog: str | None = None) -> list[str]:
         self._reject_catalog(catalog, "list_schemas")
         rows = self.fetch(

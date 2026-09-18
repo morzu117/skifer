@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from skifer.core.capabilities_matrix import CAP_FILE_SOURCES, assert_supported
 from skifer.core.dialect import quote_fqn, transpile
-from skifer.core.ir import ParsedSchema, parse_to_ir
+from skifer.core.ir import ParsedSchema, ParsedTable, parse_to_ir
 from skifer.core.sql_compiler import compile_select
 
 
@@ -57,6 +57,15 @@ def run_sql_pipeline(
     if context.is_job_execution or context.is_production:
         parsed = _without_dev_limits(parsed)
 
+    resolve = resolve_table or (lambda name: name)
+
+    def resolve_columns(table: ParsedTable) -> list[str]:
+        if table.source_type and CAP_FILE_SOURCES in adapter.capabilities:
+            relation = adapter.resolve_source(table)
+        else:
+            relation = quote_fqn(resolve(table.name), target=adapter.name)
+        return adapter.list_relation_columns(relation)
+
     select_sql = compile_select(
         parsed,
         resolve_table=resolve_table,
@@ -66,7 +75,7 @@ def run_sql_pipeline(
             if CAP_FILE_SOURCES in adapter.capabilities
             else None
         ),
-        resolve_columns=adapter.list_columns,
+        resolve_columns=resolve_columns,
         persisted_definition=False,
     )
     translated = transpile(select_sql, target=adapter.name)

@@ -699,6 +699,54 @@ def test_sql_rule_rewrites_column_equivalently(equivalence_runtime, sql_rule_nam
     _assert_schema_equivalent(equivalence_runtime, schema)
 
 
+def test_csv_existing_column_rewrite_is_equivalent(
+    equivalence_runtime, tmp_path, sql_rule_names
+):
+    from pyspark.sql import functions as F
+
+    path = tmp_path / "rule_rewrite.csv"
+    path.write_text("order_id,status\n1,ready\n2,pending\n", encoding="utf-8")
+    spark_rule_name = f"equivalence_projection_rewrite_{uuid4().hex}"
+
+    @RuleRegistry.register_rule(name=spark_rule_name, kind="projection")
+    def spark_rule(_df):
+        return {"status": F.upper(F.col("status"))}
+
+    sql_rule_name = _register_sql_rule(
+        sql_rule_names,
+        "csv_rewrite",
+        {"status": "UPPER(status)"},
+    )
+    sql_rule_names.append(spark_rule_name)
+    table = {
+        "name": "raw_orders",
+        "alias": "source",
+        "source": {
+            "type": "csv",
+            "path": str(path),
+            "options": {"header": "true", "inferSchema": "false"},
+        },
+    }
+    spark_schema = _normalized_schema(
+        {
+            "tables": [table],
+            "business_rules": [spark_rule_name],
+            "keep_all_columns": True,
+        }
+    )
+    duck_schema = _normalized_schema(
+        {
+            "tables": [table],
+            "business_rules": [sql_rule_name],
+            "keep_all_columns": True,
+        }
+    )
+
+    spark_df = _spark_result(equivalence_runtime, spark_schema)
+    duck_columns, duck_rows = _duck_result(equivalence_runtime, duck_schema)
+    assert_spark_duckdb_equivalent(spark_df, duck_columns, duck_rows)
+
+
 def test_drop_duplicates_keeps_one_original_row_per_key_on_each_path(equivalence_runtime):
     schema = _normalized_schema(
         {

@@ -216,6 +216,94 @@ def test_missing_source_for_column_resolution_names_the_table(
         )
 
 
+def _csv_rule_schema(path, rule_name):
+    return {
+        "tables": [
+            {
+                "name": "raw_orders",
+                "alias": "orders",
+                "source": {
+                    "type": "csv",
+                    "path": str(path),
+                    "options": {"header": "true", "inferSchema": "true"},
+                },
+            }
+        ],
+        "business_rules": [rule_name],
+        "keep_all_columns": True,
+    }
+
+
+def test_sql_rule_adds_column_to_csv_source(
+    duck_adapter, tmp_path, registered_rules
+):
+    path = tmp_path / "orders.csv"
+    path.write_text("order_id,status\n1,ready\n", encoding="utf-8")
+    duck_adapter.ensure_schema_exists("gold")
+    rule_name = _register_rule(
+        registered_rules,
+        kind="sql",
+        result={"status_upper": "UPPER(status)"},
+    )
+
+    run_sql_pipeline(
+        duck_adapter,
+        _csv_rule_schema(path, rule_name),
+        "gold.orders_with_status",
+        context=_context(),
+    )
+
+    assert duck_adapter.fetch('SELECT * FROM "gold"."orders_with_status"') == [
+        {"order_id": 1, "status": "ready", "status_upper": "READY"}
+    ]
+
+
+def test_sql_rule_rewrites_one_existing_column_from_csv_source(
+    duck_adapter, tmp_path, registered_rules
+):
+    path = tmp_path / "orders.csv"
+    path.write_text("order_id,status\n1,ready\n", encoding="utf-8")
+    duck_adapter.ensure_schema_exists("gold")
+    rule_name = _register_rule(
+        registered_rules,
+        kind="sql",
+        result={"status": "UPPER(status)"},
+    )
+
+    run_sql_pipeline(
+        duck_adapter,
+        _csv_rule_schema(path, rule_name),
+        "gold.rewritten_orders",
+        context=_context(),
+    )
+
+    cursor = duck_adapter.read_table("gold.rewritten_orders")
+    assert [column[0] for column in cursor.description] == ["order_id", "status"]
+    assert cursor.fetchall() == [(1, "READY")]
+
+
+def test_unreadable_csv_rule_source_raises_before_materialization(
+    duck_adapter, tmp_path, registered_rules
+):
+    missing_path = tmp_path / "missing.csv"
+    duck_adapter.ensure_schema_exists("gold")
+    rule_name = _register_rule(
+        registered_rules,
+        kind="sql",
+        result={"status": "UPPER(status)"},
+    )
+
+    with pytest.raises(DuckDBAdapterError, match="relation.*missing.csv"):
+        run_sql_pipeline(
+            duck_adapter,
+            _csv_rule_schema(missing_path, rule_name),
+            "gold.unreadable_orders",
+            context=_context(),
+        )
+
+    assert not duck_adapter.table_exists(None, "gold", "unreadable_orders")
+
+
 def test_run_sql_pipeline_reads_filters_and_writes_csv_source(
     duck_adapter, tmp_path
 ):

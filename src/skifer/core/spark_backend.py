@@ -1014,6 +1014,9 @@ class SparkBackend:
         except Exception:
             return []
 
+    def list_relation_columns(self, relation: str) -> list[str]:
+        return self._spark.sql(f"SELECT * FROM {relation} LIMIT 0").columns
+
     def list_schemas(self, catalog: str | None = None) -> list[str]:
         """List schemas using SHOW SCHEMAS (best-effort)."""
         try:

@@ -453,14 +453,13 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
 
 def _known_join_columns(
     parsed: ParsedSchema,
-    resolve_table: Callable[[str], str],
-    resolve_columns: Callable[[str], list[str]] | None,
+    resolve_columns: Callable[[ParsedTable], list[str]] | None,
 ) -> tuple[set[str], bool]:
     """Return known join columns and whether the relation schemas are complete.
 
     Explicit table projections and partial outputs are known without catalog
-    access. For an unprojected catalog table, ``resolve_columns`` may supply the
-    schema using the already-resolved FQN. The boolean is false when at least one
+    access. For an unprojected table, ``resolve_columns`` may supply the schema
+    from the full table declaration. The boolean is false when at least one
     relation remains opaque, so absence from the set cannot be mistaken for
     proof that a column is new.
     """
@@ -479,7 +478,7 @@ def _known_join_columns(
         if table.fields:
             known.update(spec.target for spec in table.fields)
         elif resolve_columns is not None:
-            known.update(resolve_columns(resolve_table(table.name)))
+            known.update(resolve_columns(table))
         else:
             complete = False
     return known, complete
@@ -488,8 +487,7 @@ def _known_join_columns(
 def _compile_sql_rule_source(
     parsed: ParsedSchema,
     join_tree: str,
-    resolve_table: Callable[[str], str],
-    resolve_columns: Callable[[str], list[str]] | None,
+    resolve_columns: Callable[[ParsedTable], list[str]] | None,
 ) -> str:
     """Compile portable rules only when rewrite semantics can be proved.
 
@@ -515,9 +513,7 @@ def _compile_sql_rule_source(
         expressions.update(result)
         owners.update(dict.fromkeys(result, spec.name))
 
-    known_columns, schemas_complete = _known_join_columns(
-        parsed, resolve_table, resolve_columns
-    )
+    known_columns, schemas_complete = _known_join_columns(parsed, resolve_columns)
     rewritten = []
     for column in expressions:
         if column in known_columns:
@@ -547,7 +543,7 @@ def compile_select(
     allow_raw_sql: bool = True,
     *,
     resolve_source: Callable[[ParsedTable], str] | None = None,
-    resolve_columns: Callable[[str], list[str]] | None = None,
+    resolve_columns: Callable[[ParsedTable], list[str]] | None = None,
     persisted_definition: bool = True,
 ) -> str:
     """
@@ -557,12 +553,12 @@ def compile_select(
         parsed:        The schema IR (``parse_to_ir(schema_dict)``).
         resolve_table: Maps a declared table name to its actual FQN (sandbox
                        resolution). Defaults to identity.
-        resolve_columns: Maps an already-resolved table FQN to its column names.
-                         This lets the pure compiler prove whether an SQL rule
-                         adds or rewrites a column without querying a catalog or
-                         guessing from expression text. When input schemas remain
-                         unknown, compilation is refused because duplicate column
-                         names can fail as ambiguous or diverge from Spark output.
+        resolve_columns: Maps a declared table IR to its column names. This lets
+                         the pure compiler prove whether an SQL rule adds or
+                         rewrites a column without knowing whether the table is
+                         file- or catalog-backed. When input schemas remain unknown,
+                         compilation is refused because duplicate column names can
+                         fail as ambiguous or diverge from Spark output.
         resolve_source: Maps a file-backed table IR to the adapter-specific SQL
                         relation placed verbatim in its CTE ``FROM`` clause. When
                         absent, file sources retain their historical refusal.
@@ -610,9 +606,7 @@ def compile_select(
     )
     ctes = ",\n".join(cte_parts)
     join_tree = _compile_join_tree(parsed)
-    rule_source = _compile_sql_rule_source(
-        parsed, join_tree, resolve, resolve_columns
-    )
+    rule_source = _compile_sql_rule_source(parsed, join_tree, resolve_columns)
     add_columns = [compile_column_spec(f, allow_raw_sql) for f in parsed.add_columns]
 
     if parsed.aggregate:

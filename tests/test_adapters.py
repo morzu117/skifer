@@ -111,6 +111,41 @@ def test_duckdb_declares_file_source_capability():
         connection.close()
 
 
+def test_duckdb_lists_columns_from_relation_expression(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    path = tmp_path / "orders.csv"
+    path.write_text("id,label\n1,alpha\n", encoding="utf-8")
+    connection = duckdb.connect()
+    adapter = DuckDBAdapter(connection)
+    try:
+        relation = adapter.resolve_source(
+            _source_table("csv", path, {"header": "true"})
+        )
+        assert adapter.list_relation_columns(relation) == ["id", "label"]
+    finally:
+        connection.close()
+
+
+def test_spark_lists_columns_from_relation_expression():
+    class QueryResult:
+        columns = ["id", "label"]
+
+    class Spark:
+        def __init__(self):
+            self.queries = []
+
+        def sql(self, query):
+            self.queries.append(query)
+            return QueryResult()
+
+    spark = Spark()
+    backend = SparkBackend(spark=None, is_local=True)
+    backend._spark = spark
+
+    assert backend.list_relation_columns("`silver`.`orders`") == ["id", "label"]
+    assert spark.queries == ["SELECT * FROM `silver`.`orders` LIMIT 0"]
+
+
 def test_duckdb_reads_csv_values_with_header_and_nonstandard_separator(tmp_path):
     duckdb = pytest.importorskip("duckdb")
     path = tmp_path / "orders.csv"

@@ -471,12 +471,12 @@ keep_all_columns: true
 
         assert "SELECT * EXCEPT (`status`), 'CLOSED' AS `status`" in sql
 
-    def test_rewrite_proved_by_column_resolver_uses_resolved_fqn(self, register_rule):
+    def test_rewrite_proved_by_column_resolver_receives_table(self, register_rule):
         register_rule("rewrite_amount", {"amount": "amount * 2"})
         resolved = []
 
-        def resolve_columns(fqn):
-            resolved.append(fqn)
+        def resolve_columns(table):
+            resolved.append(table)
             return ["amount", "status"]
 
         sql = _compile(
@@ -485,7 +485,7 @@ keep_all_columns: true
             resolve_columns=resolve_columns,
         )
 
-        assert resolved == ["catalog.sandbox.silver.orders"]
+        assert [table.name for table in resolved] == ["silver.orders"]
         assert "SELECT * EXCEPT (`amount`), amount * 2 AS `amount`" in sql
 
     def test_new_column_proved_absent_does_not_use_except(self, register_rule):
@@ -533,10 +533,10 @@ keep_all_columns: true
         sql = compile_select(
             parsed,
             resolve_table=lambda name: f"catalog.sandbox.{name}",
-            resolve_columns=lambda fqn: resolved.append(fqn) or ["amount"],
+            resolve_columns=lambda table: resolved.append(table) or ["amount"],
         )
 
-        assert resolved == ["catalog.sandbox.silver.lines"]
+        assert [table.name for table in resolved] == ["silver.lines"]
         assert "amount * 2 AS `derived`" in sql
 
     def test_select_final_can_reference_rule_output(self, register_rule):
