@@ -134,6 +134,17 @@ Ce document, ligne dans la table `CLAUDE.md`, décisions §6 tranchées.
 - Tests : `FakeAdapter`, garde-dérive par réflexion (chaque méthode du Protocol existe sur `SparkBackend`).
 
 ### Phase 39.2 — Compilateur SQL complet + dialectes — *10–15 j*
+
+**Découpage en quatre tranches** (décidé le 18 septembre 2026 : la phase est trop large pour un cycle d'agent
+unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
+
+| Tranche | Contenu | Dépend de |
+|---|---|---|
+| 39.2.1 | `core/dialect.py` + extra `[sql]` + quoting dépendant du dialecte | 39.1 |
+| 39.2.2 | Levée des refus compilables : partials → CTE, `drop_duplicates_on` → `ROW_NUMBER`, `dev_limit` hors définition persistée | 39.2.1 |
+| 39.2.3 | Règles `kind="sql"` (registre, fusion, analyse, gouvernance `allow_raw_sql`) | 39.2.1 |
+| 39.2.4 | Tests d'équivalence Spark ↔ DuckDB par construction | 39.2.2, 39.2.3 |
+
 - `core/dialect.py` : `transpile(sql, target)` via `sqlglot` (`read="databricks"`), extra optionnel `[sql]`.
   `quote_ident`/`quote_fqn` deviennent dépendants du dialecte (`sql_compiler.py:58-68`, `resolver.py:628`).
 - Levée des refus de `_reject_uncompilable` qui ont un équivalent fidèle :
