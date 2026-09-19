@@ -82,6 +82,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `skifer run --select [+]NAME[+] --dry-run`: the selection grammar and the execution
+  order, resolved from the indexed pipeline graph without opening a Spark session or a
+  warehouse connection. `+` sits on the side the selection travels towards, as in dbt, so a
+  reader who knows one tool reads the other. A pipeline is named by its target FQN or by its
+  YAML path; several matching paths are refused by name rather than arbitrated, since picking
+  one would run a pipeline the caller did not ask for. Among pipelines that are ready to run,
+  the first by name runs first — a rule the graph does not decide and that is therefore pinned
+  by a test, so two runs of the same registry print the same plan. Execution itself is not
+  wired: without `--dry-run` the command refuses rather than quietly doing nothing, because an
+  indexed target FQN may be a logical product id or a fabricated placeholder rather than a
+  physical location, and that guard is the next slice.
+
 - Added cross-engine coverage for the certified-publication example: `examples/02_quality_and_contract`
   now runs on Spark and on the compiled DuckDB path in the same test, which asserts the two
   produce identical rows *and* that both record a `CERTIFIED` verdict. Publishing the same

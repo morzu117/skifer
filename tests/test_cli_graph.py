@@ -213,6 +213,7 @@ def test_empty_registry_renders_empty_graph(capsys):
         "edges": [],
         "external_sources": [],
         "nodes": [],
+        "pipeline_paths": [],
         "summary": {"edges": 0, "external_sources": 0, "nodes": 0},
     }
 

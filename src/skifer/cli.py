@@ -190,6 +190,29 @@ def main() -> None:
     graph_parser.add_argument("--db", default=".skifer_metadata.db")
     graph_parser.add_argument("--format", choices=["text", "json", "mermaid"], default="text")
 
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Run indexed pipelines in dependency order.",
+    )
+    run_parser.add_argument(
+        "--select",
+        action="append",
+        default=[],
+        metavar="[+]NAME[+]",
+        help=(
+            "Pipeline to run, by target FQN or YAML path. '+' before it adds what "
+            "it reads, after it what reads it. Repeat to select several; omit to "
+            "select every indexed pipeline."
+        ),
+    )
+    run_parser.add_argument("--db", default=".skifer_metadata.db")
+    run_parser.add_argument("--format", choices=["text", "json"], default="text")
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the execution plan without running anything.",
+    )
+
     dictionary_parser = subparsers.add_parser(
         "dictionary",
         help="Show the column dictionary for a dataset.",
@@ -455,6 +478,8 @@ def main() -> None:
         _run_lineage(args)
     elif args.command == "graph":
         _run_graph(args)
+    elif args.command == "run":
+        _run_run(args)
     elif args.command == "dictionary":
         _run_dictionary(args)
     elif args.command == "hub":
@@ -504,6 +529,11 @@ def _run_lineage(args: argparse.Namespace) -> None:
 def _run_graph(args: argparse.Namespace) -> None:
     """Render the registry-backed inter-pipeline graph with stable exit codes."""
     sys.exit(run_graph_command(args))
+
+
+def _run_run(args: argparse.Namespace) -> None:
+    """Run the selection planner with stable exit codes."""
+    sys.exit(run_run_command(args))
 
 
 def _run_dictionary(args: argparse.Namespace) -> None:
@@ -627,6 +657,70 @@ def run_graph_command(args: argparse.Namespace, *, store=None) -> int:
     except Exception as exc:
         print(f"[graph] Failed to read metadata registry: {exc}", file=sys.stderr)
         return GRAPH_EXIT_ERROR
+
+
+def run_run_command(args: argparse.Namespace, *, store=None) -> int:
+    """Resolve a --select expression to an ordered execution plan.
+
+    Execution itself lands in slice 39.6.3b: it needs a guard this slice does not
+    have, because an indexed target FQN may be a logical product id or even a
+    fabricated placeholder rather than a physical location. Printing a plan is
+    safe on any registry; writing to a table derived from a guessed name is not.
+    """
+    from skifer.observability.metadata_store import SqliteMetadataStore
+    from skifer.observability.pipeline_graph import (
+        PipelineGraphCycleError,
+        PipelineSelectionError,
+        build_pipeline_graph,
+        select_nodes,
+    )
+
+    if args.format not in {"text", "json"}:
+        print("[run] Invalid format.", file=sys.stderr)
+        return GRAPH_EXIT_USAGE
+    if not args.dry_run:
+        print(
+            "[run] Only --dry-run is available: selection and ordering are wired, "
+            "execution is not. Re-run with --dry-run to print the plan.",
+            file=sys.stderr,
+        )
+        return GRAPH_EXIT_USAGE
+
+    try:
+        registry = store or SqliteMetadataStore(args.db)
+        graph = build_pipeline_graph(registry)
+        selected = select_nodes(graph, args.select)
+    except PipelineSelectionError as exc:
+        print(f"[run] {exc}", file=sys.stderr)
+        return GRAPH_EXIT_USAGE
+    except PipelineGraphCycleError as exc:
+        print(f"[run] {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
+    except Exception as exc:
+        print(f"[run] Failed to read metadata registry: {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
+
+    paths = dict(graph.pipeline_paths)
+    if args.format == "json":
+        print(
+            json.dumps(
+                {
+                    "selected": list(selected),
+                    "plan": [
+                        {"order": index, "node": node, "pipeline_path": paths[node]}
+                        for index, node in enumerate(selected)
+                    ],
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        print(f"Execution plan ({len(selected)} pipeline(s), dry run)")
+        if not selected:
+            print("  (none)")
+        for index, node in enumerate(selected):
+            print(f"  {index + 1}. {node}  [{paths[node]}]")
+    return GRAPH_EXIT_OK
 
 
 def run_dictionary_command(args: argparse.Namespace, *, store=None) -> int:
