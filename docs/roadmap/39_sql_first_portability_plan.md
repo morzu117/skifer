@@ -365,7 +365,7 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 | 39.5.2 | `certification_store` et `adaptive/store` branchés dessus quand l'adaptateur n'est pas Databricks | 39.5.1 |
 | 39.5.3 | `history.py` et `metadata_store.py` : suppression de `backend.spark`, réécriture sur le registre générique | 39.5.1 |
 | 39.5.4a | Les checks qualité lisent par l'adaptateur, pas par `.collect()` (décision D13) | livrée |
-| 39.5.4b | `PublicationCoordinator` : staging, checks, promotion/quarantaine via l'adaptateur (`swap_tables` : Snowflake `SWAP WITH`, BigQuery copy + rename, DuckDB transaction) | 39.5.4a |
+| 39.5.4b | `PublicationCoordinator` : staging, checks, promotion/quarantaine via l'adaptateur | livrée — le coordinateur n'a pas bougé d'une ligne, la valeur mise en staging étant une **poignée opaque** que l'adaptateur définit |
 | 39.5.5 | `definition_hash` hors Databricks : `COMMENT`/tags, table `_skifer_meta` en repli | 39.5.4 |
 | 39.5.6 | Exemple 02 en mode SQL — le critère de sortie déplacé depuis la phase 39.3 | 39.5.4 |
 
