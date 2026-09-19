@@ -425,6 +425,47 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 > faux serait pire qu'un refus, parce qu'il se copie-colle. Même règle pour 39.6.2 : un graphe qui devinerait
 > une arête ne vaut pas mieux qu'un graphe qui dit ce qu'il ne sait pas.
 
+### Dé-risquage hors ligne de 39.7 et 39.8 (19 septembre 2026)
+
+Snowflake et BigQuery exigent un compte réel, mais **la transpilation, elle, se mesure hors ligne**.
+Sonde systématique : chaque construction du langage compilée vers le SELECT pivot, puis transpilée vers
+les quatre cibles, puis **reparsée dans le dialecte cible** (plancher syntaxique).
+
+**55 constructions** — les 20 opérateurs de filtre, les 18 opérations de colonne, les 13 fonctions
+d'agrégation, les 7 types de jointure.
+
+| Cible | Résultat |
+|---|---|
+| `databricks` | 55/55 |
+| `duckdb` | 55/55 |
+| `snowflake` | 55/55 |
+| `bigquery` | 55/55 |
+
+**Ce que cela dit** : la couche *expression* n'est pas le risque de 39.7/39.8. Les filtres, les
+opérations de colonne, les agrégats et les jointures passent déjà.
+
+**Ce que cela ne dit pas** — et c'est l'essentiel : un parse réussi est un plancher **syntaxique**,
+pas une preuve de sémantique. `sqlglot` peut émettre du SQL valide dont le comportement diffère
+(NULL, collation, arrondi, fuseaux). Rien ici ne remplace une exécution sur un vrai entrepôt.
+
+**Le risque réel est donc ailleurs** : dans les **instructions d'écriture**, produites par
+`sql_runner` et non par `compile_select` — `MERGE`, les bornes SCD2, `CREATE OR REPLACE`. C'est là
+que les mesures de 39.4 avaient déjà trouvé des écarts (`UPDATE SET *` non transpilable, `VALUES`
+devenant `UNNEST([STRUCT(...)])` sur BigQuery). **39.7 et 39.8 doivent commencer par là, pas par les
+expressions.**
+
+> **Un défaut trouvé par la sonde, sans rapport avec les entrepôts.** Toute opération de colonne
+> privée d'un argument requis levait un `IndexError: tuple index out of range` nu — `round` sans
+> argument comme `split:x` — sur le chemin Spark comme sur le chemin SQL, les deux indexant
+> `op.args` positionnellement. `COLUMN_OPS` déclarait pourtant l'arité de chaque opération depuis
+> toujours ; personne ne la lisait. Le refus est désormais nommé et situé. Seul un **minimum** est
+> imposé : `lit:Paris, France` donne légitimement plusieurs fragments à une opération d'arité
+> `single`, que les backends recollent volontairement.
+>
+> Ce défaut a aussi révélé un piège d'écriture : en **séquence YAML de flux**, `[split:-,0]` est
+> lu comme deux éléments, donc la syntaxe `split:sep,idx` que documentait le tableau des opérations
+> perd son index si elle n'est pas entre guillemets. `docs/core.md` le dit maintenant.
+
 ### Phase 39.7 — Adaptateur Snowflake — *15–25 j*
 `snowflake-connector-python` (pas Snowpark), `CLONE` (sandbox), `SWAP WITH`, tags, Dynamic Tables pour
 `materialized_view`, identité `CURRENT_USER()`. CI sur compte réel (coût à budgéter).
