@@ -110,6 +110,17 @@ def main() -> None:
         help="SQL dialect to emit.",
     )
     compile_parser.add_argument(
+        "--rules",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help=(
+            "Module whose import registers business rules (e.g. rules.orders). "
+            "Repeat for several. Without it no rule is resolvable and a pipeline "
+            "naming one is refused."
+        ),
+    )
+    compile_parser.add_argument(
         "--env",
         default=None,
         help=(
@@ -222,6 +233,16 @@ def main() -> None:
         "--env",
         default=None,
         help="config.yaml environment to run in (ignored with --dry-run).",
+    )
+    run_parser.add_argument(
+        "--rules",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help=(
+            "Module whose import registers business rules (e.g. rules.orders). "
+            "Repeat for several."
+        ),
     )
 
     dictionary_parser = subparsers.add_parser(
@@ -480,7 +501,11 @@ def main() -> None:
     if args.command == "validate":
         _run_validate(args)
     elif args.command == "compile":
-        sys.exit(run_compile(args.pipeline, args.target, env=args.env))
+        sys.exit(
+            run_compile(
+                args.pipeline, args.target, env=args.env, rules=args.rules
+            )
+        )
     elif args.command == "audit":
         _run_audit(args)
     elif args.command == "index":
@@ -694,6 +719,7 @@ def run_run_command(args: argparse.Namespace, *, store=None, engine_factory=None
         return GRAPH_EXIT_USAGE
 
     try:
+        import_rule_modules(getattr(args, "rules", None) or [])
         registry = store or SqliteMetadataStore(args.db)
         graph = build_pipeline_graph(registry)
         selected = select_nodes(graph, args.select)
@@ -1482,7 +1508,35 @@ def _compile_params(yaml_text: str, env: str | None) -> tuple[dict, bool]:
     return {**declared, "catalog": matched.get("catalog"), "env": env.upper()}, False
 
 
-def run_compile(pipeline_path: str, target: str, *, env: str | None = None) -> int:
+def import_rule_modules(module_names) -> None:
+    """Import each module so its ``@register_rule`` decorators run.
+
+    The project's rules live in the project, not in the package, so no CLI
+    command can see them until something imports them. The current directory is
+    put on ``sys.path`` because that is where ``config.yaml`` is discovered from,
+    which is the same project root a reader means by ``rules.orders``.
+
+    An import failure is fatal rather than a warning: continuing would refuse the
+    pipeline for a missing rule and blame the pipeline, not the import.
+    """
+    import importlib
+
+    if not module_names:
+        return
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+    for module_name in module_names:
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:
+            raise ValueError(
+                f"--rules {module_name!r} could not be imported: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+
+def run_compile(pipeline_path: str, target: str, *, env: str | None = None, rules: list[str] | None = None) -> int:
     """Print one pipeline's SQL for a dialect; execute nothing, connect to nothing.
 
     SQL goes to stdout alone so the command can be redirected to a file. Every
@@ -1500,6 +1554,7 @@ def run_compile(pipeline_path: str, target: str, *, env: str | None = None) -> i
     from skifer.core.sql_compiler import SqlCompilationError, compile_select
 
     try:
+        import_rule_modules(rules or [])
         yaml_text = _read_text_file(pipeline_path)
         params, used_sentinels = _compile_params(yaml_text, env)
         parsed = parse_to_ir(parse_schema(yaml_text, params=params))

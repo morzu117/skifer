@@ -93,7 +93,10 @@ class PipelineGraph:
         lines.append("External sources:")
         lines.extend(
             _indented(
-                f"{external.consumer} <- {external.source}"
+                # The kind belongs in the default format too: without it a reader
+                # cannot tell a source that will never become an edge from one
+                # whose producer is simply not indexed yet.
+                f"{external.consumer} <- {external.source} ({external.kind})"
                 for external in self.external_sources
             )
         )

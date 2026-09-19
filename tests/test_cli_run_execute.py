@@ -309,3 +309,101 @@ def test_dry_run_still_works_without_a_config(tmp_path, capsys):
 
     assert code == GRAPH_EXIT_OK
     assert "dry run" in capsys.readouterr().out
+
+
+def _project_with_rule(directory: Path, package_name: str, rule_name: str) -> Path:
+    """A project laying its rules out the way a real one does: beside the YAML.
+
+    Each caller gets its own package and rule name. `RuleRegistry` is global and
+    `sys.modules` caches imports, so a shared name would stay registered from one
+    test into the next — and the test that must observe an *unregistered* rule
+    would silently observe a registered one and pass for the wrong reason.
+    """
+    package = directory / package_name
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "orders.py").write_text(
+        f"""
+from skifer import RuleRegistry
+
+
+@RuleRegistry.register_rule(name="{rule_name}", kind="sql")
+def {rule_name}():
+    return {{"order_class": "CASE WHEN amount >= 200 THEN 'priority' ELSE 'standard' END"}}
+""",
+        encoding="utf-8",
+    )
+    path = directory / "with_rule.yaml"
+    path.write_text(
+        f"""
+tables:
+  - name: raw.orders
+    alias: src
+    fields:
+      - [id, id]
+      - [amount, amount]
+business_rules:
+  - {rule_name}
+keep_all_columns: true
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_rules_flag_lets_a_run_reach_the_project_own_rules(duckdb_project, capsys, monkeypatch):
+    """Without it no CLI command sees a project's rules, so none can run.
+
+    The rules live in the project, not in the package, and nothing imports them
+    on the CLI's behalf. `--rules` is what closes that gap.
+    """
+    connection, directory, _, factory = duckdb_project
+    path = _project_with_rule(directory, "imported_rules", "cli_imported_class")
+    monkeypatch.chdir(directory)
+    store = SqliteMetadataStore(":memory:")
+    index_from_path(str(path), store, target_fqn="gold.classified")
+
+    args = _args()
+    args.rules = ["imported_rules.orders"]
+    code = run_run_command(args, store=store, engine_factory=factory)
+
+    assert code == GRAPH_EXIT_OK, capsys.readouterr()
+    assert connection.execute(
+        "SELECT order_class FROM gold.classified ORDER BY id"
+    ).fetchall() == [("standard",), ("priority",)]
+
+
+def test_without_the_flag_a_portable_rule_is_not_blamed_for_being_python(
+    duckdb_project, capsys, monkeypatch
+):
+    """The rule here is kind="sql" and perfectly portable — it is merely absent.
+
+    Classifying an unregistered rule as Python is the conservative choice and
+    stays. Reporting it as `python_rules` with nothing else would send its author
+    to rewrite a rule that was already right, so the refusal must say the rule is
+    not registered.
+    """
+    _, directory, _, factory = duckdb_project
+    path = _project_with_rule(directory, "never_imported", "cli_never_imported_class")
+    monkeypatch.chdir(directory)
+    store = SqliteMetadataStore(":memory:")
+    index_from_path(str(path), store, target_fqn="gold.classified")
+
+    code = run_run_command(_args(), store=store, engine_factory=factory)
+
+    out = capsys.readouterr().out
+    assert code == GRAPH_EXIT_ERROR
+    assert "cli_never_imported_class" in out
+    assert "not registered" in out
+
+
+def test_an_unimportable_rules_module_fails_by_name(tmp_path, capsys):
+    """Continuing would refuse the pipeline and blame the pipeline, not the import."""
+    store = _two_stage_store(tmp_path)
+    args = _args(dry_run=True)
+    args.rules = ["absolutely.not.a.module"]
+
+    code = run_run_command(args, store=store)
+
+    assert code == GRAPH_EXIT_ERROR
+    assert "absolutely.not.a.module" in capsys.readouterr().err

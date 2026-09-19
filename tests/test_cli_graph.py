@@ -336,3 +336,20 @@ select_final:
 
     assert graph.edges == ()
     assert [source.kind for source in graph.external_sources] == ["loader"]
+
+
+def test_text_output_names_the_kind_of_each_external_source(tmp_path, capsys):
+    """The default format must carry the distinction, not only the JSON one.
+
+    `kind` exists so a reader can tell a source that will never become an edge
+    from one whose producer is merely not indexed yet. Printing it in JSON alone
+    hides it from everyone who runs the command without `--format`.
+    """
+    store = _indexed_store(
+        tmp_path,
+        ("orders.yaml", "gold.orders", "raw.orders"),
+    )
+
+    assert run_graph_command(_args("text"), store=store) == GRAPH_EXIT_OK
+
+    assert "gold.orders <- raw.orders (table)" in capsys.readouterr().out

@@ -10,6 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `skifer compile` and `skifer run` being unable to handle any pipeline that names a
+  business rule. Rules live in the user's project, not in the package, and no CLI command
+  imported them — so every such pipeline was refused. Both commands now take `--rules MODULE`,
+  repeatable, resolved from the directory the command runs in, which is the same project root
+  `config.yaml` is discovered from. An import failure is fatal rather than a warning, because
+  continuing would refuse the pipeline and blame the pipeline instead of the import.
+- Fixed the capability refusal blaming a portable rule for being Python. An unregistered rule
+  is classified as `python_rules` conservatively — which stays — but `required_capabilities`
+  assumed "the execution/compiler boundary will issue the named error", and it does not: the
+  capability check fires first and its message wins. A `kind="sql"` rule that was merely never
+  imported was therefore reported as requiring Python, sending its author to rewrite a rule
+  that was already correct. The refusal now names the rules that are not registered.
+- Fixed the pipeline graph's text output omitting each external source's `kind`. The field
+  exists so a reader can tell a source that will never become an edge from one whose producer
+  is simply not indexed yet; printing it in JSON alone hid it from everyone who runs the
+  command without `--format`.
+
 - Fixed the inter-pipeline graph inventing an edge from a file source. A table declared
   `name: gold.orders` with `source: {type: csv}` reads a file, not the `gold.orders` table
   another pipeline writes, but its declared name was matched against indexed targets all the
@@ -81,6 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   masquerades as a dialect incompatibility. (Plan 39.2.1)
 
 ### Added
+
+- Documented the SQL-first command line (`skifer compile`, `skifer graph`,
+  `skifer run --select`) in `docs/core.md`, with the selector grammar, the exit codes and
+  why a target must be physical. None of the three had any user-facing documentation.
 
 - Documented `kind="sql"` rules and loaders in `docs/rules.md`, including what
   `allow_raw_sql: false` does **not** cover. Measured: the flag refuses `expr:`, the `sql`

@@ -165,6 +165,19 @@ def required_capabilities(parsed: ParsedSchema) -> frozenset[str]:
     return frozenset(required)
 
 
+def _unregistered_rules(parsed: ParsedSchema) -> list[str]:
+    """Names in ``business_rules`` that no module has registered in this process."""
+    from skifer.core.registry import RuleRegistry
+
+    unknown = []
+    for rule_name in parsed.business_rules or ():
+        try:
+            RuleRegistry.get_rule(rule_name)
+        except ValueError:
+            unknown.append(rule_name)
+    return unknown
+
+
 def assert_supported(
     parsed: ParsedSchema,
     *,
@@ -178,9 +191,22 @@ def assert_supported(
             f"{capability} (required by YAML '{_YAML_CONSTRUCTIONS[capability]}')"
             for capability in missing
         )
-        raise UnsupportedCapabilityError(
+        message = (
             f"Adapter '{adapter_name}' does not support required capabilities: {details}."
         )
+        if CAP_PYTHON_RULES in missing:
+            unknown = _unregistered_rules(parsed)
+            if unknown:
+                # Without this, a perfectly portable kind="sql" rule that simply
+                # was not imported is reported as requiring Python, and its
+                # author goes and rewrites something that was already right.
+                message += (
+                    f" Note: business rules {unknown} are not registered in this "
+                    "process, so they were classified as Python conservatively. "
+                    "Import the module that defines them — a kind='sql' rule is "
+                    "portable and would not be refused."
+                )
+        raise UnsupportedCapabilityError(message)
     _assert_strategy_implemented(parsed)
 
 

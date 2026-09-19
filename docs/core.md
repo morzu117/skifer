@@ -807,6 +807,90 @@ an in-memory database by name rather than reporting a success that wrote nowhere
 `force_env`, `default_env` or `priority_check` — so the engine takes its Spark-free
 startup branch.
 
+### The SQL-first command line
+
+Three commands work on the project rather than on a single run. None of them needs
+a Spark session; `compile` and `graph` open no connection at all.
+
+```bash
+skifer compile PIPELINE --target duckdb          # print the SQL, run nothing
+skifer graph --db .skifer_metadata.db            # the inter-pipeline graph
+skifer run --select '+mart.kpi' --dry-run        # the execution plan
+skifer run --select '+mart.kpi'                  # actually run it
+```
+
+**Your rules live in your project, so the CLI has to be told where.** Nothing imports
+them on its behalf, and an unimported rule is indistinguishable from a missing one.
+`compile` and `run` take `--rules MODULE`, repeatable, resolved from the directory you
+run in:
+
+```bash
+skifer run --select mart.kpi --rules rules.orders --rules rules.customers
+```
+
+Without it, a pipeline naming a business rule is refused — and the refusal says the
+rule is not registered, rather than blaming it for being Python. A `kind="sql"` rule
+that was simply never imported is perfectly portable, and its author should not be
+sent to rewrite it.
+
+**`skifer compile`** prints the SQL a pipeline would run, to stdout, with diagnostics
+on stderr — so it pipes. Because it opens nothing, it cannot read the catalog, and a
+`kind="sql"` rule that needs its tables' columns to know whether it adds or rewrites
+a column is **refused** rather than guessed at — declare explicit `fields:` on the
+tables concerned and it compiles. Plausible-but-wrong SQL would be worse
+than a refusal: it gets copied and pasted.
+
+**`skifer graph`** reads the metadata registry populated by `skifer index` and prints
+what each pipeline reads. An input with no indexed producer is listed as an external
+source with its `kind`:
+
+```text
+External sources:
+  gold.orders <- raw.orders (table)
+  mart.report <- s3_extract.csv (file)
+```
+
+`table` means the producer may simply not be indexed yet. `file` and `loader` read
+outside the catalog, so no amount of further indexing will turn them into an edge —
+which is why the three are not collapsed into one word.
+
+**`skifer run --select`** resolves a selection against that graph and runs it in
+dependency order. The selector is dbt's, so `+` sits on the side the selection travels
+towards:
+
+| Selector | Runs |
+|---|---|
+| `mart.kpi` | that pipeline alone |
+| `mart.kpi+` | it, and everything that reads it |
+| `+mart.kpi` | everything it reads, and it |
+| `+mart.kpi+` | all three |
+
+Omitting `--select` runs everything indexed; repeating it unions the selections. A
+pipeline is named by its target FQN or by its YAML path, and several matching paths
+are **refused by name** rather than arbitrated — picking one would run a pipeline
+nobody asked for.
+
+Among pipelines that are ready to run, the first by name runs first. The graph does
+not decide that, so the rule is pinned by a test: two runs of the same registry print
+the same plan, and a reordering in a diff means a real dependency changed.
+
+A failure blocks only what reads the failed pipeline, transitively; independent work
+still runs.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | everything selected succeeded |
+| `1` | a pipeline failed, or the registry could not be read |
+| `2` | the selection names nothing, is ambiguous, or a target is not physical |
+
+**A target must be physical.** `skifer index` derives a target FQN from four sources,
+and only two of them name a place to write: an explicit `--target-fqn`, and a declared
+`sink:`. A `data_product.id` is a logical name — `sales.orders` is routinely published
+to `gold.orders` — and the last resort is a placeholder built from the first input
+table. A single non-physical target refuses the **whole** selection, so the plan you
+read and the work that happens cannot diverge.
+
+
 ### Sandbox mode
 
 In non-production environments, each user gets an isolated schema suffix:
