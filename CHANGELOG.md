@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a column operation missing a required argument raising a bare
+  `IndexError: tuple index out of range`. Every backend indexes `op.args` positionally —
+  `op.args[1]` for `split:` — so `round` with no argument, or `split:x`, surfaced a Python
+  traceback naming neither the column, nor the operation, nor what was expected, on the Spark
+  path as much as the SQL one. `COLUMN_OPS` had declared each operation's arity all along and
+  nothing read it. Only a **minimum** is enforced: `lit:Paris, France` legitimately hands
+  several comma-separated parts to a `single` operation and the backends rejoin them on
+  purpose, so an upper bound would reject valid YAML.
+
 - Fixed `skifer compile` and `skifer run` being unable to handle any pipeline that names a
   business rule. Rules live in the user's project, not in the package, and no CLI command
   imported them — so every such pipeline was refused. Both commands now take `--rules MODULE`,
@@ -98,6 +107,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   masquerades as a dialect incompatibility. (Plan 39.2.1)
 
 ### Added
+
+- Added offline target-dialect coverage (`tests/test_target_dialect_coverage.py`): every filter
+  operator, column operation, aggregate function and join type is compiled and transpiled to
+  Databricks, DuckDB, Snowflake and BigQuery, then parsed back in each dialect. It iterates the
+  operator catalogs rather than a fixed list, so an operator added later is covered the day it
+  is added — the alternative being to discover the gap while writing an adapter that needs a
+  paid account. All four targets pass today, which locates the remaining risk for Snowflake and
+  BigQuery in the **write statements** (`MERGE`, SCD2 bounds) rather than in expressions. What
+  this proves is a syntactic floor, not semantics; it does not replace running on a warehouse.
+- Documented that an operation containing a comma must be quoted in a YAML flow sequence:
+  `[split:-,0]` is read as two items and silently loses the index. The documented
+  `split:sep,idx` form was itself the trap.
 
 - Added the per-adapter capability matrix to `docs/core.md`, and a test that fails when it
   drifts from the adapters. A documentation table that goes stale is worse than none, because

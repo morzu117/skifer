@@ -770,6 +770,22 @@ Operations are applied sequentially to a column before the final select.
 | `then:val` | Then branch value | Part of chained `when/then/else` |
 | `else:val` | Else fallback | Part of chained `when/then/else` |
 
+!!! warning "Quote any operation containing a comma"
+
+    In a YAML **flow sequence** the comma is a separator, so
+    `[amount, parts, [split:-,0]]` is read as two items — `split:-` and `0` — and the
+    operation loses its index. Quote it:
+
+    ```yaml
+    select_final:
+      - [amount, parts, ["split:-,0"]]        # correct
+      - [amount, label, ["lit:Paris, France"]]
+    ```
+
+    This affects `split:sep,idx`, `substring:start,len`, and any literal containing a
+    comma. An operation left short of an argument is refused at load time, naming the
+    column, the operation and what was expected — it is not a silent truncation.
+
 ---
 
 ## RuleRegistry

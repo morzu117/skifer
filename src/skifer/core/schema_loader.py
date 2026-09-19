@@ -433,6 +433,43 @@ def _validate_col_op_str(op_str: str, context: str, errors: list) -> None:
             f"  [{context}] unknown column operation '{prefix}' in '{op_str}'.{hint_str}\n"
             f"  Valid operations: {sorted(COLUMN_OPS.keys())}"
         )
+        return
+
+    _validate_col_op_arity(prefix, op_str, context, errors)
+
+
+#: Minimum number of comma-separated arguments each arity requires. Only a
+#: minimum is enforced: a ``single`` op legitimately receives several parts when
+#: its literal contains a comma (``lit:Paris, France``), and the backends rejoin
+#: them on purpose. An upper bound would reject that.
+_MIN_OP_ARGS: dict[str, int] = {"none": 0, "single": 1, "two": 2}
+
+
+def _validate_col_op_arity(prefix: str, op_str: str, context: str, errors: list) -> None:
+    """Refuse an operation missing a required argument, by name.
+
+    Every backend indexes ``op.args`` positionally (``op.args[1]`` for
+    ``split:``), so a missing argument surfaced as a bare
+    ``IndexError: tuple index out of range`` with no column, no operation and no
+    expectation named — on the Spark path as well as the SQL one. The arity is
+    already declared in ``COLUMN_OPS``; this is the check that reads it.
+    """
+    spec = COLUMN_OPS[resolve_column_op(prefix)]
+    required = _MIN_OP_ARGS.get(spec.arity)
+    if required is None:
+        return
+
+    payload = op_str.split(":", 1)[1] if ":" in op_str else ""
+    supplied = len([part for part in payload.split(",")]) if payload else 0
+    if supplied >= required:
+        return
+
+    expected = "one argument" if required == 1 else f"{required} comma-separated arguments"
+    errors.append(
+        f"  [{context}] column operation '{prefix}' expects {expected}, got "
+        f"{supplied} in '{op_str}'.\n"
+        f"  {spec.description}"
+    )
 
 
 def _validate_compact_when_chain(ops: list, context: str, errors: list) -> None:

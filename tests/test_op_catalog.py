@@ -201,3 +201,80 @@ class TestSuggest:
     def test_no_duplicate_suggestions(self):
         suggestions = suggest("equals", FILTER_OPERATORS)
         assert len(suggestions) == len(set(suggestions))
+
+
+# ---------------------------------------------------------------------------
+# Declared arity is enforced, not merely documented
+# ---------------------------------------------------------------------------
+
+class TestColumnOpArityIsEnforced:
+    """A missing argument must be named, not surface as an IndexError.
+
+    Every backend indexes `op.args` positionally — `op.args[1]` for `split:` —
+    so an operation short of an argument raised a bare
+    `IndexError: tuple index out of range` naming neither the column, nor the
+    operation, nor what was expected. On the Spark path as much as the SQL one.
+    `COLUMN_OPS` already declared each arity; nothing read it.
+    """
+
+    @staticmethod
+    def _schema(ops: str) -> str:
+        return f"""
+tables:
+  - name: silver.orders
+    alias: ord
+select_final:
+  - [amount, shaped, {ops}]
+"""
+
+    @pytest.mark.parametrize(
+        "ops, operation",
+        [
+            ('["round"]', "round"),
+            ('["cast"]', "cast"),
+            ('["split:x"]', "split"),
+            ('["substring:1"]', "substring"),
+        ],
+    )
+    def test_a_missing_argument_is_refused_by_name(self, ops, operation):
+        from skifer.core.schema_loader import parse_schema
+
+        with pytest.raises(ValueError) as exc_info:
+            parse_schema(self._schema(ops))
+
+        message = str(exc_info.value)
+        assert operation in message
+        assert "shaped" in message, "the refusal must locate the column"
+        assert "expects" in message
+
+    def test_the_yaml_comma_trap_is_reported_as_a_missing_argument(self):
+        """`[split:-,0]` is two YAML items, not one op with two arguments.
+
+        In a flow sequence the comma separates items, so the documented
+        `split:sep,idx` form silently loses its index unless quoted. The user
+        sees `got 1 in 'split:-'`, which shows the separator was eaten.
+        """
+        from skifer.core.schema_loader import parse_schema
+
+        with pytest.raises(ValueError, match=r"split:-"):
+            parse_schema(self._schema("[split:-,0]"))
+
+    @pytest.mark.parametrize(
+        "ops",
+        [
+            '["split:-,0"]',
+            '["substring:1,4"]',
+            '["upper"]',
+            '["cast:double"]',
+            '["round:2"]',
+            # A `single` op may legitimately receive several comma-separated
+            # parts when its literal contains one; the backends rejoin them on
+            # purpose, so only a minimum can be enforced.
+            '["lit:Paris, France"]',
+            '["coalesce:a,b"]',
+        ],
+    )
+    def test_well_formed_operations_are_untouched(self, ops):
+        from skifer.core.schema_loader import parse_schema
+
+        parse_schema(self._schema(ops))
