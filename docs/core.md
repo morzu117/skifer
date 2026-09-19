@@ -869,6 +869,38 @@ an in-memory database by name rather than reporting a success that wrote nowhere
 `force_env`, `default_env` or `priority_check` — so the engine takes its Spark-free
 startup branch.
 
+### What each adapter supports
+
+A pipeline that needs something its adapter cannot do is **refused by name**, before
+anything is written. The refusal states the missing capability and the YAML construction
+that asked for it, so the fix is never a guess.
+
+| YAML construction | Capability | Databricks | DuckDB |
+|---|---|:--:|:--:|
+| `business_rules:` with a PySpark rule | `python_rules` | ✅ | ❌ |
+| `business_rules:` with `kind="sql"` | — | ✅ | ✅ |
+| `tables[].source:` (csv, parquet, json…) | `file_sources` | ✅ | ✅ |
+| `tables[].source_type: loader` | `loaders` | ✅ | ❌ |
+| `tables[].streaming: true` | `streaming` | ✅ | ❌ |
+| `materialization: table` (default) | — | ✅ | ✅ |
+| `materialization: view` | `view` | ✅ | ✅ |
+| `materialization: incremental` | `incremental` | ✅ | ✅ |
+| `materialization: snapshot` | `snapshot` | ✅ | ✅ |
+| `materialization: materialized_view` | `materialized_view` | ✅ | ❌ |
+| `sink: {type: postgres\|jdbc}` | `jdbc_sink` | ✅ | ❌ |
+| `dev_limit:` | `dev_limit` | ✅ | ✅ |
+| `drop_duplicates_on:` | `drop_duplicates` | ✅ | ✅ |
+| `preprocess.qualify` | `preprocess_qualify` | ✅ | ❌ |
+| `data_product:` (certified publication) | `certified_publication` | ✅ | ✅ |
+
+A `kind="sql"` **loader** needs no capability: it returns a relation expression, which
+every adapter can place. Only a loader that opens its own connection requires `loaders`.
+
+The four constructions DuckDB refuses are the ones with no portable form: PySpark
+objects, Structured Streaming, Unity Catalog materialized views, and a JDBC sink.
+Everything else — including SCD2 snapshots and certified publication — is proved
+equivalent on both engines by tests that run the same YAML twice and compare rows.
+
 ### The SQL-first command line
 
 Three commands work on the project rather than on a single run. None of them needs

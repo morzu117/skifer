@@ -99,6 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the per-adapter capability matrix to `docs/core.md`, and a test that fails when it
+  drifts from the adapters. A documentation table that goes stale is worse than none, because
+  it is trusted and it is wrong; the guard fails in both directions — a flipped cell and a
+  capability added to the code but missing from the page.
+
 - Added a "Coming from dbt" section to `docs/core.md`: what maps (`ref`, `source`,
   materializations, snapshots, `--select`, `compile`, tests), what differs on purpose (no
   templating language, so a dependency is a table name rather than a call the file makes to
