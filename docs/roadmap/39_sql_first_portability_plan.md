@@ -326,6 +326,16 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
   ou SQLite hébergé par skifer-plan (décision D4). Les `_get_backend().spark` résiduels (`history.py:192`,
   `metadata_store.py:360`) sont remplacés.
 
+> **Défaut trouvé le 19 septembre 2026, en préparant 39.5.4b — et corrigé aussitôt.**
+> Un schéma déclarant `data_product:` était **écrit sans publication certifiée** sur le chemin SQL. La branche
+> `engine_mode() == "sql"` de `patterns.run_process_to_table` rend la main avant le contrôle que le chemin
+> Spark applique (`certification_store` **et** `monitor` obligatoires, sinon fail-fast) : la table partait sans
+> contrôle de contrat, sans enregistrement de certification, sans quarantaine, **et sans erreur**. Un pipeline
+> certifié déplacé vers un autre moteur perdait toute sa couche de gouvernance en silence — exactement la
+> dégradation silencieuse que le §2 interdit.
+> Corrigé par une capacité `certified_publication`, déclarée par Databricks et pas par DuckDB : le refus est
+> nominatif et aucune table n'est écrite. **39.5.4b la fera déclarer par DuckDB**, et pas avant.
+
 > **Mesure du 18 septembre 2026, avant découpage.** L'état réel des registres n'est pas celui que ce plan
 > supposait, et il commande le découpage.
 >
@@ -354,7 +364,8 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 | 39.5.1 | Registre SQL générique (schéma des tables, écriture, lecture) au-dessus du Protocol mince, sans toucher aux appelants | 39.4 |
 | 39.5.2 | `certification_store` et `adaptive/store` branchés dessus quand l'adaptateur n'est pas Databricks | 39.5.1 |
 | 39.5.3 | `history.py` et `metadata_store.py` : suppression de `backend.spark`, réécriture sur le registre générique | 39.5.1 |
-| 39.5.4 | `PublicationCoordinator` : staging, checks, promotion/quarantaine via l'adaptateur (`swap_tables` : Snowflake `SWAP WITH`, BigQuery copy + rename, DuckDB transaction) | 39.5.2 |
+| 39.5.4a | Les checks qualité lisent par l'adaptateur, pas par `.collect()` (décision D13) | livrée |
+| 39.5.4b | `PublicationCoordinator` : staging, checks, promotion/quarantaine via l'adaptateur (`swap_tables` : Snowflake `SWAP WITH`, BigQuery copy + rename, DuckDB transaction) | 39.5.4a |
 | 39.5.5 | `definition_hash` hors Databricks : `COMMENT`/tags, table `_skifer_meta` en repli | 39.5.4 |
 | 39.5.6 | Exemple 02 en mode SQL — le critère de sortie déplacé depuis la phase 39.3 | 39.5.4 |
 
