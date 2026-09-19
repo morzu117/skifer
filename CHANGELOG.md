@@ -82,6 +82,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added execution to `skifer run --select`: the selected pipelines now run in dependency
+  order through the configured engine. A failure blocks only what reads the failed pipeline,
+  transitively — independent work still runs, because cancelling an unrelated pipeline wastes
+  a run and teaches the reader that the skipped list means nothing.
+- Added `environments.<env>.database` to `config.yaml`. Without it every engine built from
+  configuration alone opened an in-memory DuckDB database: two engines from the same file
+  shared nothing, and a process boundary lost whatever a run had written. A real run now
+  refuses an in-memory database by name rather than reporting a success that wrote nowhere.
+- Added `DatasetRecord.target_provenance`, recording which of the four sources answered when
+  the index resolved a target FQN. Two of them name a physical table (an explicitly supplied
+  FQN, a declared `sink:`); the other two do not — a data product id is a logical name, and
+  the last resort is a placeholder built from the first input table. Nothing downstream could
+  tell them apart from the string alone, so `skifer run` would have written a plausible-looking
+  table nobody declared. One non-physical target now refuses the whole selection, rather than
+  running the runnable subset and leaving the plan the caller read and the work actually done
+  to diverge.
+
 - Added `skifer run --select [+]NAME[+] --dry-run`: the selection grammar and the execution
   order, resolved from the indexed pipeline graph without opening a Spark session or a
   warehouse connection. `+` sits on the side the selection travels towards, as in dbt, so a

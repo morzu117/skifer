@@ -355,7 +355,9 @@ class SkiferEngine:
             if connection is None:
                 from skifer.duckdb_factory import get_duckdb_connection
 
-                connection = get_duckdb_connection()
+                connection = get_duckdb_connection(
+                    self._context.adapter_database()
+                )
             from skifer.core.adapters.duckdb import DuckDBAdapter
 
             self._backend = DuckDBAdapter(connection=connection)

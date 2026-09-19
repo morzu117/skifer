@@ -10,6 +10,7 @@ Usage :
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from contextlib import redirect_stdout
 from dataclasses import asdict
 from io import StringIO
@@ -211,6 +212,16 @@ def main() -> None:
         "--dry-run",
         action="store_true",
         help="Print the execution plan without running anything.",
+    )
+    run_parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="config.yaml used to build the engine (ignored with --dry-run).",
+    )
+    run_parser.add_argument(
+        "--env",
+        default=None,
+        help="config.yaml environment to run in (ignored with --dry-run).",
     )
 
     dictionary_parser = subparsers.add_parser(
@@ -659,31 +670,27 @@ def run_graph_command(args: argparse.Namespace, *, store=None) -> int:
         return GRAPH_EXIT_ERROR
 
 
-def run_run_command(args: argparse.Namespace, *, store=None) -> int:
-    """Resolve a --select expression to an ordered execution plan.
+def run_run_command(args: argparse.Namespace, *, store=None, engine_factory=None) -> int:
+    """Run the selected pipelines in dependency order, or print the plan.
 
-    Execution itself lands in slice 39.6.3b: it needs a guard this slice does not
-    have, because an indexed target FQN may be a logical product id or even a
-    fabricated placeholder rather than a physical location. Printing a plan is
-    safe on any registry; writing to a table derived from a guessed name is not.
+    `--dry-run` is safe on any registry. A real run is not: an indexed target
+    FQN may be a logical product id or a placeholder built from the first input
+    table, so every selected pipeline is checked for a physical target before
+    anything is opened, and the whole selection is refused if one is missing.
+    Refusing the lot rather than running the runnable subset keeps the plan the
+    caller read and the work actually done from diverging.
     """
     from skifer.observability.metadata_store import SqliteMetadataStore
     from skifer.observability.pipeline_graph import (
         PipelineGraphCycleError,
         PipelineSelectionError,
         build_pipeline_graph,
+        run_selection,
         select_nodes,
     )
 
     if args.format not in {"text", "json"}:
         print("[run] Invalid format.", file=sys.stderr)
-        return GRAPH_EXIT_USAGE
-    if not args.dry_run:
-        print(
-            "[run] Only --dry-run is available: selection and ordering are wired, "
-            "execution is not. Re-run with --dry-run to print the plan.",
-            file=sys.stderr,
-        )
         return GRAPH_EXIT_USAGE
 
     try:
@@ -701,7 +708,35 @@ def run_run_command(args: argparse.Namespace, *, store=None) -> int:
         return GRAPH_EXIT_ERROR
 
     paths = dict(graph.pipeline_paths)
-    if args.format == "json":
+    if args.dry_run:
+        _print_plan(selected, paths, as_json=args.format == "json")
+        return GRAPH_EXIT_OK
+
+    records = {record.target_fqn: record for record in registry.list_all()}
+    refusals = _unrunnable_targets(selected, records)
+    if refusals:
+        for line in refusals:
+            print(f"[run] {line}", file=sys.stderr)
+        return GRAPH_EXIT_USAGE
+
+    try:
+        engine = engine_factory() if engine_factory else _engine_for_run(args)
+    except Exception as exc:
+        print(f"[run] Failed to build the engine: {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
+
+    outcomes = run_selection(
+        graph,
+        selected,
+        lambda node: _run_one_pipeline(engine, records[node]),
+    )
+    _print_outcomes(outcomes, as_json=args.format == "json")
+    failed = any(outcome.state != "succeeded" for outcome in outcomes)
+    return GRAPH_EXIT_ERROR if failed else GRAPH_EXIT_OK
+
+
+def _print_plan(selected, paths: dict, *, as_json: bool) -> None:
+    if as_json:
         print(
             json.dumps(
                 {
@@ -714,13 +749,88 @@ def run_run_command(args: argparse.Namespace, *, store=None) -> int:
                 sort_keys=True,
             )
         )
-    else:
-        print(f"Execution plan ({len(selected)} pipeline(s), dry run)")
-        if not selected:
-            print("  (none)")
-        for index, node in enumerate(selected):
-            print(f"  {index + 1}. {node}  [{paths[node]}]")
-    return GRAPH_EXIT_OK
+        return
+    print(f"Execution plan ({len(selected)} pipeline(s), dry run)")
+    if not selected:
+        print("  (none)")
+    for index, node in enumerate(selected):
+        print(f"  {index + 1}. {node}  [{paths[node]}]")
+
+
+def _print_outcomes(outcomes, *, as_json: bool) -> None:
+    if as_json:
+        print(
+            json.dumps(
+                {"outcomes": [outcome.to_dict() for outcome in outcomes]},
+                sort_keys=True,
+            )
+        )
+        return
+    for outcome in outcomes:
+        suffix = f" — {outcome.detail}" if outcome.detail else ""
+        print(f"  {outcome.state:<9} {outcome.node}{suffix}")
+    counts = Counter(outcome.state for outcome in outcomes)
+    print(
+        f"{counts['succeeded']} succeeded, "
+        f"{counts['failed']} failed, {counts['skipped']} skipped."
+    )
+
+
+def _unrunnable_targets(selected, records: dict) -> list[str]:
+    """Name every selected pipeline whose target is not a physical location.
+
+    An indexed FQN may be a data product id or a placeholder built from the
+    first input table. Splitting either into a schema and a table would write a
+    plausible-looking table nobody asked for, so the run refuses before opening
+    anything — and says which of the two fixes applies.
+    """
+    refusals = []
+    for node in selected:
+        record = records.get(node)
+        if record is None:
+            refusals.append(
+                f"'{node}' is in the graph but not in the registry; re-index the project."
+            )
+        elif not record.target_is_physical:
+            refusals.append(
+                f"'{node}' has no physical target: its FQN comes from "
+                f"{record.target_provenance!r}. Declare a `sink:` with a schema and "
+                "a table, or index it with `--target-fqn`."
+            )
+    return refusals
+
+
+def _engine_for_run(args: argparse.Namespace):
+    """Build the engine a run writes through, refusing a throwaway database."""
+    from skifer.core.context import IN_MEMORY_DATABASE, resolve_adapter_database
+    from skifer.core.core import SkiferEngine
+    from skifer.core.config import ConfigurationManager
+
+    config = ConfigurationManager(config_path=args.config).config
+    if resolve_adapter_database(config, args.env) == IN_MEMORY_DATABASE:
+        raise ValueError(
+            "the adapter would open an in-memory database, destroyed when this "
+            "process exits, so the run would write nothing. Set `database:` on "
+            "the environment in config.yaml."
+        )
+    return SkiferEngine(config_path=args.config, force_env=args.env)
+
+
+def _run_one_pipeline(engine, record) -> None:
+    """Run one indexed pipeline into the physical target its record names."""
+    from skifer.core.dialect import split_fqn
+
+    parts = split_fqn(record.target_fqn)
+    if len(parts) < 2:
+        raise ValueError(
+            f"target '{record.target_fqn}' has no schema part to write into."
+        )
+    engine.run_from_yaml(
+        record.pipeline_path,
+        parts[-2],
+        parts[-1],
+        params=engine.default_params,
+    )
 
 
 def run_dictionary_command(args: argparse.Namespace, *, store=None) -> int:

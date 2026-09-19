@@ -256,18 +256,6 @@ def test_dry_run_json_carries_order_and_path(tmp_path, capsys):
     }
 
 
-def test_without_dry_run_the_command_refuses_instead_of_pretending(tmp_path, capsys):
-    """Execution is slice 39.6.3b; until then the flag must not quietly no-op."""
-    store = _chain(tmp_path)
-
-    code = run_run_command(_args(["mart.kpi"], dry_run=False), store=store)
-
-    assert code == GRAPH_EXIT_USAGE
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "execution is not" in captured.err
-
-
 def test_unknown_selector_exits_two_from_the_command(tmp_path, capsys):
     store = _chain(tmp_path)
 

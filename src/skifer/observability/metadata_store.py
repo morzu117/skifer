@@ -22,6 +22,16 @@ if TYPE_CHECKING:
     from skifer.lineage.tracker import LineageEdge, LineageGraph
 
 
+# How ``DatasetRecord.target_fqn`` was obtained. The first two name a physical
+# location; the last two do not, and a run must refuse them rather than guess.
+PHYSICAL_TARGET_PROVENANCES = frozenset({"explicit", "sink"})
+TARGET_PROVENANCES = PHYSICAL_TARGET_PROVENANCES | {
+    "data_product",
+    "derived",
+    "unknown",
+}
+
+
 @dataclass(frozen=True)
 class ColumnRecord:
     name: str
@@ -51,9 +61,27 @@ class DatasetRecord:
     indexed_at: datetime
     last_run_id: str | None = None
     lineage: dict = field(default_factory=dict)
+    target_provenance: str = "unknown"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "columns", tuple(self.columns))
+        if self.target_provenance not in TARGET_PROVENANCES:
+            raise ValueError(
+                f"target_provenance {self.target_provenance!r} is invalid. "
+                f"Allowed: {sorted(TARGET_PROVENANCES)}"
+            )
+
+    @property
+    def target_is_physical(self) -> bool:
+        """Whether ``target_fqn`` names a place a run may actually write to.
+
+        Only an explicitly supplied FQN and a declared sink do. A data product
+        id is a logical name — `sales.orders` is routinely published to
+        `gold.orders` — and the derived form is a placeholder built from the
+        first input table. Writing to either would create a table nobody asked
+        for, under a name that reads plausible.
+        """
+        return self.target_provenance in PHYSICAL_TARGET_PROVENANCES
 
 
 @runtime_checkable
@@ -203,6 +231,7 @@ def _record_from_json(payload: str) -> DatasetRecord:
         indexed_at=_coerce_datetime(raw["indexed_at"]),
         last_run_id=raw.get("last_run_id"),
         lineage=raw.get("lineage") or {},
+        target_provenance=raw.get("target_provenance", "unknown"),
     )
 
 

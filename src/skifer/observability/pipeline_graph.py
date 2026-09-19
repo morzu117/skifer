@@ -442,3 +442,76 @@ def _closure(start: str, adjacency: dict[str, list[str]]) -> set[str]:
                 seen.add(neighbour)
                 stack.append(neighbour)
     return seen
+
+
+@dataclass(frozen=True)
+class PipelineOutcome:
+    """What happened to one selected pipeline during a run."""
+
+    node: str
+    pipeline_path: str
+    state: str
+    detail: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "node": self.node,
+            "pipeline_path": self.pipeline_path,
+            "state": self.state,
+            "detail": self.detail,
+        }
+
+
+def descendants(graph: PipelineGraph, node: str) -> set[str]:
+    """Every pipeline that reads ``node``, directly or through others."""
+    forward, _ = _adjacency(graph)
+    return _closure(node, forward)
+
+
+def run_selection(
+    graph: PipelineGraph,
+    selected: tuple[str, ...],
+    run_one,
+) -> tuple[PipelineOutcome, ...]:
+    """Run selected pipelines in order, reporting one outcome per pipeline.
+
+    A failure blocks only what reads the failed pipeline, directly or not. Work
+    that does not depend on it still runs: cancelling an unrelated pipeline
+    because another one broke wastes a run and, worse, teaches the reader that
+    the blocked list means nothing. This is also why an invented edge is
+    expensive — it decides what gets skipped.
+    """
+    blocked: set[str] = set()
+    outcomes: list[PipelineOutcome] = []
+    paths = dict(graph.pipeline_paths)
+
+    for node in selected:
+        if node in blocked:
+            outcomes.append(
+                PipelineOutcome(
+                    node=node,
+                    pipeline_path=paths.get(node, ""),
+                    state="skipped",
+                    detail="an upstream pipeline in this run failed",
+                )
+            )
+            continue
+        try:
+            run_one(node)
+        except Exception as exc:
+            blocked |= descendants(graph, node)
+            outcomes.append(
+                PipelineOutcome(
+                    node=node,
+                    pipeline_path=paths.get(node, ""),
+                    state="failed",
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+            )
+        else:
+            outcomes.append(
+                PipelineOutcome(
+                    node=node, pipeline_path=paths.get(node, ""), state="succeeded"
+                )
+            )
+    return tuple(outcomes)
