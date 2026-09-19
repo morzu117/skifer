@@ -389,7 +389,7 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 | 39.6.1 | `skifer compile PIPELINE --target …` : SQL sur stdout, diagnostics sur stderr, aucune connexion ouverte | livrée |
 | 39.6.2 | Graphe inter-pipelines : arêtes implicites depuis l'index Plan 31, `skifer graph` — sans exécution | livrée |
 | 39.6.3a | Grammaire de sélection et ordre topologique : `skifer run --select` en `--dry-run`, aucune exécution | livrée |
-| 39.6.3b | Exécution effective de la sélection, sous garde-fou de cible physique | 39.6.3a |
+| 39.6.3b | Exécution effective de la sélection, sous garde-fou de cible physique | livrée |
 
 > **Pourquoi 39.6.3 est scindée (19 septembre 2026).** Un nœud du graphe est un FQN cible, mais `index_schema`
 > le dérive de **quatre** provenances distinctes : `--target-fqn` explicite, le bloc `sink`, l'`id` du
@@ -398,6 +398,20 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 > sélectionner ne dépend d'aucune d'elles et se teste sans moteur ; **exécuter** exige de distinguer les
 > quatre, sans quoi un run écrirait dans une table inventée. 39.6.3b livre ce garde-fou avec l'exécution.
 >
+> **Ce que 39.6.3b a dû livrer en plus.** Deux manques, mesurés, bloquaient l'exécution :
+>
+> 1. **Aucune clé de configuration ne choisissait la base DuckDB.** Tout moteur construit depuis la config
+>    seule ouvrait `:memory:`. Mesuré : deux moteurs issus du même `config.yaml` ne partagent rien, et le
+>    passage de processus perd tout. Un `skifer run` aurait annoncé un succès en n'écrivant nulle part.
+>    `environments.<env>.database` existe désormais, et un run *réel* refuse par son nom une base en mémoire.
+> 2. **La provenance de la cible n'était pas enregistrée.** `DatasetRecord.target_provenance` distingue
+>    maintenant `explicit` et `sink` — physiques — de `data_product` et `derived`, qui ne le sont pas. Une
+>    seule cible non physique refuse **toute** la sélection : n'exécuter que le sous-ensemble exécutable ferait
+>    diverger le plan lu par l'appelant et le travail réellement fait.
+>
+> **Un échec ne bloque que ce qui lit le pipeline en échec**, transitivement — jamais le travail indépendant.
+> C'est aussi ce qui rend une arête inventée coûteuse : elle décide de ce qui est sauté.
+
 > **Un défaut de 39.6.2 corrigé au passage.** Une table déclarée `name: gold.orders` avec
 > `source: {type: csv}` lit un fichier, pas la table qu'un autre pipeline écrit ; son nom était pourtant
 > confronté aux cibles indexées, ce qui fabriquait une arête. Dans un diagramme c'est une image fausse ; dans
@@ -419,7 +433,8 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 FQN `projet.dataset.table`, clustering, labels, copy jobs, MV natives, identité via ADC.
 
 ### Phase 39.9 — Documentation et exemples — *5–10 j*
-`docs/core.md` (modes d'exécution, matrice), `docs/yaml_spec.md` (incremental/snapshot, `kind: sql`), un
+`docs/core.md` (modes d'exécution, matrice, **clé `database:` d'environnement**, `skifer run --select`),
+`docs/yaml_spec.md` (incremental/snapshot, `kind: sql`), un
 exemple `24_sql_mode_duckdb`, un `25_incremental_snapshot`, guide « venir de dbt » (correspondance
 `ref`/`source`/`tests`/`snapshots`).
 
