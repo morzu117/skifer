@@ -2,8 +2,8 @@
 checks.py — DataContract dataclasses + CheckResult.
 
 Each DataContract subclass implements evaluate(backend, fqn) → CheckResult.
-The backend must expose a sql(query) method returning an object on which
-.collect() yields rows of dicts (or Row objects with attribute access).
+Queries are written in the pivot dialect, transpiled once at the adapter boundary,
+and fetched as dictionaries.
 """
 from __future__ import annotations
 
@@ -12,8 +12,13 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, ClassVar
 
+from skifer.core.dialect import transpile
 from skifer.core.ir import ParsedFilter
 from skifer.core.sql_compiler import _SQL_FILTER_DISPATCH, quote_ident
+
+
+def _fetch(backend, query: str) -> list[dict]:
+    return backend.fetch(transpile(query, target=backend.name))
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +135,7 @@ class NullCheck(DataContract):
 
     def evaluate(self, backend, fqn: str) -> CheckResult:
         query = f"SELECT COUNT(*) AS null_count FROM {fqn} WHERE {self.violation_predicate()}"
-        rows = backend.sql(query).collect()
+        rows = _fetch(backend, query)
         null_count = rows[0]["null_count"] if rows else 0
         passed = (null_count == 0)
         return CheckResult(
@@ -162,7 +167,7 @@ class UniqueCheck(DataContract):
             f"SELECT COUNT(*) AS total, COUNT(DISTINCT {cols_csv}) AS distinct_count "
             f"FROM {fqn}"
         )
-        rows = backend.sql(query).collect()
+        rows = _fetch(backend, query)
         total = rows[0]["total"] if rows else 0
         distinct = rows[0]["distinct_count"] if rows else 0
         duplicates = total - distinct
@@ -194,7 +199,7 @@ class TypeCheck(DataContract):
     def evaluate(self, backend, fqn: str) -> CheckResult:
         # Use DESCRIBE to get column types — works on Spark SQL and most SQL engines
         query = f"DESCRIBE {fqn}"
-        rows = backend.sql(query).collect()
+        rows = _fetch(backend, query)
         actual_type = None
         for row in rows:
             # Row may be a dict or a Row object
@@ -271,7 +276,7 @@ class FilterInvariantCheck(DataContract):
             )
 
         query = f"SELECT COUNT(*) AS violation_count FROM {fqn} WHERE {violation_cond}"
-        rows = backend.sql(query).collect()
+        rows = _fetch(backend, query)
         violation_count = rows[0]["violation_count"] if rows else 0
         passed = (violation_count == 0)
         return CheckResult(
@@ -323,7 +328,7 @@ class FreshnessCheck(DataContract):
 
     def evaluate(self, backend, fqn: str) -> CheckResult:
         query = f"SELECT MAX({self.timestamp_column}) AS max_ts FROM {fqn}"
-        rows = backend.sql(query).collect()
+        rows = _fetch(backend, query)
         max_ts = rows[0]["max_ts"] if rows else None
 
         if max_ts is None:
@@ -422,7 +427,7 @@ class VolumeCheck(DataContract):
 
     def evaluate(self, backend, fqn: str) -> CheckResult:
         query = f"SELECT COUNT(*) AS row_count FROM {fqn}"
-        rows = backend.sql(query).collect()
+        rows = _fetch(backend, query)
         row_count = rows[0]["row_count"] if rows else 0
 
         passed = True
@@ -470,7 +475,7 @@ class VolumeVariationCheck(DataContract):
 
     def evaluate(self, backend, fqn: str) -> CheckResult:
         query = f"SELECT COUNT(*) AS row_count FROM {fqn}"
-        rows = backend.sql(query).collect()
+        rows = _fetch(backend, query)
         current_count = rows[0]["row_count"] if rows else 0
 
         if self.previous_count is None:
@@ -521,7 +526,7 @@ class SchemaDriftCheck(DataContract):
 
     def evaluate(self, backend, fqn: str) -> CheckResult:
         query = f"DESCRIBE {fqn}"
-        rows = backend.sql(query).collect()
+        rows = _fetch(backend, query)
         actual_cols = set()
         for row in rows:
             col_name = row["col_name"] if isinstance(row, dict) else getattr(row, "col_name", None)
@@ -572,7 +577,7 @@ class CustomSqlCheck(DataContract):
 
     def evaluate(self, backend, fqn: str) -> CheckResult:
         query = self.sql.format(table=fqn)
-        rows = backend.sql(query).collect()
+        rows = _fetch(backend, query)
 
         if not rows:
             actual = None

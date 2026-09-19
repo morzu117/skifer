@@ -34,6 +34,8 @@ class FakeResult:
 
 
 class FakeBackend:
+    name = "databricks"
+
     def __init__(self, default_rows=None, sql_override=None):
         self._default_rows = default_rows or []
         self._sql_override = sql_override
@@ -44,6 +46,9 @@ class FakeBackend:
         if self._sql_override:
             return FakeResult(self._sql_override(query))
         return FakeResult(self._default_rows)
+
+    def fetch(self, query: str) -> list[dict]:
+        return list(self.sql(query).collect())
 
 
 FQN = "gold.fact_orders"

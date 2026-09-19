@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed data-quality checks reaching for Spark to read their own results: the nine checks
+  called `backend.sql(query).collect()`, a DataFrame method, so none of them ran on a
+  non-Spark adapter — the plan had recorded `checks.py` as "already SQL", which was true of
+  the queries and not of how their rows were read. Checks keep emitting pivot SQL and learn
+  no dialect; one helper transpiles to the adapter's dialect and reads through
+  `Adapter.fetch`. Databricks gets its query back byte for byte, and real DuckDB coverage
+  proves a passing nullity check and a failing uniqueness check. Quoting per dialect inside
+  the checks would have fixed only the quoting, leaving the next date function broken.
+  (Plan 39.5.4a, decision D13)
 - Fixed the registry-backed stores rejecting any table name other than the default: the
   FQN resolver returned a pair on one branch and a bare definition on the other, so
   unpacking raised `cannot unpack non-iterable TableDefinition`. The default path worked,
