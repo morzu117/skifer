@@ -454,6 +454,35 @@ que les mesures de 39.4 avaient déjà trouvé des écarts (`UPDATE SET *` non t
 devenant `UNNEST([STRUCT(...)])` sur BigQuery). **39.7 et 39.8 doivent commencer par là, pas par les
 expressions.**
 
+**Les instructions d'écriture passent aussi, une fois correctement quotées.** `MERGE`, le SELECT
+initial SCD2 et les instructions d'application (`check` comme `timestamp`) — 8 instructions —
+reparsent sur les quatre cibles.
+
+> *Première sonde fausse, gardée pour la leçon.* En passant des relations pré-quotées en dialecte
+> pivot (backticks), seuls Databricks et BigQuery passaient — les deux dialectes à backticks. La
+> sonde mesurait son propre biais de quoting, pas le produit. Les relations doivent venir de
+> `quote_fqn(..., target=…)` et du SELECT **transpilé**, comme en production.
+
+**La vraie divergence était sémantique, et elle est corrigée.** Mesurée sur le même YAML et la même
+donnée, une clé dupliquée en source d'un `incremental merge` :
+
+| Moteur | Comportement |
+|---|---|
+| Spark / Delta | **refuse** — `DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE` |
+| DuckDB | **accepte** et garde une des deux lignes, arbitrairement |
+
+Rien dans le résultat ne disait qu'une ligne avait été écartée : c'est le côté permissif qui est
+dangereux. Le chemin **snapshot** refusait déjà ce lot (`check_unique_key_duplicates`) ; seule la
+branche merge ne posait pas la question. Elle la pose désormais, avec un refus nommé qui cite la
+clé et le nombre de doublons, jamais une valeur. Le contrôle ne s'applique **que si la cible
+existe** : un premier run crée la table exactement comme le `CREATE TABLE AS` de Spark, qui accepte
+lui aussi les doublons.
+
+**Ce qui reste donc à 39.7 / 39.8** n'est ni la syntaxe ni les expressions, mais l'opérationnel que
+seul un compte réel tranche : `CLONE`/`SWAP` pour le bac à sable, transactions, `information_schema`,
+identité (`CURRENT_USER()`), Dynamic Tables, et les sémantiques de MERGE propres à chaque entrepôt —
+Snowflake ayant par défaut `ERROR_ON_NONDETERMINISTIC_MERGE`, **non vérifié ici faute de compte**.
+
 > **Un défaut trouvé par la sonde, sans rapport avec les entrepôts.** Toute opération de colonne
 > privée d'un argument requis levait un `IndexError: tuple index out of range` nu — `round` sans
 > argument comme `split:x` — sur le chemin Spark comme sur le chemin SQL, les deux indexant
