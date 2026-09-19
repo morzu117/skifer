@@ -827,7 +827,7 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Câblage de la gouvernance : alertes et classification stricte (Plan 35)](docs/roadmap/35_governance_wiring_plan.md) | mergé via PR #2 | Implémenté (35.0–35.5) — registre des définitions de contrat, routage d'alertes à la publication, propagation de classification fail-closed |
 | [Émetteur OpenLineage (Plan 36)](docs/roadmap/36_openlineage_emitter_plan.md) | mergé via PR #3 | Implémenté (36.0–36.4) — événements `RunEvent` allowlistés, émetteurs NoOp/InMemory/HTTP, émission best-effort à la publication et à l'écriture batch |
 | [Durcissement best-effort et injection de paramètres (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implémenté (37.0–37.4) — chemins best-effort jamais bloquants sous `-W error`, `\` préservé à l'injection, exemples portables Windows |
-| [Lineage du tracker : agrégats, jointures, intermédiaires (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | `feat/plan38-tracker-lineage` | Plan finalisé, non démarré |
+| [Lineage du tracker : agrégats, jointures, intermédiaires (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | — | **Pas encore un plan.** Le document ne contenait rien : ni fichier, ni branche, ni commit — le lien était mort. Il porte désormais le **comportement actuel mesuré** (attribution à la table de base, jointure modélisée entre entrées, `aggregate:` sans aucune arête) et les points qu'une conception devra trancher. Constat le plus lourd : une colonne `pii` traversant un agrégat perd toute classification, et `mode="strict"` ne peut pas l'attraper. À concevoir en mode plan. |
 
 ## Key files
 
