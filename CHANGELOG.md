@@ -82,6 +82,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Documented `kind="sql"` rules and loaders in `docs/rules.md`, including what
+  `allow_raw_sql: false` does **not** cover. Measured: the flag refuses `expr:`, the `sql`
+  filter operator and a `kind="sql"` loader, but not a `kind="sql"` rule — so an environment
+  configured to forbid hand-written SQL still executes it through the one path whose purpose
+  is to inject an expression. The gap is recorded as plan 39 decision D14 rather than closed
+  either way, because it turns on what the flag is meant to promise, and the test that pinned
+  the shipped behaviour carried no rationale at all. That test now states what it pins and
+  why, since its silence is what kept the contradiction invisible.
+
 - Added `examples/25_incremental_snapshot/`: the same two days of orders written through
   `incremental merge` and through an SCD2 `snapshot`, and what separates them. Each pipeline
   runs twice, because a single run leaves the same rows whichever strategy is chosen —

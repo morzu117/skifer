@@ -594,6 +594,16 @@ aggregate:
         assert "amount * 2 AS `doubled`" in sql
 
     def test_allow_raw_sql_does_not_govern_registered_sql_rules(self, register_rule):
+        """Pins today's behaviour, which is under review as plan 39 decision D14.
+
+        The flag brides the YAML author — `expr:`, the `sql` filter operator —
+        not Python registered in the repository. But a kind="sql" *loader* is
+        refused under the same flag, and the plan's D2 and D8 both state that
+        rules are governed. Code and plan therefore disagree, and this test is
+        the only thing that recorded which side shipped. Whoever settles D14
+        changes this test; until then it must say what it pins and why, because
+        its silence is what kept the contradiction invisible.
+        """
         register_rule("trusted_sql", {"doubled": "amount * 2"})
 
         sql = _compile(
