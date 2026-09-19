@@ -345,6 +345,7 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 | # | Question | Recommandation |
 |---|---|---|
 | D12 | Où vit la logique de registre | **Validée le 18 septembre 2026.** Un registre SQL générique écrit **une seule fois**, au-dessus du Protocol mince (`execute_sql`, `fetch`, `ensure_schema_exists`, `list_relation_columns`). Aucun membre ajouté à `Adapter` : la frontière reste à 20 membres au lieu de 36. Les 16 méthodes de `SparkBackend` restent en place — aucune régression Databricks — et deviennent à terme des appels au registre générique. |
+| D13 | Dialecte des checks qualité | **Tranchée le 19 septembre 2026, trouvée en préparant 39.5.4.** Le plan disait `checks.py` « déjà SQL » : les requêtes le sont, mais elles émettent du **pivot** (`sql_compiler.quote_ident`, backticks) et lisent par `.collect()`, une méthode de DataFrame Spark. Aucun check ne tournait donc hors Spark. Les checks **continuent d'émettre du pivot** — un seul SQL à écrire — et un point de passage unique transpile vers le dialecte de l'adaptateur avant de lire par `fetch`. Mesuré : Databricks ressort à l'octet près, DuckDB exécute. Quoter par dialecte dans les checks n'aurait traité que le quoting, pas les fonctions. |
 
 **Découpage proposé** :
 
