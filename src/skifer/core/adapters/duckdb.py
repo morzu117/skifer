@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from skifer.core.capabilities_matrix import (
+    CAP_CERTIFIED_PUBLICATION,
     CAP_DEV_LIMIT,
     CAP_DROP_DUPLICATES,
     CAP_FILE_SOURCES,
@@ -13,13 +15,20 @@ from skifer.core.capabilities_matrix import (
     CAP_SNAPSHOT,
     CAP_VIEW,
 )
-from skifer.core.dialect import quote_fqn, quote_ident
+from skifer.core.dialect import quote_fqn, quote_ident, transpile
 from skifer.core.ir import ParsedTable
 from skifer.core.sql_compiler import escape_sql_string
 
 
 class DuckDBAdapterError(RuntimeError):
     """Raised when a DuckDB adapter operation cannot be completed."""
+
+
+@dataclass(frozen=True, slots=True)
+class DuckDBRelation:
+    """Opaque DuckDB relation handle backed by one complete SELECT query."""
+
+    sql: str
 
 
 class DuckDBAdapter:
@@ -39,6 +48,7 @@ class DuckDBAdapter:
         return frozenset(
             {
                 CAP_DEV_LIMIT,
+                CAP_CERTIFIED_PUBLICATION,
                 CAP_DROP_DUPLICATES,
                 CAP_FILE_SOURCES,
                 CAP_INCREMENTAL,
@@ -220,10 +230,83 @@ class DuckDBAdapter:
         return self.sql(f"SELECT * FROM {self._quoted_fqn(fqn)}")
 
     def write_table(self, df: Any, fqn: str, mode: str = "overwrite") -> None:
-        raise DuckDBAdapterError(
-            "Adapter 'duckdb' does not support operation 'write_table' for DataFrame "
-            "objects; execute a compiled CREATE TABLE AS SELECT pipeline instead."
+        relation_sql = self._relation_sql(df, operation="write_table")
+        if mode not in ("overwrite", "append"):
+            raise ValueError(
+                f"Adapter 'duckdb' does not support write mode {mode!r}; "
+                "valid modes are 'overwrite' and 'append'."
+            )
+        target = self._quoted_fqn(fqn)
+        statement = (
+            f"CREATE OR REPLACE TABLE {target} AS {relation_sql}"
+            if mode == "overwrite"
+            else f"INSERT INTO {target} {relation_sql}"
         )
+        transaction_started = False
+        try:
+            self._connection.execute("BEGIN TRANSACTION")
+            transaction_started = True
+            self._connection.execute(statement)
+            self._connection.execute("COMMIT")
+        except Exception:
+            if transaction_started:
+                self._connection.execute("ROLLBACK")
+            raise
+
+    def relation(self, sql: str) -> DuckDBRelation:
+        """Wrap compiled SQL without executing or exposing a DuckDB cursor."""
+        if not isinstance(sql, str) or not sql.strip():
+            raise TypeError("DuckDB relation SQL must be a non-empty string.")
+        return DuckDBRelation(sql=sql)
+
+    @staticmethod
+    def _relation_sql(handle: Any, *, operation: str) -> str:
+        if not isinstance(handle, DuckDBRelation):
+            raise DuckDBAdapterError(
+                f"Adapter 'duckdb' operation {operation!r} requires a DuckDBRelation "
+                f"handle, got {type(handle).__name__}; DataFrame objects are unsupported."
+            )
+        return handle.sql
+
+    def write_staging(self, handle: Any, fqn: str) -> None:
+        """Materialize one relation handle into an isolated staging table."""
+        relation_sql = self._relation_sql(handle, operation="write_staging")
+        schema = fqn.replace("`", "").replace('"', "").split(".")[-2]
+        self.ensure_schema_exists(schema)
+        self.execute_sql(
+            f"CREATE OR REPLACE TABLE {self._quoted_fqn(fqn)} AS {relation_sql}"
+        )
+
+    def read_staging(self, fqn: str) -> DuckDBRelation:
+        return self.relation(f"SELECT * FROM {self._quoted_fqn(fqn)}")
+
+    def tag_row_violations(
+        self,
+        handle: Any,
+        predicates: dict[str, str],
+        run_id: str,
+        contract_version: str,
+    ) -> DuckDBRelation:
+        """Return a relation that adds bounded, value-free quarantine metadata."""
+        relation_sql = self._relation_sql(handle, operation="tag_row_violations")
+        cases = []
+        for label, predicate in predicates.items():
+            escaped_label = escape_sql_string(label)
+            translated = transpile(predicate, target=self.name)
+            cases.append(f"CASE WHEN ({translated}) THEN '{escaped_label}' END")
+        violations = f"concat_ws(',', {', '.join(cases)})" if cases else "''"
+        escaped_run_id = escape_sql_string(run_id)
+        escaped_contract_version = escape_sql_string(contract_version)
+        return self.relation(
+            "SELECT *, "
+            f"{violations} AS {self._quoted_ident('_violations')}, "
+            f"'{escaped_run_id}' AS {self._quoted_ident('_run_id')}, "
+            f"'{escaped_contract_version}' AS {self._quoted_ident('_contract_version')} "
+            f"FROM (\n{relation_sql}\n) AS {self._quoted_ident('_skifer_staged')}"
+        )
+
+    def drop_staging(self, fqn: str) -> None:
+        self.drop_table(fqn)
 
     def table_exists(self, catalog: str | None, schema: str, table: str) -> bool:
         self._reject_catalog(catalog, "table_exists")

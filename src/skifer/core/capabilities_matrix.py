@@ -150,10 +150,8 @@ def required_capabilities(parsed: ParsedSchema) -> frozenset[str]:
     if parsed.data_product is not None:
         # Certified publication is opt-in through ``data_product:`` and the Spark
         # path fails fast without a monitor and a certification store. The SQL path
-        # returned before that check, writing the table with no contract check, no
-        # certification record and no quarantine — a pipeline moved to another engine
-        # lost its whole governance layer without a word. Requiring the capability
-        # turns that silence into a named refusal until 39.5.4b ports publication.
+        # must declare the capability so it cannot bypass staging, contract checks,
+        # certification and quarantine when a pipeline moves to another engine.
         required.add(CAP_CERTIFIED_PUBLICATION)
 
     sink = parsed.sink or {}

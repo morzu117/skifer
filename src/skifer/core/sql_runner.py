@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any, Callable
 
-from skifer.core.capabilities_matrix import CAP_FILE_SOURCES, assert_supported
+from skifer.core.capabilities_matrix import (
+    CAP_FILE_SOURCES,
+    UnsupportedCapabilityError,
+    assert_supported,
+)
 from skifer.core.dialect import quote_fqn, quote_ident, split_fqn, transpile
 from skifer.core.ir import ParsedSchema, ParsedTable, parse_to_ir
 from skifer.core.merge_sql import (
@@ -88,17 +92,15 @@ def _append_watermark_bound(
     )
 
 
-def run_sql_pipeline(
+def _compile_pipeline_select(
     adapter: Any,
     schema_dict: dict,
-    target_fqn: str,
     *,
     context: Any,
     resolve_table: Callable[[str], str] | None = None,
     allow_raw_sql: bool = True,
-    clock: Callable[[], datetime] | None = None,
-) -> str:
-    """Compile, transpile and materialize one YAML pipeline through SQL DDL."""
+) -> tuple[ParsedSchema, str]:
+    """Return validated IR and one adapter-dialect SELECT without executing it."""
     parsed = parse_to_ir(schema_dict)
     assert_supported(
         parsed,
@@ -107,15 +109,6 @@ def run_sql_pipeline(
     )
     materialization = parsed.materialization or {}
     is_view = materialization.get("type") == "view"
-    is_incremental_append = (
-        materialization.get("type") == "incremental"
-        and materialization.get("strategy") == "append"
-    )
-    is_incremental_merge = (
-        materialization.get("type") == "incremental"
-        and materialization.get("strategy") == "merge"
-    )
-    is_snapshot = materialization.get("type") == "snapshot"
     if (context.is_job_execution or context.is_production) and not is_view:
         parsed = _without_dev_limits(parsed)
 
@@ -140,7 +133,68 @@ def run_sql_pipeline(
         resolve_columns=resolve_columns,
         persisted_definition=is_view,
     )
-    translated = transpile(select_sql, target=adapter.name)
+    return parsed, transpile(select_sql, target=adapter.name)
+
+
+def compile_sql_pipeline_relation(
+    adapter: Any,
+    schema_dict: dict,
+    *,
+    context: Any,
+    resolve_table: Callable[[str], str] | None = None,
+    allow_raw_sql: bool = True,
+) -> Any:
+    """Compile a certified batch pipeline into an adapter-owned relation handle."""
+    parsed, translated = _compile_pipeline_select(
+        adapter,
+        schema_dict,
+        context=context,
+        resolve_table=resolve_table,
+        allow_raw_sql=allow_raw_sql,
+    )
+    materialization = parsed.materialization or {}
+    if materialization.get("type") not in (None, "table"):
+        raise ValueError(
+            "Certified SQL publication requires a complete table materialization."
+        )
+    return adapter.relation(translated)
+
+
+def run_sql_pipeline(
+    adapter: Any,
+    schema_dict: dict,
+    target_fqn: str,
+    *,
+    context: Any,
+    resolve_table: Callable[[str], str] | None = None,
+    allow_raw_sql: bool = True,
+    clock: Callable[[], datetime] | None = None,
+) -> str:
+    """Compile, transpile and materialize one YAML pipeline through SQL DDL."""
+    parsed, translated = _compile_pipeline_select(
+        adapter,
+        schema_dict,
+        context=context,
+        resolve_table=resolve_table,
+        allow_raw_sql=allow_raw_sql,
+    )
+    if parsed.data_product is not None:
+        raise UnsupportedCapabilityError(
+            f"Adapter {adapter.name!r} supports certified_publication for YAML "
+            "'data_product:' only through SkiferEngine.run_process_to_table; direct "
+            "run_sql_pipeline execution would bypass certification."
+        )
+    materialization = parsed.materialization or {}
+    is_view = materialization.get("type") == "view"
+    is_incremental_append = (
+        materialization.get("type") == "incremental"
+        and materialization.get("strategy") == "append"
+    )
+    is_incremental_merge = (
+        materialization.get("type") == "incremental"
+        and materialization.get("strategy") == "merge"
+    )
+    is_snapshot = materialization.get("type") == "snapshot"
     target = quote_fqn(target_fqn, target=adapter.name)
     if is_view:
         statement = f"CREATE OR REPLACE VIEW {target} AS {translated}"

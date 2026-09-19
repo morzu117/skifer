@@ -67,6 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added certified publication on the SQL path: a `data_product:` pipeline now routes
+  through the existing `PublicationCoordinator`, which needed no change. It never inspects
+  the staged value, so the adapter decides what it is — a DataFrame on Spark, a compiled
+  relation on DuckDB. Staging, contract checks, transactional promotion, quarantine with
+  its reserved `_violations`/`_run_id`/`_contract_version` columns, and crash recovery all
+  run on a real DuckDB connection. The guarantee a consumer actually buys is tested as
+  such: after a critical failure the existing target is compared byte for byte and is
+  unchanged. DuckDB declares `certified_publication` only now that it can quarantine —
+  a publication that cannot quarantine is not a certified one. (Plan 39.5.4b)
 - Added portable `SqlHistoryStore` and `SqlMetadataStore` over the generic SQL registry,
   leaving the Delta classes untouched as the Databricks path — every registry now has a
   portable implementation beside its Delta one, and the whole package still imports with
