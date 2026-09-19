@@ -387,8 +387,23 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 | Tranche | Contenu | État |
 |---|---|---|
 | 39.6.1 | `skifer compile PIPELINE --target …` : SQL sur stdout, diagnostics sur stderr, aucune connexion ouverte | livrée |
-| 39.6.2 | Graphe inter-pipelines : arêtes implicites depuis l'index Plan 31, `skifer graph` — sans exécution | — |
-| 39.6.3 | `skifer run --select <pipeline>[+]` : ordre topologique et sélection | 39.6.2 |
+| 39.6.2 | Graphe inter-pipelines : arêtes implicites depuis l'index Plan 31, `skifer graph` — sans exécution | livrée |
+| 39.6.3a | Grammaire de sélection et ordre topologique : `skifer run --select` en `--dry-run`, aucune exécution | livrée |
+| 39.6.3b | Exécution effective de la sélection, sous garde-fou de cible physique | 39.6.3a |
+
+> **Pourquoi 39.6.3 est scindée (19 septembre 2026).** Un nœud du graphe est un FQN cible, mais `index_schema`
+> le dérive de **quatre** provenances distinctes : `--target-fqn` explicite, le bloc `sink`, l'`id` du
+> `data_product` — un identifiant *logique* — et, en dernier recours, `tables[0].name + "_output"`, qui est
+> fabriqué. Les deux premières désignent un emplacement physique ; les deux autres non. Ordonner et
+> sélectionner ne dépend d'aucune d'elles et se teste sans moteur ; **exécuter** exige de distinguer les
+> quatre, sans quoi un run écrirait dans une table inventée. 39.6.3b livre ce garde-fou avec l'exécution.
+>
+> **Un défaut de 39.6.2 corrigé au passage.** Une table déclarée `name: gold.orders` avec
+> `source: {type: csv}` lit un fichier, pas la table qu'un autre pipeline écrit ; son nom était pourtant
+> confronté aux cibles indexées, ce qui fabriquait une arête. Dans un diagramme c'est une image fausse ; dans
+> l'ordre d'exécution, c'est un consommateur qui attend un producteur qu'il ne lit jamais, et qui est sauté
+> quand celui-ci échoue. Seule une référence de catalogue peut désormais correspondre à un producteur, et
+> chaque source externe porte un `kind` (`table`, `file`, `loader`) disant si une arête est encore possible.
 
 > **Ce que 39.6.1 a établi et qui vaut pour la suite.** La commande n'ouvre aucune connexion, donc elle ne peut
 > pas lire le catalogue. Une règle `kind="sql"` a besoin des colonnes de ses tables pour savoir si elle ajoute
