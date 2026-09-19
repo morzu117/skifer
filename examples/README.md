@@ -36,5 +36,6 @@ breaks the build like any other regression. What you read here is what the code 
 | 22 | [Quality agent](22_quality_agent/) | Live checks, explicit execution errors, response-level critical status, and temporary history |
 | 23 | [OpenLineage events](23_openlineage/) | A pure `RunEvent` builder, redacted data-quality assertions, and non-blocking emission |
 | 24 | [SQL mode portability](24_sql_mode_portability/) | One parameterized YAML, equivalent PySpark and SQL rules, and an executable row-for-row comparison |
+| 25 | [Incremental and SCD2 snapshot](25_incremental_snapshot/) | Two runs of the same source, merge against history, and the `on_missing` decision the framework refuses to take for you |
 
 Read them in order for a guided tour, or jump directly to the feature you need; every example is self-contained about its local inputs.

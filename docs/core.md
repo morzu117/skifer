@@ -601,6 +601,60 @@ persisted SQL definition.
 
 ---
 
+## Incremental and snapshot writes (`materialization`) — Plan 39
+
+Besides the default full overwrite, a pipeline can declare how its target is
+updated. Both strategies below compile to SQL and behave identically on Spark and
+on the portable SQL adapters.
+
+```yaml
+materialization:
+  type: incremental
+  strategy: merge          # append | merge
+  unique_key: [order_id]   # required for merge, refused with append
+  # watermark_column: ingested_at   # append only — skips rows at or below the
+  #                                 # maximum already stored, so a replayed
+  #                                 # extract does not duplicate itself
+```
+
+```yaml
+materialization:
+  type: snapshot           # SCD2 — adds valid_from / valid_to
+  strategy: check          # check | timestamp
+  unique_key: [order_id]
+  check_columns: [status, amount]   # with strategy: check
+  # updated_at: modified_at         # with strategy: timestamp
+  on_missing: ignore                # required — no default
+```
+
+| Strategy | Keeps | A changed row becomes |
+|---|---|---|
+| `incremental` / `append` | every run's rows | a second row, subject to the watermark |
+| `incremental` / `merge` | one row per `unique_key` | the same row, overwritten |
+| `snapshot` | every version | the old row closed, a new one opened |
+
+**`on_missing` has no default, on purpose.** A key that stops appearing in the
+source means one of two incompatible things, and only the person who knows the
+extract can say which. `close` reads it as a deletion and ends the row's validity;
+`ignore` reads it as a partial or late extract and leaves the row open. Guessing
+corrupts history quietly in either direction — a truncated export would close every
+customer, a genuine deletion would stay open forever.
+
+Two further guards apply to `snapshot`:
+
+- `max_closed_ratio` (default `0.2`) refuses a run that would close more than that
+  share of the open rows, and reports instead. A source that half failed to extract
+  looks exactly like a source where half the rows were deleted.
+- `on_late_arrival` (default `refuse`) refuses a row whose `updated_at` predates the
+  version already stored, rather than inserting it out of order.
+
+`examples/25_incremental_snapshot/` runs the same two days of orders through both
+strategies and prints the difference. It runs each pipeline **twice**, because a
+single run leaves the same rows whichever strategy you pick — including a plain
+overwrite, which is neither.
+
+---
+
 ## Filter operators
 
 Filters are supported in `tables[].filter` and at the top-level `filter` key.
@@ -729,6 +783,29 @@ environments:
 ```
 
 The engine tests catalog access at startup and selects the first accessible environment from `priority_check`.
+
+### Choosing an execution engine (Plan 39)
+
+An environment selects its runtime; a pipeline YAML never does. The `What` stays
+portable precisely because the `How` is chosen outside it.
+
+```yaml
+environments:
+  LOCAL_SQL:
+    catalog: null
+    engine: sql              # spark (default) | sql
+    adapter: duckdb          # databricks (default) | duckdb | snowflake | bigquery
+    database: warehouse.duckdb   # where the adapter connects
+```
+
+`database:` defaults to `:memory:`, which is fine for tests and exploration and
+useless for anything else: two engines built from the same `config.yaml` share
+nothing, and the process boundary loses whatever a run wrote. `skifer run` refuses
+an in-memory database by name rather than reporting a success that wrote nowhere.
+
+`engine: sql` must be selected **before** Spark initialization — through
+`force_env`, `default_env` or `priority_check` — so the engine takes its Spark-free
+startup branch.
 
 ### Sandbox mode
 

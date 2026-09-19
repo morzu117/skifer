@@ -82,6 +82,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `examples/25_incremental_snapshot/`: the same two days of orders written through
+  `incremental merge` and through an SCD2 `snapshot`, and what separates them. Each pipeline
+  runs twice, because a single run leaves the same rows whichever strategy is chosen —
+  including a plain overwrite, which is neither. The two CSV files differ in four deliberate
+  ways, one per behaviour worth proving; the unchanged order is the one that catches a wrong
+  implementation, since a snapshot that closes and reinserts every key is correct for the
+  changed and the new row and wrong only there.
+- Documented the incremental and snapshot write strategies, and the `engine`/`adapter`/
+  `database` environment keys, in `docs/core.md`. `database:` defaults to `:memory:`, which
+  is useful for tests and useless otherwise, so the page says what that costs rather than
+  leaving a reader to find out after a run.
+
 - Added execution to `skifer run --select`: the selected pipelines now run in dependency
   order through the configured engine. A failure blocks only what reads the failed pipeline,
   transitively — independent work still runs, because cancelling an unrelated pipeline wastes
