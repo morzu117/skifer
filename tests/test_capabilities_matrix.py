@@ -2,6 +2,7 @@ import pytest
 
 from skifer.core.capabilities_matrix import (
     ALL_CAPABILITIES,
+    CAP_CERTIFIED_PUBLICATION,
     DATABRICKS_CAPABILITIES,
     CAP_DEV_LIMIT,
     CAP_DROP_DUPLICATES,
@@ -65,6 +66,10 @@ from skifer.core.registry import RuleRegistry
             CAP_SNAPSHOT,
         ),
         ({"sink": {"type": "jdbc"}}, CAP_JDBC_SINK),
+        (
+            {"data_product": {"id": "sales.orders", "version": "1.0.0"}},
+            CAP_CERTIFIED_PUBLICATION,
+        ),
         ({"dev_limit": 10}, CAP_DEV_LIMIT),
         (
             {
@@ -179,6 +184,7 @@ _CAPABILITY_ERROR_SCHEMAS = (
         ],
         "materialization": {"type": "table"},
         "sink": {"type": "jdbc"},
+            "data_product": {"id": "sales.orders", "version": "1.0.0"},
     },
     {
         "tables": [{"name": "events", "streaming": True}],
@@ -259,6 +265,18 @@ def test_databricks_capabilities_include_implemented_write_strategies():
     assert CAP_SNAPSHOT in DATABRICKS_CAPABILITIES
     assert CAP_VIEW in DATABRICKS_CAPABILITIES
     assert CAP_INCREMENTAL in DATABRICKS_CAPABILITIES
+
+
+def test_databricks_capabilities_stay_enumerated_rather_than_aliased():
+    """Databricks must list what it supports, not inherit whatever exists.
+
+    The two sets happen to hold the same members today, which is exactly when
+    someone is tempted to write `DATABRICKS_CAPABILITIES = ALL_CAPABILITIES` again.
+    That alias is what this plan removed: it silently grants Databricks every
+    capability added later, and a pipeline then reaches execution on a feature no
+    one implemented for it. Equal by value is fine; the same object is not.
+    """
+    assert DATABRICKS_CAPABILITIES is not ALL_CAPABILITIES
 
 
 def test_incremental_capability_enables_implemented_merge_strategy():

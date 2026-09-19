@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed certified publication being skipped in silence on the SQL path. A schema declaring
+  `data_product:` was written with no contract check, no certification record and no
+  quarantine, because the SQL branch of `run_process_to_table` returns before the guard the
+  Spark path applies — so a certified pipeline moved to another engine lost its whole
+  governance layer without a word. `data_product:` now requires a `certified_publication`
+  capability that Databricks declares and DuckDB does not, so the refusal is by name and no
+  table is written. DuckDB will declare it when publication is ported (Plan 39.5.4b).
 - Fixed the shared `FakeBackend` double falling behind the Adapter boundary: it had never
   learned `list_relation_columns`, added to the Protocol earlier in this plan, nor `sql`,
   and more than ten test modules rely on it. A double that no longer follows the boundary

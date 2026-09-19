@@ -1177,3 +1177,30 @@ def test_incremental_target_name_containing_a_dot_is_not_split_into_a_catalog():
     assert _target_parts("gold.orders") == (None, "gold", "orders")
     assert _target_parts("`gold`.`my.table`") == (None, "gold", "my.table")
     assert _target_parts("cat.gold.orders") == ("cat", "gold", "orders")
+
+
+def test_certified_publication_is_refused_by_name_on_the_sql_path(duck_adapter):
+    """A `data_product` schema must not write uncertified, in silence.
+
+    The Spark path fails fast when `data_product` is declared without a monitor and
+    a certification store. The SQL path returned before that check and wrote the
+    table with no contract check, no certification record and no quarantine — a
+    certified pipeline moved to another engine lost its whole governance layer and
+    said nothing. Until publication is ported, the refusal must be explicit.
+    """
+    with pytest.raises(UnsupportedCapabilityError) as exc_info:
+        run_sql_pipeline(
+            duck_adapter,
+            {
+                "data_product": {"id": "sales.orders", "version": "1.0.0"},
+                "tables": [{"name": "source.orders"}],
+                "select_final": [["order_id", "order_id"]],
+            },
+            "gold.orders",
+            context=_context(),
+        )
+
+    message = str(exc_info.value)
+    assert "duckdb" in message
+    assert "certified_publication" in message
+    assert "data_product" in message

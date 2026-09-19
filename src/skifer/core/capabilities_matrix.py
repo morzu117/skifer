@@ -20,6 +20,7 @@ CAP_JDBC_SINK = "jdbc_sink"
 CAP_DEV_LIMIT = "dev_limit"
 CAP_DROP_DUPLICATES = "drop_duplicates"
 CAP_PREPROCESS_QUALIFY = "preprocess_qualify"
+CAP_CERTIFIED_PUBLICATION = "certified_publication"
 
 ALL_CAPABILITIES: frozenset[str] = frozenset(
     {
@@ -35,6 +36,7 @@ ALL_CAPABILITIES: frozenset[str] = frozenset(
         CAP_DEV_LIMIT,
         CAP_DROP_DUPLICATES,
         CAP_PREPROCESS_QUALIFY,
+        CAP_CERTIFIED_PUBLICATION,
     }
 )
 DATABRICKS_CAPABILITIES: frozenset[str] = frozenset(
@@ -51,6 +53,7 @@ DATABRICKS_CAPABILITIES: frozenset[str] = frozenset(
         CAP_DROP_DUPLICATES,
         CAP_PREPROCESS_QUALIFY,
         CAP_SNAPSHOT,
+        CAP_CERTIFIED_PUBLICATION,
     }
 )
 
@@ -74,6 +77,7 @@ _YAML_CONSTRUCTIONS = {
     CAP_DEV_LIMIT: "dev_limit: or tables[].dev_limit:",
     CAP_DROP_DUPLICATES: "tables[].quality_checks.drop_duplicates_on:",
     CAP_PREPROCESS_QUALIFY: "tables[].preprocess.qualify:",
+    CAP_CERTIFIED_PUBLICATION: "data_product:",
 }
 
 
@@ -142,6 +146,15 @@ def required_capabilities(parsed: ParsedSchema) -> frozenset[str]:
     )
     if materialization_capability is not None:
         required.add(materialization_capability)
+
+    if parsed.data_product is not None:
+        # Certified publication is opt-in through ``data_product:`` and the Spark
+        # path fails fast without a monitor and a certification store. The SQL path
+        # returned before that check, writing the table with no contract check, no
+        # certification record and no quarantine — a pipeline moved to another engine
+        # lost its whole governance layer without a word. Requiring the capability
+        # turns that silence into a named refusal until 39.5.4b ports publication.
+        required.add(CAP_CERTIFIED_PUBLICATION)
 
     sink = parsed.sink or {}
     if sink.get("type") in ("postgres", "jdbc"):
