@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Documented that an operation containing a comma must be quoted in a YAML flow sequence:
+  `[split:-,0]` is read as two items and silently loses the index. The documented
+  `split:sep,idx` form was itself the trap.
+
+### Fixed
+
+- Fixed a column operation missing a required argument raising a bare
+  `IndexError: tuple index out of range`. Every backend indexes `op.args` positionally —
+  `op.args[1]` for `split:` — so `round` with no argument, or `split:x`, surfaced a Python
+  traceback naming neither the column, nor the operation, nor what was expected, on the Spark
+  path as much as the SQL one. `COLUMN_OPS` had declared each operation's arity all along and
+  nothing read it. Only a **minimum** is enforced: `lit:Paris, France` legitimately hands
+  several comma-separated parts to a `single` operation and the backends rejoin them on
+  purpose, so an upper bound would reject valid YAML.
+
 ## [2.2.0] - 2026-09-14
 
 ### Fixed
