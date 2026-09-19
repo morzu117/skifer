@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the inter-pipeline graph inventing an edge from a file source. A table declared
+  `name: gold.orders` with `source: {type: csv}` reads a file, not the `gold.orders` table
+  another pipeline writes, but its declared name was matched against indexed targets all the
+  same. The graph then claimed a dependency that does not exist — and since `--select` derives
+  execution order from it, the consumer would have waited for a producer it never reads and
+  been skipped when that producer failed. Only a catalog reference can now match a producer,
+  and external sources carry a `kind` (`table`, `file` or `loader`) saying whether indexing
+  more pipelines could ever turn them into an edge.
+
 - Fixed `test_missing_dependency_warning_says_what_to_install` asserting on `caplog.text`
   rather than on the record the code emits. `caplog.text` is rendered by whatever formatter
   the process has installed; a structured one escapes the quotes in `.[tracing]`, so the

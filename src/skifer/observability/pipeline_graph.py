@@ -41,13 +41,21 @@ class PipelineEdge:
 
 @dataclass(frozen=True, order=True)
 class ExternalSource:
-    """A declared table with no indexed producer in this registry."""
+    """A declared input with no indexed producer in this registry.
+
+    ``kind`` says whether indexing more pipelines could turn this into an edge.
+    A ``table`` is a catalog reference whose producer may simply not be indexed
+    yet; a ``file`` or a ``loader`` reads outside the catalog and will never have
+    one, however many pipelines are indexed afterwards. Collapsing the three into
+    "external" would leave a reader waiting for an edge that cannot arrive.
+    """
 
     consumer: str
     source: str
+    kind: str = "table"
 
     def to_dict(self) -> dict[str, str]:
-        return {"consumer": self.consumer, "source": self.source}
+        return {"consumer": self.consumer, "source": self.source, "kind": self.kind}
 
 
 @dataclass(frozen=True)
@@ -133,10 +141,16 @@ def graph_from_records(records: list[DatasetRecord]) -> PipelineGraph:
     external_sources: set[ExternalSource] = set()
     for consumer in nodes:
         record = latest[consumer]
-        for source in _declared_source_tables(record):
-            producer = target_index.get(_fqn_key(source))
+        for source, kind in _declared_source_tables(record):
+            # Only a catalog reference can be another pipeline's output. A file
+            # source or a loader reads outside the catalog, so matching its
+            # declared name against a target FQN would invent a dependency that
+            # does not exist — and an invented edge decides execution order.
+            producer = target_index.get(_fqn_key(source)) if kind == "table" else None
             if producer is None:
-                external_sources.add(ExternalSource(consumer=consumer, source=source))
+                external_sources.add(
+                    ExternalSource(consumer=consumer, source=source, kind=kind)
+                )
             else:
                 # A pipeline declaring its own target as a source is kept as a
                 # self-edge on purpose, so the cycle check names it. Dropping it
@@ -182,7 +196,7 @@ def _target_index(nodes: tuple[str, ...]) -> dict[tuple[str, ...], str]:
     return by_key
 
 
-def _declared_source_tables(record: DatasetRecord) -> tuple[str, ...]:
+def _declared_source_tables(record: DatasetRecord) -> tuple[tuple[str, str], ...]:
     path = Path(record.pipeline_path)
     if not path.is_file():
         raise PipelineGraphError(
@@ -196,7 +210,16 @@ def _declared_source_tables(record: DatasetRecord) -> tuple[str, ...]:
         base_dir=str(path.parent),
     )
     parsed = parse_to_ir(schema)
-    return tuple(table.name for table in parsed.tables)
+    return tuple((table.name, _source_kind(table)) for table in parsed.tables)
+
+
+def _source_kind(table) -> str:
+    """Classify a declared input by what it actually reads."""
+    if table.is_loader:
+        return "loader"
+    if table.source_type is not None:
+        return "file"
+    return "table"
 
 
 def _fqn_key(fqn: str) -> tuple[str, ...]:

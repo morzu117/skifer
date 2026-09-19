@@ -99,7 +99,7 @@ def test_graph_names_declared_external_sources_without_guessing_edges(tmp_path):
 
     assert graph.edges == ()
     assert [source.to_dict() for source in graph.external_sources] == [
-        {"consumer": "gold.orders", "source": "raw.orders"}
+        {"consumer": "gold.orders", "source": "raw.orders", "kind": "table"}
     ]
 
 
@@ -145,7 +145,7 @@ def test_graph_formats_are_valid_and_json_is_parseable(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["edges"] == [{"consumer": "mart.kpi", "producer": "gold.orders"}]
     assert payload["external_sources"] == [
-        {"consumer": "gold.orders", "source": "raw.orders"}
+        {"consumer": "gold.orders", "source": "raw.orders", "kind": "table"}
     ]
 
     assert run_graph_command(_args("mermaid"), store=store) == GRAPH_EXIT_OK
@@ -230,9 +230,11 @@ def test_quoted_fqn_matches_but_two_part_does_not_guess_three_part(tmp_path):
     assert {"producer": "`gold`.`orders`", "consumer": "mart.quoted"} in [
         edge.to_dict() for edge in graph.edges
     ]
-    assert {"consumer": "mart.catalog", "source": "main.gold.orders"} in [
-        source.to_dict() for source in graph.external_sources
-    ]
+    assert {
+        "consumer": "mart.catalog",
+        "source": "main.gold.orders",
+        "kind": "table",
+    } in [source.to_dict() for source in graph.external_sources]
 
 
 def test_graph_cycle_cli_reports_named_error(tmp_path, capsys):
@@ -261,3 +263,75 @@ def test_pipeline_reading_its_own_output_is_reported_as_a_cycle(tmp_path):
         build_pipeline_graph(store)
 
     assert "gold.self -> gold.self" in str(exc_info.value)
+
+
+def test_file_source_named_like_another_target_is_not_an_edge(tmp_path):
+    """A CSV read under a table's name must not fabricate a dependency.
+
+    A pipeline may declare `name: gold.orders` with `source: {type: csv}` — it
+    reads a file, not the `gold.orders` table another pipeline writes. Matching
+    the declared name against indexed targets invented an edge here, which in
+    `--select` decides execution order: the consumer would wait for a producer
+    it never reads, and be skipped when that producer fails.
+    """
+    producer = tmp_path / "producer.yaml"
+    producer.write_text(
+        """
+tables:
+  - name: raw.orders
+    alias: src
+select_final:
+  - [id, id]
+""",
+        encoding="utf-8",
+    )
+    consumer = tmp_path / "consumer.yaml"
+    consumer.write_text(
+        """
+tables:
+  - name: gold.orders
+    alias: src
+    source:
+      type: csv
+      path: /data/orders.csv
+select_final:
+  - [id, id]
+""",
+        encoding="utf-8",
+    )
+    store = SqliteMetadataStore(":memory:")
+    index_from_path(str(producer), store, target_fqn="gold.orders")
+    index_from_path(str(consumer), store, target_fqn="mart.report")
+
+    graph = build_pipeline_graph(store)
+
+    assert graph.edges == ()
+    assert {
+        "consumer": "mart.report",
+        "source": "gold.orders",
+        "kind": "file",
+    } in [source.to_dict() for source in graph.external_sources]
+
+
+def test_loader_input_is_reported_as_a_loader_not_a_missing_table(tmp_path):
+    """A loader never becomes an edge, so the graph must not imply it might."""
+    path = tmp_path / "loader.yaml"
+    path.write_text(
+        """
+tables:
+  - name: gold.orders
+    alias: src
+    source_type: loader
+    function_name: load_orders
+select_final:
+  - [id, id]
+""",
+        encoding="utf-8",
+    )
+    store = SqliteMetadataStore(":memory:")
+    index_from_path(str(path), store, target_fqn="mart.loaded")
+
+    graph = build_pipeline_graph(store)
+
+    assert graph.edges == ()
+    assert [source.kind for source in graph.external_sources] == ["loader"]
