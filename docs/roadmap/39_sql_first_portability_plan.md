@@ -469,6 +469,23 @@ exemple `24_sql_mode_duckdb`, un `25_incremental_snapshot`, guide « venir de db
 | D14 | `allow_raw_sql` gouverne-t-il les règles et loaders `kind="sql"` ? | **À trancher — le code et le plan se contredisent.** Voir ci-dessous. |
 
 
+### Défaut transverse du CLI, trouvé en documentant (19 septembre 2026)
+
+**Aucune commande CLI n'importait les modules de règles du projet.** Les règles vivent dans le dépôt de
+l'utilisateur, pas dans le paquet ; rien ne les importait pour le compte du CLI. Conséquence mesurée :
+`skifer compile` ne pouvait compiler **aucun** pipeline nommant une `business_rules:`, et `skifer run`
+— livré en 39.6.3b — n'en exécutait aucun non plus.
+
+**Et le message désignait la mauvaise cause.** Une règle inconnue est classée « Python » par prudence,
+avec ce commentaire dans `required_capabilities` : « the execution/compiler boundary will issue the named
+error ». L'hypothèse est fausse — le contrôle de capacité tire **le premier** et son message gagne. Une
+règle `kind="sql"` parfaitement portable, simplement non importée, était donc rapportée comme exigeant
+`python_rules` : son auteur serait allé réécrire une règle déjà correcte.
+
+**Livré** : `--rules MODULE` (répétable) sur `compile` et `run`, résolu depuis le répertoire courant —
+celui-là même d'où `config.yaml` est découvert ; et le refus nomme désormais les règles non enregistrées.
+Le classement prudent, lui, ne bouge pas.
+
 ### D14 — ce que `allow_raw_sql` est censé interdire (ouverte, 19 septembre 2026)
 
 **Mesuré.** Avec `allow_raw_sql: false`, une règle `kind="sql"` compile et s'exécute ; un **loader**
