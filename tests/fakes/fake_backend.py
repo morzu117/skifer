@@ -452,6 +452,26 @@ class FakeBackend:
             return list(rows[0].keys())
         return []
 
+    def list_relation_columns(self, relation: str) -> list[str]:
+        """Return the columns of a relation expression.
+
+        The fake only knows table names, so a bare quoted name resolves like
+        ``list_columns``; anything else is unknown to it and says so rather than
+        answering an empty list, which the compiler would read as proof that a
+        rule's columns are new.
+        """
+        clean = relation.replace("`", "").replace('"', "")
+        if clean in self._tables:
+            return list(self._tables[clean][0].keys()) if self._tables[clean] else []
+        raise ValueError(
+            f"[FakeBackend] Relation '{relation}' is not a known table; this double "
+            "resolves table names only."
+        )
+
+    def sql(self, query: str) -> Any:
+        """Mirror ``execute_sql`` — the double runs no SQL, it records intent."""
+        return self.execute_sql(query)
+
     def list_schemas(self, catalog: str | None = None) -> list[str]:
         return []
 

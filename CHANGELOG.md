@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the shared `FakeBackend` double falling behind the Adapter boundary: it had never
+  learned `list_relation_columns`, added to the Protocol earlier in this plan, nor `sql`,
+  and more than ten test modules rely on it. A double that no longer follows the boundary
+  it imitates keeps its tests green while production has already moved. A conformance test
+  now fails when a Protocol member is missing from it — member presence only, deliberately
+  not signatures, because the double narrows `Any` to `FakeDataFrame` on two methods, which
+  is more informative than the Protocol rather than less.
 - Fixed data-quality checks reaching for Spark to read their own results: the nine checks
   called `backend.sql(query).collect()`, a DataFrame method, so none of them ran on a
   non-Spark adapter — the plan had recorded `checks.py` as "already SQL", which was true of

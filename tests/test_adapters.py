@@ -341,3 +341,28 @@ def test_duckdb_relation_error_never_prints_the_same_relation_twice(tmp_path):
         assert "absent.orders" in str(exc_info.value)
     finally:
         connection.close()
+
+
+def test_shared_fake_backend_declares_every_adapter_member():
+    """The shared double must learn every member the boundary gains.
+
+    `FakeBackend` backs more than ten test modules. When `list_relation_columns`
+    joined the Protocol it never did, and nothing said so: a double that no longer
+    follows the boundary it imitates keeps its tests green while production has
+    already moved, and the gap surfaces only when a real adapter is wired in.
+
+    Only member presence is asserted, deliberately not signatures. The fake narrows
+    `Any` to `FakeDataFrame` on two methods, which is more informative than the
+    Protocol, not less — demanding an exact match would force that to be undone.
+    """
+    from tests.fakes.fake_backend import FakeBackend
+
+    required = {
+        name for name, _ in inspect.getmembers(Adapter) if not name.startswith("_")
+    }
+    missing = sorted(name for name in required if not hasattr(FakeBackend, name))
+
+    assert missing == [], (
+        f"FakeBackend is missing {missing}. Add them to tests/fakes/fake_backend.py: "
+        "a double that has fallen behind the Adapter boundary proves nothing."
+    )
