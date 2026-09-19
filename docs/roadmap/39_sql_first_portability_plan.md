@@ -366,8 +366,15 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 | 39.5.3 | `history.py` et `metadata_store.py` : suppression de `backend.spark`, réécriture sur le registre générique | 39.5.1 |
 | 39.5.4a | Les checks qualité lisent par l'adaptateur, pas par `.collect()` (décision D13) | livrée |
 | 39.5.4b | `PublicationCoordinator` : staging, checks, promotion/quarantaine via l'adaptateur | livrée — le coordinateur n'a pas bougé d'une ligne, la valeur mise en staging étant une **poignée opaque** que l'adaptateur définit |
-| 39.5.5 | `definition_hash` hors Databricks : `COMMENT`/tags, table `_skifer_meta` en repli | 39.5.4 |
-| 39.5.6 | Exemple 02 en mode SQL — le critère de sortie déplacé depuis la phase 39.3 | 39.5.4 |
+| 39.5.5 | `definition_hash` hors Databricks : `COMMENT`/tags, table `_skifer_meta` en repli | **reportée en 39.7** |
+| 39.5.6 | Exemple 02 en mode SQL — le critère de sortie déplacé depuis la phase 39.3 | livrée |
+
+> **39.5.5 reportée le 19 septembre 2026, après mesure.** Le `definition_hash` stocké en `TBLPROPERTIES` ne
+> sert qu'aux **materialized views** (Plan 28, `MV_DEFINITION_HASH_PROPERTY`), et les MV sont refusées hors
+> Databricks (`CAP_MATERIALIZED_VIEW`). Aucun adaptateur non Databricks n'en a donc l'usage aujourd'hui :
+> écrire un repli `COMMENT`/tags maintenant serait de la spéculation non testable. La tranche rejoint la
+> **phase 39.7 (Snowflake)**, où elle pourra être mesurée contre un entrepôt qui a vraiment des MV.
+> Le `definition_hash` des **contrats** est un autre objet : il vit déjà dans le registre, portable depuis 39.5.1.
 
 ### Phase 39.6 — Graphe inter-pipelines et sélection — *5–8 j*
 - `ref()` implicite : une table déclarée dans `tables:` qui est la sortie d'un autre pipeline du projet crée une
