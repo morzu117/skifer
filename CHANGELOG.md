@@ -99,6 +99,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a "Coming from dbt" section to `docs/core.md`: what maps (`ref`, `source`,
+  materializations, snapshots, `--select`, `compile`, tests), what differs on purpose (no
+  templating language, so a dependency is a table name rather than a call the file makes to
+  itself; tests as a staged contract rather than a suite run against the built table), and
+  what skifer does not have — no package ecosystem, no macros, no seed, a far shorter adapter
+  list. The gaps are listed because a correspondence table that hides them is worse than none,
+  and the section says plainly when dbt is the better answer.
+
 - Documented the SQL-first command line (`skifer compile`, `skifer graph`,
   `skifer run --select`) in `docs/core.md`, with the selector grammar, the exit codes and
   why a target must be physical. None of the three had any user-facing documentation.

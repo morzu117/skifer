@@ -655,6 +655,68 @@ overwrite, which is neither.
 
 ---
 
+## Coming from dbt
+
+Skifer and dbt solve the same problem — declarative, versioned transformations with
+lineage and tests — from opposite ends. dbt starts from SQL and adds structure around
+it; skifer starts from structure and emits SQL. Most concepts map; the ones that do
+not are listed at the end, because a correspondence table that hides its gaps is worse
+than no table.
+
+### What maps
+
+| dbt | skifer |
+|---|---|
+| `ref('model')` | declare the table in `tables:`; the edge is derived by `skifer index` |
+| `source('name', 'table')` | a catalog table name, or a table with `source:` for a file |
+| `{{ config(materialized='table') }}` | `materialization: {type: table}` (the default) |
+| `materialized='view'` | `materialization: {type: view}` |
+| `materialized='incremental'` + `is_incremental()` | `materialization: {type: incremental, strategy: append\|merge}` |
+| `unique_key` | `unique_key:` under `materialization:` |
+| snapshots (`check` / `timestamp`) | `materialization: {type: snapshot, strategy: check\|timestamp}` |
+| `dbt run --select model+` | `skifer run --select 'model+'` |
+| `dbt compile` | `skifer compile PIPELINE --target <dialect>` |
+| `dbt docs` lineage | `skifer index`, then `graph`, `lineage`, `dictionary` |
+| generic tests (`not_null`, `unique`) | `quality_checks:` and `contract:` output declarations |
+| `dbt build` failing on a test | the monitor quarantines and leaves the target untouched |
+
+### What is different on purpose
+
+**There is no `ref()` function, because there is no templating language.** A skifer YAML
+is data, not a program: `{{ param }}` is a pre-parse substitution, there is no Jinja2
+dependency, no macros and no conditionals. A dependency is a table name, and the graph
+is derived from what pipelines declare — never from a call the file makes to itself.
+The cost is that you cannot compute a model name; the benefit is that the file can be
+read, diffed and validated without executing anything.
+
+**Logic that is not SQL is Python, registered and named.** dbt has Python models; skifer
+has `business_rules`, and a rule is either `kind="sql"` — portable, compiled into the
+SELECT — or PySpark, which runs on Spark only and is refused **by name** elsewhere. The
+`What` in YAML and the `How` in Python are separated deliberately, so two engines can
+share a pipeline while each keeps its own implementation of a business concept.
+
+**Tests are a contract, not a suite.** dbt tests run after the model is built, against
+the built table. A skifer pipeline with `data_product:` **stages** its output, checks it,
+and only then promotes — or quarantines it with the offending rows tagged. The consumer's
+table is never the thing being tested.
+
+### What skifer does not have
+
+- **No package ecosystem.** There is no `packages.yml`, no hub, no `dbt-utils`.
+- **No macros, no Jinja.** See above — this is a design choice, not a gap to fill later.
+- **No `dbt seed`.** Reference data is a file source or a table you load yourself.
+- **Fewer adapters.** Databricks and DuckDB today; Snowflake and BigQuery are planned.
+  dbt's adapter list is far longer, and that is a real reason to choose it.
+- **No `--defer` / state comparison.** `skifer run --select` reads the indexed graph;
+  it has no notion of a previous run's manifest to defer to.
+
+If your warehouse is not on that adapter list, or your team's leverage comes from the
+dbt package ecosystem, dbt is the better answer. Skifer's argument is for teams whose
+pipelines carry governance — contracts, certification, lineage, quarantine — as part of
+the pipeline rather than alongside it.
+
+---
+
 ## Filter operators
 
 Filters are supported in `tables[].filter` and at the top-level `filter` key.
