@@ -432,11 +432,30 @@ fautives. C'est déjà la règle des alertes d'incident (Plan 31).
 ### Phase 39.8 — Adaptateur BigQuery — *15–20 j*
 FQN `projet.dataset.table`, clustering, labels, copy jobs, MV natives, identité via ADC.
 
-### Phase 39.9 — Documentation et exemples — *5–10 j*
-`docs/core.md` (modes d'exécution, matrice, **clé `database:` d'environnement**, `skifer run --select`),
-`docs/yaml_spec.md` (incremental/snapshot, `kind: sql`), un
-exemple `24_sql_mode_duckdb`, un `25_incremental_snapshot`, guide « venir de dbt » (correspondance
-`ref`/`source`/`tests`/`snapshots`).
+### Phase 39.9 — Documentation et exemples — **livrée pour ce qui ne dépend pas d'un entrepôt payant**
+
+| Livrable | État |
+|---|---|
+| `docs/core.md` — modes d'exécution, clés `engine`/`adapter`/`database` | livré |
+| `docs/core.md` — matrice de capacités par adaptateur | livré, **avec garde-fou de dérive** (`tests/test_docs_capability_matrix.py`) |
+| `docs/core.md` — stratégies d'écriture `incremental`/`snapshot` | livré |
+| `docs/core.md` — CLI SQL-first (`compile`, `graph`, `run --select`) | livré |
+| `docs/core.md` — guide « venir de dbt » | livré |
+| `docs/rules.md` — règles et loaders `kind="sql"` | livré |
+| `examples/24_sql_mode_portability` | livré (phase 39.3) |
+| `examples/25_incremental_snapshot` | livré |
+
+> **Le plan visait `docs/yaml_spec.md` à tort** : cette page décrit le YAML **sémantique**, pas celui des
+> pipelines. La référence pipeline vit dans `docs/core.md` et les règles dans `docs/rules.md` ; c'est là
+> que tout a été écrit.
+>
+> **Aucune page nouvelle n'a été créée**, donc aucune entrée de navigation ajoutée : `mkdocs.yml` est en
+> cours d'édition par l'utilisateur (guide pas à pas en 9 chapitres). Le guide « venir de dbt » est une
+> section de `docs/core.md` ; il pourra devenir un chapitre 10 quand la restructuration sera close.
+>
+> **La matrice est testée, pas seulement écrite.** Une table de doc qui dérive du code est trompeuse
+> précisément parce qu'on lui fait confiance ; le garde-fou échoue dans les deux sens — une case
+> retournée comme une ligne manquante.
 
 **Total indicatif : ≈ 55–85 j jusqu'à Snowflake inclus (39.1–39.7, 39.9) ; + 15–20 j par entrepôt supplémentaire.**
 
