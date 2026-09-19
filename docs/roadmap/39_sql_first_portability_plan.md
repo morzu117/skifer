@@ -466,6 +466,35 @@ exemple `24_sql_mode_duckdb`, un `25_incremental_snapshot`, guide « venir de db
 | D9 | SCD2 — ligne disparue de la source | **Validée.** `on_missing` obligatoire, aucun défaut. Voir la spécification de 39.4.5 |
 | D10 | SCD2 — rayon d'action d'un run | **Validée.** `max_closed_ratio: 0.2` par défaut, ajustable ; au-delà le run refuse et rapporte |
 | D11 | SCD2 — donnée arrivée en retard | **Validée.** `on_late_arrival: refuse` par défaut ; la réinsertion chronologique est hors v1 |
+| D14 | `allow_raw_sql` gouverne-t-il les règles et loaders `kind="sql"` ? | **À trancher — le code et le plan se contredisent.** Voir ci-dessous. |
+
+
+### D14 — ce que `allow_raw_sql` est censé interdire (ouverte, 19 septembre 2026)
+
+**Mesuré.** Avec `allow_raw_sql: false`, une règle `kind="sql"` compile et s'exécute ; un **loader**
+`kind="sql"`, lui, est refusé. `expr:` et l'opérateur de filtre `sql` sont refusés aussi.
+
+**Le plan se contredit avec le code.** D2 dit les règles « soumises à `allow_raw_sql` ». D8 justifie le
+refus côté loader *par analogie avec les règles* — analogie fausse, puisque les règles ne le sont pas.
+Côté code, `tests/test_sql_compiler.py::test_allow_raw_sql_does_not_govern_registered_sql_rules` fige
+le comportement inverse, **sans docstring ni justification** : l'intention n'est écrite nulle part.
+
+**Les deux positions se défendent.**
+
+- *Ne gouverner ni l'un ni l'autre.* Une règle et un loader sont du Python enregistré dans le dépôt,
+  donc relu et déployé. `allow_raw_sql` existe pour brider l'auteur de **YAML**, qui ne fait que nommer
+  une règle. La frontière de confiance est alors `register_rule` / `register_loader`, et il faut
+  **relâcher le loader**.
+- *Gouverner les deux.* Dans un environnement régulé, le drapeau se lit « ici, aucun SQL écrit à la main
+  ne s'exécute », sans égard à qui l'a écrit. Il faut alors **durcir les règles**.
+
+**Recommandation : ne gouverner ni l'un ni l'autre**, et relâcher le loader — la relecture de code est
+un contrôle plus fort qu'un drapeau d'environnement, et deux portes pour une même capacité rendent la
+garantie illisible. Mais l'écart actuel est le pire des trois états : il annonce un contrôle qu'il
+n'applique qu'à moitié.
+
+**Quoi qu'il soit décidé, le test qui fige le comportement doit porter sa raison** : c'est son absence
+qui a rendu cette contradiction invisible jusqu'ici.
 
 ## 7. Risques
 
