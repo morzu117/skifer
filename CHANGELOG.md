@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `test_missing_dependency_warning_says_what_to_install` asserting on `caplog.text`
+  rather than on the record the code emits. `caplog.text` is rendered by whatever formatter
+  the process has installed; a structured one escapes the quotes in `.[tracing]`, so the
+  test failed on formatting while the message was exactly right. It now reads
+  `record.getMessage()`, which is what the code actually produced.
+
 - Fixed certified publication being skipped in silence on the SQL path. A schema declaring
   `data_product:` was written with no contract check, no certification record and no
   quarantine, because the SQL branch of `run_process_to_table` returns before the guard the
@@ -66,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   masquerades as a dialect incompatibility. (Plan 39.2.1)
 
 ### Added
+
+- Added cross-engine coverage for the certified-publication example: `examples/02_quality_and_contract`
+  now runs on Spark and on the compiled DuckDB path in the same test, which asserts the two
+  produce identical rows *and* that both record a `CERTIFIED` verdict. Publishing the same
+  contract over different data would be worse than refusing to publish, so row equality and
+  the certification verdict are checked together rather than each engine being checked alone.
 
 - Added certified publication on the SQL path: a `data_product:` pipeline now routes
   through the existing `PublicationCoordinator`, which needed no change. It never inspects

@@ -12,6 +12,8 @@ from tests.test_sql_spark_equivalence import assert_spark_duckdb_equivalent
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
 EXAMPLES_DIR = REPO_ROOT / "examples"
 
 
@@ -129,3 +131,54 @@ def test_repository_example_is_equivalent_on_spark_and_duckdb(
                 RuleRegistry._rules.pop(rule_name, None)
             else:
                 RuleRegistry._rules[rule_name] = previous_rule
+
+
+def test_certified_publication_example_is_equivalent_on_spark_and_duckdb(spark, tmp_path):
+    """Example 02 publishes under contract on both engines, with the same rows.
+
+    This was the exit criterion moved out of phase 39.3 when certified publication
+    existed on Spark only. It is not enough that each engine publishes something:
+    the rows must match, and both must record a CERTIFIED verdict — a pipeline that
+    published different data under the same contract would be worse than one that
+    refused.
+    """
+    from skifer.observability.certification_store import SqliteCertificationStore
+    from skifer.observability.monitor import DataMonitor
+
+    example_dir = EXAMPLES_DIR / "02_quality_and_contract"
+    yaml_path = example_dir / "gold_orders.yaml"
+    layer, table = "sql_mode_examples", "fact_orders_certified"
+    params = {"example_dir": example_dir.as_posix()}
+
+    sql_engine = SkiferEngine(force_env="LOCAL_SQL")
+    sql_engine.monitor = DataMonitor(sql_engine.backend)
+    sql_engine.certification_store = SqliteCertificationStore(str(tmp_path / "sql.db"))
+
+    spark_engine = SkiferEngine(spark=spark, force_env="LOCAL")
+    spark_engine.schema_suffix = ""
+    spark_engine.monitor = DataMonitor(spark_engine.backend)
+    spark_engine.certification_store = SqliteCertificationStore(
+        str(tmp_path / "spark.db")
+    )
+
+    try:
+        sql_engine.run_from_yaml(str(yaml_path), layer, table, params=params)
+        spark_engine.run_from_yaml(str(yaml_path), layer, table, params=params)
+
+        duck_fqn = f"{sql_engine.get_target_schema(layer)}.{table}"
+        cursor = sql_engine.backend.read_table(duck_fqn)
+        duck_columns = [description[0] for description in cursor.description]
+        duck_rows = cursor.fetchall()
+        spark_df = spark.table(f"{spark_engine.get_target_schema(layer)}.{table}")
+
+        assert len(duck_rows) == 4
+        assert_spark_duckdb_equivalent(spark_df, duck_columns, duck_rows)
+
+        for engine in (sql_engine, spark_engine):
+            certification = engine.certification_store.get_certification(
+                f"{engine.get_target_schema(layer)}.{table}"
+            )
+            assert certification.status == "CERTIFIED"
+            assert certification.checks_passed is True
+    finally:
+        sql_engine.backend.connection.close()

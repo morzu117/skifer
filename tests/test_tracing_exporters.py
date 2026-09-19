@@ -462,8 +462,13 @@ def test_missing_dependency_warning_says_what_to_install(monkeypatch, caplog):
         tracer = create_tracer(config)
 
     assert isinstance(tracer, NoOpTracer)
-    assert 'pip install -e ".[tracing]"' in caplog.text
-    assert "further warnings are suppressed" in caplog.text
+    # Assert on the record the code emits, not on `caplog.text`. The latter is
+    # rendered by whatever formatter is installed in the process; a structured one
+    # escapes the quotes in `.[tracing]`, and the test then fails on formatting
+    # while the message is exactly right.
+    emitted = " ".join(record.getMessage() for record in caplog.records)
+    assert 'pip install -e ".[tracing]"' in emitted
+    assert "further warnings are suppressed" in emitted
 
 
 def test_exporter_credentials_never_reach_logs_or_repr(monkeypatch, caplog):
