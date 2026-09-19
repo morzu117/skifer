@@ -273,7 +273,7 @@ def collect_snapshot_preflight_inputs(
     source_columns = tuple(adapter.list_relation_columns(source_relation))
     duplicate_count = _scalar_count(
         adapter,
-        _duplicate_key_count_sql(
+        duplicate_key_count_sql(
             source_relation,
             unique_key=unique_key,
             adapter_name=adapter.name,
@@ -351,12 +351,18 @@ def collect_snapshot_preflight_inputs(
     )
 
 
-def _duplicate_key_count_sql(
+def duplicate_key_count_sql(
     source_relation: str,
     *,
     unique_key: list[str],
     adapter_name: str,
 ) -> str:
+    """Count keys carrying more than one row in a batch.
+
+    Public because an SCD2 snapshot is not the only keyed write that cannot
+    decide between two rows sharing a key: ``incremental merge`` has the same
+    question, and answering it twice would let the two answers drift.
+    """
     keys = ", ".join(_qualified("s", key, adapter_name=adapter_name) for key in unique_key)
     return (
         f"SELECT COUNT(*) AS {_alias(adapter_name)} FROM ("

@@ -379,3 +379,74 @@ def test_snapshot_check_history_is_identical_on_both_engines(write_runtime):
     # present in history but no longer current.
     assert open_keys == [1, 3]
     assert sorted(row[key] for row in rows) == [1, 1, 2, 3]
+
+
+def test_a_duplicated_merge_key_is_refused_by_both_engines(write_runtime, tmp_path):
+    """The same batch must not be accepted by one engine and refused by the other.
+
+    Measured before the guard existed: Delta refuses with
+    `DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE`, while DuckDB accepted
+    the statement and kept one of the two rows, arbitrarily. Nothing in the result
+    said a row had been dropped — which makes the permissive side the dangerous one,
+    and makes this a divergence in the very feature this module exists to prove
+    equivalent.
+
+    The first run is deliberately clean: it creates the table on both engines, as a
+    `CREATE TABLE AS` would, and only the second run performs a MERGE. Guarding the
+    creation too would refuse a batch Spark accepts.
+    """
+    target = _target("dup_key")
+    schema = _orders_schema(
+        write_runtime,
+        {"type": "incremental", "strategy": "merge", "unique_key": ["order_id"]},
+    )
+    write_runtime.write_source(
+        "orders", ORDER_COLUMNS, [(1, "first", 10), (2, "first", 20)]
+    )
+    write_runtime.run(schema, "gold", target)
+
+    # Order 1 now appears twice, with conflicting values.
+    write_runtime.write_source(
+        "orders", ORDER_COLUMNS, [(1, "A", 11), (1, "B", 12), (2, "second", 21)]
+    )
+    path = tmp_path / "dup.yaml"
+    path.write_text(yaml.safe_dump(schema, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(Exception) as sql_error:
+        write_runtime.sql_engine.run_from_yaml(str(path), "gold", target)
+    with pytest.raises(Exception) as spark_error:
+        write_runtime.spark_engine.run_from_yaml(str(path), "gold", target)
+
+    # The SQL path names the key and the count, and suggests a YAML fix; Delta
+    # raises its own message. What must match is the verdict, not the wording.
+    assert "unique_key" in str(sql_error.value)
+    assert "order_id" in str(sql_error.value)
+    assert "MULTIPLE_SOURCE_ROW" in str(spark_error.value)
+
+    # And neither engine changed the target.
+    rows, columns = write_runtime.assert_targets_equivalent("gold", target)
+    assert sorted(rows) == [(1, "first", 10), (2, "first", 20)]
+
+
+def test_the_refusal_names_no_data_value(write_runtime, tmp_path):
+    """A refusal reports columns and counts, never the offending values (Plan 31)."""
+    target = _target("dup_quiet")
+    schema = _orders_schema(
+        write_runtime,
+        {"type": "incremental", "strategy": "merge", "unique_key": ["order_id"]},
+    )
+    write_runtime.write_source("orders", ORDER_COLUMNS, [(1, "first", 10)])
+    write_runtime.run(schema, "gold", target)
+
+    write_runtime.write_source(
+        "orders", ORDER_COLUMNS, [(1, "secret-status", 999), (1, "other", 998)]
+    )
+    path = tmp_path / "quiet.yaml"
+    path.write_text(yaml.safe_dump(schema, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(Exception) as error:
+        write_runtime.sql_engine.run_from_yaml(str(path), "gold", target)
+
+    message = str(error.value)
+    assert "secret-status" not in message
+    assert "999" not in message

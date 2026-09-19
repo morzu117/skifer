@@ -222,6 +222,11 @@ def run_sql_pipeline(
                 target_columns=target_columns,
                 unique_key=materialization["unique_key"],
             )
+            _assert_merge_source_keys_unique(
+                adapter,
+                source_relation=f"(\n{translated}\n)",
+                unique_key=materialization["unique_key"],
+            )
             statement = build_merge_sql(
                 target_relation=target,
                 source_relation=f"(\n{translated}\n)",
@@ -275,6 +280,46 @@ def run_sql_pipeline(
         statement = f"CREATE OR REPLACE TABLE {target} AS {translated}"
     adapter.execute_sql(statement)
     return statement
+
+
+def _assert_merge_source_keys_unique(
+    adapter: Any,
+    *,
+    source_relation: str,
+    unique_key: list[str],
+) -> None:
+    """Refuse a merge batch where a key carries more than one row.
+
+    Measured, same YAML and same data: Delta refuses with
+    ``DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE`` while DuckDB
+    accepts the statement and keeps one of the rows, arbitrarily. That is a hard
+    divergence in the one feature this plan claims is equivalent, and the silent
+    side is the dangerous one — nothing in the result says a row was dropped.
+
+    The snapshot path already refuses the same batch; only the answer's home was
+    missing here. The check runs solely when the target exists, so a first run
+    still creates the table exactly as Spark's does.
+    """
+    from skifer.core.snapshot_preflight import duplicate_key_count_sql
+
+    rows = adapter.fetch(
+        duplicate_key_count_sql(
+            source_relation,
+            unique_key=list(unique_key),
+            adapter_name=adapter.name,
+        )
+    )
+    count = int(next(iter(rows[0].values())) or 0) if rows else 0
+    if count <= 0:
+        return
+    keys = ", ".join(unique_key)
+    raise ValueError(
+        f"[incremental merge] REFUSED - 'unique_key' [{keys}] is not unique in this "
+        f"batch:\n  {count} keys carry more than one row, so the merge cannot decide "
+        "which one wins.\n  Suggested YAML:\n"
+        f"    quality_checks:\n      drop_duplicates_on: [{keys}]\n"
+        "    # or extend the key so it identifies one row."
+    )
 
 
 def _snapshot_run_at(clock: Callable[[], datetime] | None) -> datetime:

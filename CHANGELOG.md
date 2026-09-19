@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `incremental merge` accepting a batch whose `unique_key` is not unique. Measured on the
+  same YAML and the same rows: Delta refuses with
+  `DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE`, while DuckDB accepted the statement
+  and kept one of the conflicting rows, arbitrarily, with nothing in the result saying a row had
+  been dropped. That is a hard divergence in the one feature this plan claims is equivalent, and
+  the permissive side is the dangerous one. The snapshot path already refused the same batch;
+  only the merge branch never asked the question. It now refuses by name, citing the key and the
+  number of duplicated keys and never a data value, and only when the target already exists — a
+  first run still creates the table exactly as Spark's `CREATE TABLE AS` does, duplicates included.
+
 - Fixed a column operation missing a required argument raising a bare
   `IndexError: tuple index out of range`. Every backend indexes `op.args` positionally —
   `op.args[1]` for `split:` — so `round` with no argument, or `split:x`, surfaced a Python
