@@ -479,6 +479,27 @@ class LineageTracker:
                     edge_type="join",
                 ))
 
+        # A rule's output column carries the name the rule chose, which is an
+        # internal one. What the pipeline publishes is whatever `select_final`
+        # aliases it to. When the two differ, an edge carrying the internal name
+        # points at a column the target does not have, and the column that IS
+        # published is left with no rule provenance — so a classification
+        # inherited through the rule never reaches it. Resolve the internal name
+        # to the published one(s) before emitting anything.
+        published_as: dict[str, list[str]] = {}
+        for cs in ps.select_final:
+            if cs.source in rule_outputs:
+                published_as.setdefault(cs.source, []).append(cs.target)
+
+        def _rule_targets(out_col: str) -> list[str]:
+            if not ps.select_final:
+                # No projection to rename or drop anything (keep_all_columns,
+                # or an aggregate): the rule's own name is what lands.
+                return [out_col]
+            # A rule column `select_final` never mentions is computed and then
+            # dropped. Advertising it as a target column invents one.
+            return published_as.get(out_col, [])
+
         # 5. business_rules — via RuleAnalyzer AST introspection
         analyzer = RuleAnalyzer()
         for rule_name in ps.business_rules:
@@ -492,26 +513,27 @@ class LineageTracker:
                 continue
 
             for out_col in profile.output_columns:
-                if profile.input_columns:
-                    for in_col in profile.input_columns:
+                for target_column in _rule_targets(out_col):
+                    if profile.input_columns:
+                        for in_col in profile.input_columns:
+                            graph.add_edge(LineageEdge(
+                                source_table=primary_table,
+                                source_column=in_col,
+                                target_table=target,
+                                target_column=target_column,
+                                transformations=[f"rule:{rule_name}"],
+                                edge_type="rule",
+                            ))
+                    else:
+                        # Rule writes a column but no inputs detected
                         graph.add_edge(LineageEdge(
                             source_table=primary_table,
-                            source_column=in_col,
+                            source_column="<unknown>",
                             target_table=target,
-                            target_column=out_col,
+                            target_column=target_column,
                             transformations=[f"rule:{rule_name}"],
                             edge_type="rule",
                         ))
-                else:
-                    # Rule writes a column but no inputs detected
-                    graph.add_edge(LineageEdge(
-                        source_table=primary_table,
-                        source_column="<unknown>",
-                        target_table=target,
-                        target_column=out_col,
-                        transformations=[f"rule:{rule_name}"],
-                        edge_type="rule",
-                    ))
 
         return graph
 

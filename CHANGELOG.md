@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a business rule's lineage edge carrying the rule's internal column name instead of the
+  name `select_final` actually publishes. When the two differ, the edge pointed at a column the
+  target does not have, and the column it *does* have was left with no provenance at all — so a
+  classification inherited through the rule reached nothing. Measured end to end: `email`
+  classified `pii` upstream, a rule deriving `email_masked` from it, `select_final` publishing it
+  as `hashed_contact`, and `skifer index --strict` reporting no violation and `hashed_contact`
+  classified `None`. Same family as the `aggregate:` fail-open below. A rule column that
+  `select_final` never mentions is now emitted as no target edge at all: it is computed and then
+  dropped, so advertising it invented a column that `skifer lineage` would answer for and the
+  dictionary would list. `keep_all_columns` and the identity case are unchanged.
+
 - Fixed `aggregate:` producing no column lineage at all, which silently dropped classification.
   The Plan 28 block had never been wired into `LineageTracker`, so an aggregated Gold table — the
   most common shape there is — had an empty dictionary, an empty impact analysis, and inherited

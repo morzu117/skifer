@@ -478,6 +478,59 @@ def test_a_rule_made_column_is_not_attributed_to_a_source_table():
     ]
 
 
+def test_a_renamed_rule_column_keeps_its_rule_provenance():
+    """The rule names the column; `select_final` decides what is published.
+
+    When the two names differ, the rule edge has to carry the published one.
+    Carrying the rule's internal name pointed the edge at a column the target
+    does not have, and left the column it does have with no provenance — so a
+    classification inherited through the rule reached nothing. Measured through
+    `skifer index --strict`: no violation raised on a `pii` source.
+    """
+    RuleRegistry.register_rule(name="classify_renamed_lineage")(_rule_classify)
+    try:
+        schema = {
+            "tables": [{"name": "raw_orders", "alias": "ord"}],
+            "business_rules": ["classify_renamed_lineage"],
+            "select_final": [["order_class", "priority_label"]],
+        }
+
+        graph = LineageTracker.from_schema(schema, target_name="gold.orders")
+
+        rule_edges = [e for e in graph.edges if e.edge_type == "rule"]
+        assert [(e.source_column, e.target_column) for e in rule_edges] == [
+            ("amount", "priority_label")
+        ]
+        # The one-hop walk every consumer uses must reach the real source.
+        assert "amount" in {
+            e.source_column for e in graph.upstream("gold.orders", "priority_label")
+        }
+    finally:
+        RuleRegistry._rules.pop("classify_renamed_lineage", None)
+
+
+def test_a_rule_column_dropped_by_select_final_is_not_advertised():
+    """A computed-then-dropped column is not a column of the target.
+
+    `select_final` never mentions `order_class`, so the pipeline does not publish
+    it. Emitting a target edge for it invented a column: `skifer lineage` would
+    answer for it and the dictionary would list it.
+    """
+    RuleRegistry.register_rule(name="classify_dropped_lineage")(_rule_classify)
+    try:
+        schema = {
+            "tables": [{"name": "raw_orders", "alias": "ord"}],
+            "business_rules": ["classify_dropped_lineage"],
+            "select_final": [["amount", "amount"]],
+        }
+
+        graph = LineageTracker.from_schema(schema, target_name="gold.orders")
+
+        assert [e.target_column for e in graph.edges] == ["amount"]
+    finally:
+        RuleRegistry._rules.pop("classify_dropped_lineage", None)
+
+
 def test_a_plain_source_column_keeps_its_source_table():
     schema = {
         "tables": [{"name": "raw_orders", "alias": "ord"}],
