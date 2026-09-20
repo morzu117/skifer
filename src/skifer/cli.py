@@ -177,6 +177,17 @@ def main() -> None:
         action="store_true",
         help="Reject undeclared inherited classification before indexing.",
     )
+    index_parser.add_argument(
+        "--rules",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help=(
+            "Module whose import registers business rules (e.g. rules.orders). "
+            "Repeat for several. Without it a rule is unresolvable, so the "
+            "columns it produces carry no lineage and inherit no classification."
+        ),
+    )
 
     lineage_parser = subparsers.add_parser(
         "lineage",
@@ -585,6 +596,16 @@ def run_index_command(args: argparse.Namespace, *, store=None) -> int:
 
     if args.target_fqn and len(args.paths) > 1:
         print("[index] --target-fqn is only valid with a single path.", file=sys.stderr)
+        return INDEX_EXIT_USAGE
+
+    # The lineage this command stores is built by RuleAnalyzer, which can only
+    # read a rule the process has imported. Without this, every column a
+    # business rule produces is indexed with no provenance and inherits no
+    # classification — silently, because an unresolved rule is skipped.
+    try:
+        import_rule_modules(getattr(args, "rules", None) or [])
+    except ValueError as exc:
+        print(f"[index] {exc}", file=sys.stderr)
         return INDEX_EXIT_USAGE
 
     try:

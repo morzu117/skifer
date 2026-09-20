@@ -129,6 +129,20 @@ skifer lineage silver.fact_orders.amount_eur --direction up --format mermaid
 skifer lineage silver.fact_orders --direction down --format json
 ```
 
+A pipeline that names `business_rules` needs `--rules` for the columns those
+rules produce to carry any lineage at all:
+
+```bash
+skifer index schemas/gold/report.yaml --db .skifer_metadata.db --rules rules.orders
+```
+
+The stored lineage is built by `RuleAnalyzer`, which can only read a rule the
+process has imported, and project rules live in the project. An unresolved rule
+is skipped, so without the flag the record is indexed with no provenance for
+those columns and no inherited classification — and a truncated lineage looks
+exactly like a pipeline that has no rules. A module that cannot be imported is a
+usage error rather than a warning: continuing would leave the same silent gap.
+
 `MetadataRegistryQuery` merges every stored graph, refuses a cycle, and computes
 upstream and downstream closures across pipeline boundaries. Its impact report
 contains impacted datasets and columns, traversed edges, and a `truncated` flag

@@ -142,6 +142,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `--rules` to `skifer index`, which had no way to import the project's business rules.
+  The lineage this command stores is built by `RuleAnalyzer`, which can only read a rule the
+  process imported, and an unresolved rule is skipped silently — so indexing a pipeline with
+  rules produced a record where every rule-made column had no provenance and inherited no
+  classification, indistinguishable from a pipeline that has no rules. `compile` and `run`
+  already had the flag. A module that cannot be imported is a usage error, not a warning:
+  continuing would leave exactly the gap the flag exists to close.
+
 - Added cross-engine equivalence cases for the column operations that had none — `abs`, `ceil`,
   `length`, `col` and `expr`. They had been added to the catalog and never to the hand-kept specs
   list, so no test had ever compared them on Spark and DuckDB. They agree, including `CEIL` of a
