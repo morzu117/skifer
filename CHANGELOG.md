@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `aggregate:` producing no column lineage at all, which silently dropped classification.
+  The Plan 28 block had never been wired into `LineageTracker`, so an aggregated Gold table — the
+  most common shape there is — had an empty dictionary, an empty impact analysis, and inherited
+  nothing: a `pii` column folded by `first` reached the target with no classification, and
+  `mode="strict"` could not object, because it rejects undeclared *inferred* elevations and there
+  was no inference to reject. A control cannot catch what it is never shown. A group key now
+  carries a `select` edge marked `group_by`, a measure a `metric` edge marked with its function.
+  `count:*` starts at the source rather than the target, since the rows counted are the source's,
+  and is emitted despite having no source column — dropping the edge would hide the output column
+  from the dictionary, and an absent column reads as "no dependency" rather than "not analysed".
+  A group key produced by `add_columns` is not re-attributed to a source table, because that would
+  name a column the reader cannot find; its own edge already carries the real origin.
+
 - Fixed `incremental merge` accepting a batch whose `unique_key` is not unique. Measured on the
   same YAML and the same rows: Delta refuses with
   `DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE`, while DuckDB accepted the statement
