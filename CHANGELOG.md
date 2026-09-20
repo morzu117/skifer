@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `schema_from_definition` dropping `contract.grain` and `contract.security` when rebuilding
+  a schema from a contract's canonical JSON. Both are in the hashed payload, so two definitions
+  differing only there are correctly two identities — but every comparison built on the rebuild was
+  blind to them. `PublicationCoordinator` reconstructs **both** sides of its breaking-change
+  comparison this way, so a `security.level` downgraded from `restricted` to `public` and a
+  redefined grain produced no alert at all. Slice 35.2a's acceptance criterion — a round trip
+  showing no change — passed precisely because `diff_contracts` was blind in the same place: two
+  gaps that masked each other.
+
+- Fixed `diff_contracts` ignoring attributes that change the contract's identity hash. `unique`,
+  `entity`, `grain` and the whole `security` block were invisible, so a contract could change
+  identity while the governance tooling reported nothing. A grain redefinition is breaking because
+  it changes what one row means. A `security.level` is a free string, so two levels are comparable
+  only when both are known taxonomy levels; an `access_policy` is an expression rather than a rank
+  and can never be compared — anything that cannot be shown safe counts as breaking, which is the
+  rule this module already applied to an SLA. Withdrawing `unique` is reported without being
+  breaking, for the same reason dropping `required` is. A test now fails when any hashed attribute
+  becomes invisible to the diff, with the `semantic:` seed as the one declared exception.
+
 - Fixed a business rule's lineage edge carrying the rule's internal column name instead of the
   name `select_final` actually publishes. When the two differ, the edge pointed at a column the
   target does not have, and the column it *does* have was left with no provenance at all — so a

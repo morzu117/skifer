@@ -7,7 +7,11 @@ import pytest
 
 from skifer.core.ir import parse_to_ir
 from skifer.core.schema_loader import parse_schema
-from skifer.observability.certification import ContractDefinition, canonicalize_contract
+from skifer.observability.certification import (
+    ContractDefinition,
+    canonicalize_contract,
+    diff_contracts,
+)
 from skifer.observability.certification_store import SqliteCertificationStore
 
 
@@ -375,3 +379,221 @@ def test_every_contract_block_attribute_is_in_the_identity_hash(block):
 def test_changing_a_contract_block_attribute_changes_the_hash(block, attribute):
     replacement = _BLOCK_PARTICIPATES[block][attribute]
     assert _hash_with_block(block, **{attribute: replacement}) != _hash_with_block(block)
+
+
+# ---------------------------------------------------------------------------
+# The identity hash and the contract diff are two views of one contract.
+#
+# The hash answers "is this the same contract?", the diff answers "what moved?".
+# An attribute the hash reacts to but the diff cannot see is a contract that
+# changes identity while `skifer contract` reports nothing — measured: a
+# `security.level` downgraded from restricted to internal, a withdrawn `unique`,
+# and a changed `grain` were all invisible.
+# ---------------------------------------------------------------------------
+
+#: Hashed attributes deliberately outside `diff_contracts`, with the reason.
+#: The semantic seed is a model hint co-authored with the pipeline, not a
+#: promise made to a consumer of the table, so it carries no breaking change.
+_OUTSIDE_CONTRACT_DIFF = {
+    "semantic.model_key",
+    "semantic.entity",
+    "semantic.default_time_dimension",
+    "semantic.dimensions",
+}
+
+
+def _mutations():
+    import dataclasses
+
+    base = parse_to_ir(parse_schema(FULL_FIELD_YAML))
+
+    def with_field(**changes):
+        first, *rest = base.contract_output
+        return dataclasses.replace(
+            base, contract_output=[dataclasses.replace(first, **changes), *rest]
+        )
+
+    def with_block(block, **changes):
+        return dataclasses.replace(
+            base, **{block: dataclasses.replace(getattr(base, block), **changes)}
+        )
+
+    return base, {
+        "output.name": with_field(name="order_key"),
+        "output.logical_type": with_field(logical_type="string"),
+        "output.required": with_field(required=False),
+        "output.unique": with_field(unique=False),
+        "output.classification": with_field(classification="pii"),
+        "output.entity": with_field(entity="customer"),
+        "contract.grain": dataclasses.replace(base, contract_grain=["order_id", "order_date"]),
+        "sla.refresh_frequency": with_block("contract_sla", refresh_frequency="6h"),
+        "sla.max_latency": with_block("contract_sla", max_latency="48h"),
+        "security.level": with_block("contract_security", level="restricted"),
+        "security.access_policy": with_block("contract_security", access_policy="row_filter:country"),
+        "semantic.model_key": with_block("semantic", model_key="orders_v2"),
+        "semantic.entity": with_block("semantic", entity="customer"),
+        "semantic.default_time_dimension": with_block("semantic", default_time_dimension=None),
+        "semantic.dimensions": with_block("semantic", dimensions=("order_date",)),
+    }
+
+
+@pytest.mark.parametrize("attribute", sorted(_mutations()[1]))
+def test_an_attribute_the_hash_reacts_to_is_visible_to_the_contract_diff(attribute):
+    import dataclasses
+
+    base, mutations = _mutations()
+    mutated = mutations[attribute]
+
+    assert (
+        canonicalize_contract(mutated).definition_hash
+        != canonicalize_contract(base).definition_hash
+    ), "the fixture must actually change this attribute"
+
+    unchanged = diff_contracts(base, base)
+    reported = [
+        f.name
+        for f in dataclasses.fields(diff_contracts(base, mutated))
+        if getattr(diff_contracts(base, mutated), f.name) != getattr(unchanged, f.name)
+    ]
+
+    if attribute in _OUTSIDE_CONTRACT_DIFF:
+        assert reported == [], (
+            f"'{attribute}' is listed as outside the contract diff but is now reported. "
+            "Remove it from _OUTSIDE_CONTRACT_DIFF."
+        )
+    else:
+        assert reported, (
+            f"'{attribute}' changes the contract's identity hash but `diff_contracts` "
+            "reports nothing. Either report it, or list it in _OUTSIDE_CONTRACT_DIFF "
+            "with the reason it is not a promise to a consumer."
+        )
+
+
+@pytest.mark.parametrize("attribute", ["contract.grain", "security.access_policy"])
+def test_a_change_that_cannot_be_shown_safe_is_breaking(attribute):
+    """A grain change redefines what one row means; an access policy is an
+    expression, not a rank, so no edit to it can be shown to be a tightening.
+    This module already treats an SLA it cannot compare as breaking."""
+    base, mutations = _mutations()
+    assert diff_contracts(base, mutations[attribute]).breaking
+
+
+def test_security_level_is_breaking_only_when_it_is_downgraded():
+    import dataclasses
+
+    base, _ = _mutations()
+
+    def at_level(level):
+        return dataclasses.replace(
+            base,
+            contract_security=dataclasses.replace(base.contract_security, level=level),
+        )
+
+    # The fixture sits at `internal`.
+    assert diff_contracts(base, at_level("restricted")).breaking is False
+    assert diff_contracts(base, at_level("public")).breaking is True
+    # A level outside the taxonomy has no rank, so it cannot be shown to be a
+    # tightening — the safe reading is that access may have widened.
+    assert diff_contracts(base, at_level("tier-2")).breaking is True
+    assert diff_contracts(base, at_level("restricted")).security_changed is True
+
+
+def test_withdrawing_uniqueness_is_reported_without_being_breaking():
+    """Dropping `unique` loosens what the producer must deliver, so it does not
+    break the producer. It is reported because a consumer may have built a join
+    grain on it — the same asymmetry `required` already has."""
+    base, mutations = _mutations()
+    diff = diff_contracts(base, mutations["output.unique"])
+
+    assert diff.unique_changed == (("order_id", True, False),)
+    assert not diff.breaking
+
+
+# ---------------------------------------------------------------------------
+# The canonical JSON and the schema rebuilt from it are two views of one
+# contract. `publication.py` reconstructs BOTH sides of its breaking-change
+# comparison through `schema_from_definition`, so anything the rebuild drops is
+# invisible to the alert — measured: a `security.level` downgraded to `public`
+# produced no diff at all, and a redefined grain produced none either.
+# ---------------------------------------------------------------------------
+
+#: Hashed `contract` payload key → how to read it back off the rebuilt schema.
+_CONTRACT_PAYLOAD_READERS = {
+    "grain": lambda s: list(s.contract_grain),
+    "output": lambda s: [
+        {
+            "name": f.name,
+            "logical_type": f.logical_type,
+            "required": f.required,
+            "unique": f.unique,
+            "classification": f.classification,
+            "entity": f.entity,
+        }
+        for f in s.contract_output
+    ],
+    "sla": lambda s: (
+        None
+        if s.contract_sla is None
+        else {
+            "refresh_frequency": s.contract_sla.refresh_frequency,
+            "max_latency": s.contract_sla.max_latency,
+        }
+    ),
+    "security": lambda s: (
+        None
+        if s.contract_security is None
+        else {
+            "level": s.contract_security.level,
+            "access_policy": s.contract_security.access_policy,
+        }
+    ),
+}
+
+
+def test_every_hashed_contract_key_is_restored_by_the_rebuild():
+    from skifer.observability.certification import schema_from_definition
+
+    definition = _contract(FULL_FIELD_YAML)
+    payload = json.loads(definition.canonical_json)["contract"]
+
+    assert set(payload) == set(_CONTRACT_PAYLOAD_READERS), (
+        "A key was added to or removed from the hashed contract payload without "
+        "a matching read in `schema_from_definition`. A key the hash counts and "
+        "the rebuild drops is a difference no comparison built on the rebuild "
+        "can see."
+    )
+
+    rebuilt = schema_from_definition(definition)
+    for key, read in _CONTRACT_PAYLOAD_READERS.items():
+        assert read(rebuilt) == payload[key], f"'{key}' did not survive the rebuild"
+
+
+def test_a_security_downgrade_is_breaking_across_the_rebuild():
+    """The path publication actually uses: both sides come from canonical JSON."""
+    from skifer.observability.certification import schema_from_definition
+
+    before = schema_from_definition(_contract(FULL_FIELD_YAML))
+    after = schema_from_definition(
+        _contract(FULL_FIELD_YAML.replace("level: internal", "level: public"))
+    )
+
+    diff = diff_contracts(before, after)
+
+    assert diff.security_changed
+    assert diff.breaking
+
+
+def test_a_redefined_grain_is_breaking_across_the_rebuild():
+    from skifer.observability.certification import schema_from_definition
+
+    before = schema_from_definition(_contract(FULL_FIELD_YAML))
+    after = schema_from_definition(
+        _contract(FULL_FIELD_YAML.replace("grain: [order_id]", "grain: [order_date]"))
+    )
+
+    diff = diff_contracts(before, after)
+
+    # No field was added or removed — only the meaning of a row changed.
+    assert diff.added == () and diff.removed == ()
+    assert diff.grain_changed == (("order_id",), ("order_date",))
+    assert diff.breaking

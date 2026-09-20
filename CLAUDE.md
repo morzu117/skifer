@@ -707,7 +707,10 @@ propagation par lineage, un owner structuré (`team`, `steward`, `domain`, `cont
 du contrat (`status`, `reviewers`, dates d'effet, `sla`, `security`). La canonicalisation est en v2 :
 `sla` et `security` participent au hash ; `status`, `reviewers`, `effective_from` et `effective_until`
 n'y participent pas. ODCS 3.1 est importable par `skifer contract import`; `diff_contracts()` marque
-les suppressions, retypages, durcissements de champ, baisses de classification et relâchements SLA.
+les suppressions, retypages, durcissements de champ, baisses de classification, redéfinitions de
+grain, baisses de sécurité et relâchements SLA — la règle étant que ce qui ne peut pas être montré
+sûr compte comme cassant. Tout attribut qui change le hash d'identité est visible du diff, à
+l'exception déclarée du bloc `semantic:` ; un test échoue si ce n'est plus vrai.
 
 Une quarantaine ouvre les incidents critiques ; une publication rétablie résout les incidents ouverts.
 Le routage couvre le propriétaire du dataset et les propriétaires aval, avec webhook générique,
