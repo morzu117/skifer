@@ -161,6 +161,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added drift guards on the coupling between `semantic sync`'s contract snapshot and the
+  `ContractDiff` dimensions it checks. The snapshot is what defines the comparable surface, so the
+  two lists have to match in both directions: storing an attribute without checking it makes it
+  silently uncomparable, and checking one without storing it makes every contract that declares it
+  drift on every sync. Measured — adding `grain_changed` to the check without snapshotting the
+  grain reports drift on a contract that did not change. This is why `diff_contracts` gaining new
+  dimensions did not extend `semantic sync`: widening its snapshot is a draft-format change that
+  has to decide what an older draft, which has no such key, should report.
+
 - Added drift guards on contract identity. `canonicalize_contract` builds the hashed payload from
   a hand-written list of field names, so a field added to `ParsedOutputField`, `ParsedSla`,
   `ParsedSecurity` or `ParsedSemanticSeed` would silently stay out of the hash — and two
