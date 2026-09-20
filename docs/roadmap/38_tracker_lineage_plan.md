@@ -62,7 +62,7 @@ aurait produit « `gold.fact` ne dépend que de `silver.orders` » et « `silver
 `silver.customers` ». Dans `skifer run --select`, ces deux erreurs décident de l'ordre
 d'exécution. La tranche 39.6.2 dérive donc ses arêtes des `tables:` déclarées de l'IR, pas d'ici.
 
-### 3. Un pipeline d'agrégation n'a aucun lineage
+### 3. Un pipeline d'agrégation n'avait aucun lineage — **corrigé le 20 septembre 2026**
 
 ```yaml
 tables:
@@ -74,9 +74,26 @@ aggregate:
 ```
 
 **Zéro arête.** Ni `country -> country`, ni `amount -> total`. Le bloc `aggregate:` du Plan 28
-n'a jamais été câblé dans le tracker, alors que c'est la forme la plus courante d'une table Gold.
-Un dictionnaire ou une analyse d'impact sur une table agrégée est donc vide — et vide se lit
-comme « aucune dépendance », pas comme « non analysé ».
+n'avait jamais été câblé dans le tracker, alors que c'est la forme la plus courante d'une table
+Gold. Un dictionnaire ou une analyse d'impact sur une table agrégée était donc vide — et vide se
+lit comme « aucune dépendance », pas comme « non analysé ».
+
+> **Livré.** C'était le seul des quatre points sans ambiguïté de conception : `group_by` et
+> `measures` nomment explicitement leurs sources, il n'y avait rien à deviner. Une clé de groupe
+> porte une arête `select` marquée `group_by` ; une mesure porte une arête `metric` marquée de sa
+> fonction. Deux précisions qui comptent :
+>
+> - **`count:*` part de la source, pas de la cible.** Les lignes comptées sont celles de la source.
+>   L'arête est émise malgré l'absence de colonne source, sans quoi la colonne de sortie
+>   disparaîtrait du dictionnaire — et une colonne absente se lit « aucune dépendance ».
+> - **Une clé de groupe issue d'`add_columns` n'est pas réattribuée à la table source.**
+>   `add_columns` s'applique avant l'agrégat, donc la clé peut être dérivée ; émettre
+>   `silver.orders.amount_bucket` nommerait une colonne introuvable. Son arête `add_columns`
+>   porte déjà la vraie origine.
+>
+> Les trois autres points restent ouverts : ils demandent de décider comment un doute se
+> représente, si le tracker peut lire un schéma, et comment séparer la condition de jointure du
+> flux.
 
 ### 4. Les règles sont opaques — connu et assumé
 
@@ -95,8 +112,7 @@ explicite). À distinguer des trois points ci-dessus : ici le silence est un cho
    `skifer index`, en CI, sans entrepôt. Un résolveur **injecté et optionnel** préserverait ça.
 3. **Séparer la condition de jointure du flux.** Soit deux types d'arêtes clairement distincts,
    soit deux graphes.
-4. **Câbler `aggregate:`.** Le moins ambigu des quatre points : `group_by` et `measures` nomment
-   explicitement leurs sources, il n'y a rien à deviner.
+4. ~~**Câbler `aggregate:`.**~~ **Livré le 20 septembre 2026** — voir le point 3 ci-dessus.
 
 ## Rayon d'impact
 
@@ -113,7 +129,7 @@ périmètre est un plancher, pas une garantie.
 | `src/skifer/lineage/classification.py` | propage la classification **le long de ces arêtes** — une arête absente ne propage rien, y compris en `mode="strict"` (voir plus bas) |
 | `examples/11_lineage_and_dictionary/` | livrable exécuté par la suite ; changer le comportement change l'exemple |
 
-## Le point le plus grave : la classification n'est pas propagée sur un agrégat
+## Le point le plus grave : la classification n'était pas propagée sur un agrégat — **fermé**
 
 La propagation `public→pii` du Plan 31 suit ces arêtes. L'absence d'arête sur un `aggregate:`
 n'est donc pas seulement une lacune de documentation — c'est un **fail-open de gouvernance**.
@@ -134,8 +150,12 @@ toute classification, et `mode="strict"` — le réglage dont c'est exactement l
 rien y voir : il rejette les élévations *inférées non déclarées*, et il n'y a aucune inférence à
 rejeter quand le tracker n'a rien émis.
 
-Un contrôle ne peut pas attraper ce qui ne lui est jamais présenté. C'est ce qui fait passer le
-câblage d'`aggregate:` du rang d'amélioration à celui de correctif.
+Un contrôle ne peut pas attraper ce qui ne lui est jamais présenté. C'est ce qui a fait passer le
+câblage d'`aggregate:` du rang d'amélioration à celui de correctif — et ce qui l'a fait livrer
+seul, sans attendre la conception des trois autres points.
+
+**Depuis le correctif**, la même mesure donne `{'contacts': 'pii'}` en `warn` (avec
+`ClassificationPropagationWarning`) et une `ClassificationViolationError` en `strict`.
 
 **Correction d'une affirmation trop forte.** J'avais d'abord écrit qu'une arête attribuée à la
 mauvaise table propage une classification à la mauvaise colonne. C'est **faux** :
