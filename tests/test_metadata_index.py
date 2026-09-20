@@ -226,6 +226,61 @@ select_final:
     assert "email_hash" in captured.err
 
 
+def test_run_index_command_strict_catches_pii_crossing_a_renaming_rule(tmp_path, capsys):
+    """Same violation as above, but the derivation goes through a business rule.
+
+    The rule reads `email` and writes `email_masked`; `select_final` publishes it
+    as `hashed_contact`. Until the rule edge carried the published name, this
+    pipeline indexed clean: the edge pointed at `email_masked`, which is not a
+    column of the target, so the `pii` never reached `hashed_contact` and strict
+    mode had nothing to object to.
+    """
+    from skifer.core.registry import RuleRegistry
+    from skifer.observability.metadata_store import ColumnRecord, DatasetRecord
+
+    @RuleRegistry.register_rule(name="strict_index_mask_email")
+    def strict_index_mask_email(df):
+        return df.withColumn("email_masked", df["email"])
+
+    path = tmp_path / "report.yaml"
+    path.write_text(
+        """
+data_product: {id: sales.masked_report, version: 1.0.0}
+tables: [{name: silver.contacts, alias: c}]
+business_rules: [strict_index_mask_email]
+select_final:
+  - [email_masked, hashed_contact]
+""",
+        encoding="utf-8",
+    )
+    store = SqliteMetadataStore(":memory:")
+    store.upsert(DatasetRecord(
+        target_fqn="silver.contacts",
+        pipeline_path="upstream.yaml",
+        data_product_id="sales.contacts",
+        contract_version="1.0.0",
+        definition_hash="upstream-hash",
+        owner=None,
+        columns=(ColumnRecord("email", classification="pii"),),
+        indexed_at=datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc),
+    ))
+
+    try:
+        result = run_index_command(
+            argparse.Namespace(
+                paths=[str(path)], db="unused.db", target_fqn=None, strict=True
+            ),
+            store=store,
+        )
+    finally:
+        RuleRegistry._rules.pop("strict_index_mask_email", None)
+
+    assert result == INDEX_EXIT_CLASSIFICATION
+    assert store.get("sales.masked_report") is None
+    captured = capsys.readouterr()
+    assert "hashed_contact" in captured.err
+
+
 def test_run_index_command_strict_compliant_pipeline_writes_record(tmp_path, capsys):
     path = tmp_path / "orders.yaml"
     path.write_text(
@@ -332,4 +387,9 @@ select_final:
     assert [column.name for column in record.columns] == ["normalized_amount"]
     assert rule_edges
     assert rule_edges[0]["source_column"] == "amount"
-    assert rule_edges[0]["target_column"] == "rule_amount"
+    # `rule_amount` is the rule's internal name; `select_final` publishes it as
+    # `normalized_amount`. The edge must carry the published name: pointing at
+    # the internal one names a column this record does not have, and leaves the
+    # one it does have with no provenance — which is how a `pii` source used to
+    # cross a renaming rule without `--strict` ever objecting.
+    assert rule_edges[0]["target_column"] == "normalized_amount"
