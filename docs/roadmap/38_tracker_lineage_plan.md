@@ -95,11 +95,45 @@ lit comme « aucune dépendance », pas comme « non analysé ».
 > représente, si le tracker peut lire un schéma, et comment séparer la condition de jointure du
 > flux.
 
-### 4. Les règles sont opaques — connu et assumé
+### 4. Seules les règles que l'analyse statique ne perce pas sont opaques
 
-Un pipeline dont les colonnes viennent de `business_rules` produit zéro arête. C'est
-**intentionnel** et déjà documenté (`examples/11_lineage_and_dictionary` en fait sa démonstration
-explicite). À distinguer des trois points ci-dessus : ici le silence est un choix affiché.
+**Correction du 20 septembre 2026.** Cette section affirmait qu'un pipeline dont les colonnes
+viennent de `business_rules` produit *zéro* arête. C'est faux, et `examples/11_lineage_and_dictionary`
+— cité à l'appui — démontre exactement l'inverse : il imprime `from raw_orders.amount [rule] via
+rule:classify_order`. Depuis le Plan 34, `RuleAnalyzer` lit les sorties des règles `projection`
+comme des `transform`, et le tracker en émet des arêtes.
+
+Ce qui reste opaque est plus étroit : une règle dont l'analyse statique ne détecte **aucune**
+sortie (`profile.source_available` faux, ou aucune colonne trouvée). L'exemple l'affiche sous
+`opaque_rule declares outputs: <none detected>`. Là, le silence est un choix affiché.
+
+### 5. Une règle renommée par `select_final` perdait sa provenance — **corrigé le 20 septembre 2026**
+
+Une règle nomme sa colonne ; `select_final` décide de ce qui est publié. Quand les deux noms
+diffèrent, l'arête de règle portait le nom **interne** — une colonne que la cible n'a pas — et la
+colonne réellement publiée se retrouvait sans provenance. Mesuré de bout en bout :
+
+```text
+silver.contacts.email  (pii)  --règle mask_email-->  email_masked
+                                select_final: [email_masked, hashed_contact]
+
+avant :  skifer index --strict  ->  aucune violation, hashed_contact = None
+après :  skifer index --strict  ->  VIOLATION sur 'hashed_contact'
+```
+
+C'est la même famille que le point 3 : l'arête manquante ne propage rien, et `mode="strict"` n'a
+rien à refuser. Le cas identité (`[order_class, order_class]`) et `keep_all_columns` étaient déjà
+corrects, ce qui explique que le défaut ait survécu — l'exemple 11 et le test du tracker couvraient
+tous deux le cas identité.
+
+Corollaire livré dans le même correctif : une colonne de règle que `select_final` ne mentionne
+jamais n'émet plus d'arête vers la cible. Elle est calculée puis jetée ; l'annoncer inventait une
+colonne pour laquelle `skifer lineage` répondait et que le dictionnaire listait.
+
+**Reste ouvert, mesuré au passage.** Avec `keep_all_columns: true`, `OutputProjector` ne rend
+**aucune** colonne — il ne peut pas les connaître sans lire un schéma. L'enregistrement indexé
+annonce donc un dataset sans colonnes, et l'héritage de classification, qui itère sur
+`record.columns`, n'examine rien. C'est le point 2 de la section suivante, pas celui-ci.
 
 ## Ce qu'un plan devra trancher
 
@@ -113,6 +147,9 @@ explicite). À distinguer des trois points ci-dessus : ici le silence est un cho
 3. **Séparer la condition de jointure du flux.** Soit deux types d'arêtes clairement distincts,
    soit deux graphes.
 4. ~~**Câbler `aggregate:`.**~~ **Livré le 20 septembre 2026** — voir le point 3 ci-dessus.
+5. ~~**Le nom publié d'une colonne de règle.**~~ **Livré le 20 septembre 2026** — voir le
+   point 5 ci-dessus. Aucune ambiguïté de conception : la colonne publiée est celle que le
+   pipeline écrit, il n'y avait rien à arbitrer.
 
 ## Rayon d'impact
 
