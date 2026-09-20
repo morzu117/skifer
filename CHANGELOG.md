@@ -161,6 +161,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a drift guard on metadata persistence. `_record_to_json` serialises with `asdict`, so a
+  field added to `DatasetRecord` is written automatically, while `_record_from_json` names every
+  field by hand and would read the same field back as its default. The guard fails as soon as a
+  field is left at its default in the round-trip fixture, which forces it to be exercised, and the
+  round trip then catches a lossy read. The consequence is spelled out by a second test:
+  `target_provenance` coming back `unknown` turns every `skifer run` selection into a refusal,
+  and the default being the safe direction is exactly what would make that loss silent.
+
 - Added drift guards on the coupling between `semantic sync`'s contract snapshot and the
   `ContractDiff` dimensions it checks. The snapshot is what defines the comparable surface, so the
   two lists have to match in both directions: storing an attribute without checking it makes it
