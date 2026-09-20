@@ -142,6 +142,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added drift guards on contract identity. `canonicalize_contract` builds the hashed payload from
+  a hand-written list of field names, so a field added to `ParsedOutputField`, `ParsedSla`,
+  `ParsedSecurity` or `ParsedSemanticSeed` would silently stay out of the hash — and two
+  materially different contracts would then share one certification identity, which is the single
+  guarantee the hash exists to provide. Every attribute of those four dataclasses must now be
+  declared as either part of the identity or documentation-only, and the tests prove the
+  distinction rather than asserting it: each contractual attribute is flipped and the hash must
+  change, `description` is flipped and the hash must not. This also closed a coverage gap —
+  `name`, `required`, `unique`, `classification` and `entity` were in the payload with no test
+  showing that changing them changed anything.
+
 - Added `--rules` to `skifer index`, which had no way to import the project's business rules.
   The lineage this command stores is built by `RuleAnalyzer`, which can only read a rule the
   process imported, and an unresolved rule is skipped silently — so indexing a pipeline with
