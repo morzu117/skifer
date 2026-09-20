@@ -233,3 +233,145 @@ def test_contract_identity_requires_product_and_output_contract():
         _contract("tables: [{name: silver.orders}]")
     with pytest.raises(ValueError, match="contract.output"):
         _contract("data_product: {id: sales.orders, version: 1.0.0}\ntables: [{name: silver.orders}]")
+
+
+# ---------------------------------------------------------------------------
+# Drift guards on contract identity
+#
+# `canonicalize_contract` builds its payload from a hand-written list of field
+# names. Adding a field to any contract dataclass therefore leaves it out of the
+# hash silently, and two materially different contracts then share one
+# certification identity — the guarantee the hash exists to provide. These tests
+# fail when a field belongs to neither set, so the choice has to be made.
+# ---------------------------------------------------------------------------
+
+#: Field name → the value to flip it to. Every one must change the hash.
+_OUTPUT_PARTICIPATES = {
+    "name": "order_key",
+    "logical_type": "string",
+    "required": False,
+    "unique": False,
+    "classification": "pii",
+    "entity": "customer",
+}
+#: Field name → why it is deliberately out of the identity.
+_OUTPUT_EXCLUDED = {
+    "description": "documentation-only edits must not invalidate a certification",
+}
+
+FULL_FIELD_YAML = """
+data_product:
+  id: sales.orders
+  version: 1.2.3
+contract:
+  grain: [order_id]
+  sla: {refresh_frequency: 1h, max_latency: 24h}
+  security: {level: internal, access_policy: "row_filter:region"}
+  output:
+    order_id:
+      logical_type: identifier
+      required: true
+      unique: true
+      classification: internal
+      entity: order
+      description: The order identifier
+    order_date:
+      logical_type: date
+semantic:
+  model_key: orders
+  entity: order
+  default_time_dimension: order_date
+  dimensions: [order_id]
+tables: [{name: silver.orders}]
+select_final: [[id, order_id], [dt, order_date]]
+"""
+
+
+def _hash_with_output_field(**changes) -> str:
+    import dataclasses
+
+    schema = parse_to_ir(parse_schema(FULL_FIELD_YAML))
+    first, *rest = schema.contract_output
+    return canonicalize_contract(
+        dataclasses.replace(
+            schema,
+            contract_output=[dataclasses.replace(first, **changes), *rest],
+        )
+    ).definition_hash
+
+
+def test_every_output_field_attribute_is_classified_for_the_identity_hash():
+    import dataclasses
+
+    from skifer.core.ir import ParsedOutputField
+
+    declared = {f.name for f in dataclasses.fields(ParsedOutputField)}
+
+    assert declared == set(_OUTPUT_PARTICIPATES) | set(_OUTPUT_EXCLUDED), (
+        "A contract output field attribute is in neither set. Decide whether it "
+        "is part of the contract's identity (add it to _OUTPUT_PARTICIPATES) or "
+        "documentation only (add it to _OUTPUT_EXCLUDED with the reason)."
+    )
+
+
+@pytest.mark.parametrize("attribute,replacement", sorted(_OUTPUT_PARTICIPATES.items()))
+def test_changing_a_contractual_output_attribute_changes_the_hash(attribute, replacement):
+    assert _hash_with_output_field(**{attribute: replacement}) != _hash_with_output_field()
+
+
+@pytest.mark.parametrize("attribute", sorted(_OUTPUT_EXCLUDED))
+def test_changing_a_documentation_only_attribute_keeps_the_hash(attribute):
+    assert _hash_with_output_field(**{attribute: "rewritten"}) == _hash_with_output_field()
+
+
+#: The other three contract blocks put every attribute they own into the hash.
+#: Value to flip each one to, so the test proves it rather than asserting it.
+_BLOCK_PARTICIPATES = {
+    "contract_sla": {"refresh_frequency": "6h", "max_latency": "48h"},
+    "contract_security": {"level": "restricted", "access_policy": "row_filter:country"},
+    "semantic": {
+        "model_key": "orders_v2",
+        "entity": "customer",
+        "default_time_dimension": None,
+        "dimensions": ("order_date",),
+    },
+}
+
+
+def _hash_with_block(block: str, **changes) -> str:
+    import dataclasses
+
+    schema = parse_to_ir(parse_schema(FULL_FIELD_YAML))
+    current = getattr(schema, block)
+    return canonicalize_contract(
+        dataclasses.replace(schema, **{block: dataclasses.replace(current, **changes)})
+    ).definition_hash
+
+
+@pytest.mark.parametrize("block", sorted(_BLOCK_PARTICIPATES))
+def test_every_contract_block_attribute_is_in_the_identity_hash(block):
+    import dataclasses
+
+    schema = parse_to_ir(parse_schema(FULL_FIELD_YAML))
+    current = getattr(schema, block)
+    assert current is not None, f"the fixture must populate '{block}' for this guard to mean anything"
+
+    declared = {f.name for f in dataclasses.fields(type(current))}
+    assert declared == set(_BLOCK_PARTICIPATES[block]), (
+        f"'{type(current).__name__}' gained or lost an attribute. Every one of them "
+        "is part of the contract's identity today; decide explicitly before "
+        "shipping one that is not."
+    )
+
+
+@pytest.mark.parametrize(
+    "block,attribute",
+    sorted(
+        (block, attribute)
+        for block, changes in _BLOCK_PARTICIPATES.items()
+        for attribute in changes
+    ),
+)
+def test_changing_a_contract_block_attribute_changes_the_hash(block, attribute):
+    replacement = _BLOCK_PARTICIPATES[block][attribute]
+    assert _hash_with_block(block, **{attribute: replacement}) != _hash_with_block(block)
