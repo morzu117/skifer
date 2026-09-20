@@ -131,6 +131,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added cross-engine equivalence cases for the column operations that had none — `abs`, `ceil`,
+  `length`, `col` and `expr`. They had been added to the catalog and never to the hand-kept specs
+  list, so no test had ever compared them on Spark and DuckDB. They agree, including `CEIL` of a
+  negative and `LENGTH` over surrounding spaces, but that is now proved rather than assumed.
+  Three guards keep the three hand-kept lists — column operations, aggregate functions, filter
+  operators — from falling behind their catalogs again; each fails by naming what is uncovered.
+
 - Added offline target-dialect coverage (`tests/test_target_dialect_coverage.py`): every filter
   operator, column operation, aggregate function and join type is compiled and transpiled to
   Databricks, DuckDB, Snowflake and BigQuery, then parsed back in each dialect. It iterates the

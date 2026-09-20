@@ -537,6 +537,47 @@ def test_cross_join_equivalence(equivalence_runtime):
     )
 
 
+def _aggregate_measures():
+    """One measure per catalogued aggregate function, checked by a guard below."""
+    return [
+        ["value", "sum_value", "sum"],
+        ["value", "avg_value", "avg"],
+        ["value", "min_value", "min"],
+        ["value", "max_value", "max"],
+        ["*", "row_count", "count"],
+        ["value", "distinct_count", "count_distinct"],
+        ["value", "distinct_sum", "sum_distinct"],
+        ["value", "approx_distinct_count", "approx_count_distinct"],
+        ["value", "sample_stddev", "stddev"],
+        ["value", "sample_variance", "variance"],
+        ["stable_value", "first_value", "first"],
+        ["stable_value", "last_value", "last"],
+    ]
+
+
+def test_every_aggregate_function_has_an_equivalence_case():
+    """Same guard as for column operations, on the other hand-kept list."""
+    from skifer.core.op_catalog import AGGREGATE_FUNCTIONS
+
+    covered = {measure[2] for measure in _aggregate_measures()}
+    missing = sorted(set(AGGREGATE_FUNCTIONS) - covered)
+    assert not missing, (
+        "Aggregate functions with no cross-engine equivalence case: " + ", ".join(missing)
+    )
+
+
+def test_every_filter_operator_has_an_equivalence_case():
+    """FILTER_CASES is hand-kept too; an operator added to the catalog and not
+    here would simply never be compared across engines."""
+    from skifer.core.op_catalog import FILTER_OPERATORS
+
+    covered = {operator for operator, _ in FILTER_CASES}
+    missing = sorted(set(FILTER_OPERATORS) - covered)
+    assert not missing, (
+        "Filter operators with no cross-engine equivalence case: " + ", ".join(missing)
+    )
+
+
 def test_every_aggregate_and_having_equivalence(equivalence_runtime):
     schema = _normalized_schema(
         {
@@ -545,20 +586,7 @@ def test_every_aggregate_and_having_equivalence(equivalence_runtime):
             ],
             "aggregate": {
                 "group_by": ["group_key"],
-                "measures": [
-                    ["value", "sum_value", "sum"],
-                    ["value", "avg_value", "avg"],
-                    ["value", "min_value", "min"],
-                    ["value", "max_value", "max"],
-                    ["*", "row_count", "count"],
-                    ["value", "distinct_count", "count_distinct"],
-                    ["value", "distinct_sum", "sum_distinct"],
-                    ["value", "approx_distinct_count", "approx_count_distinct"],
-                    ["value", "sample_stddev", "stddev"],
-                    ["value", "sample_variance", "variance"],
-                    ["stable_value", "first_value", "first"],
-                    ["stable_value", "last_value", "last"],
-                ],
+                "measures": _aggregate_measures(),
                 "having": ["row_count:greater_than_equal:2"],
             },
         }
@@ -579,6 +607,15 @@ def _operation_specs():
         ["padded", "substring_value", ["substring:2,3"]],
         ["token", "split_value", ["split:-,1"]],
         ["date_text", "date_value", ["to_date:yyyy-MM-dd"]],
+        # `number_value` carries 2.65, -1.25 and NULL on purpose: CEIL of a
+        # negative is where engines most often disagree, and NULL is where an
+        # arithmetic op can quietly become 0.
+        ["number_value", "abs_value", ["abs"]],
+        ["number_value", "ceil_value", ["ceil"]],
+        # `padded` keeps its surrounding spaces, which LENGTH must count.
+        ["padded", "length_value", ["length"]],
+        ["status", "aliased_value", ["col:padded"]],
+        ["number_value", "expr_value", ["expr:number_value * 2"]],
         {
             "source": "status",
             "target": "status_label",
@@ -589,6 +626,34 @@ def _operation_specs():
             ],
         },
     ]
+
+
+def test_every_column_operation_has_an_equivalence_case():
+    """The specs list is maintained by hand, so it must be checked against the catalog.
+
+    Four operations — `abs`, `ceil`, `length` and `col` — had been added to
+    `COLUMN_OPS` and never to this list, so no test compared them across engines.
+    Nothing failed, because nothing asked. `when`/`then`/`else` are structural
+    keywords carried by the conditional entry rather than by an op string.
+
+    This test needs no Spark session: it reads the specs, not the engines.
+    """
+    from skifer.core.op_catalog import COLUMN_OPS
+
+    structural = {"when", "then", "else"}
+    covered = set()
+    for spec in _operation_specs():
+        ops = spec[2] if isinstance(spec, list) else spec.get("ops", [])
+        for op in ops:
+            if isinstance(op, str):
+                covered.add(op.split(":", 1)[0])
+            elif isinstance(op, dict):
+                covered.update(op)
+
+    missing = sorted(set(COLUMN_OPS) - structural - covered)
+    assert not missing, (
+        "Column operations with no cross-engine equivalence case: " + ", ".join(missing)
+    )
 
 
 @pytest.mark.parametrize("construction", ["add_columns", "select_final"])
