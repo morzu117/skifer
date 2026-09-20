@@ -281,6 +281,82 @@ select_final:
     assert "hashed_contact" in captured.err
 
 
+def test_run_index_command_rules_flag_makes_rule_lineage_appear(tmp_path, monkeypatch, capsys):
+    """Without `--rules`, a rule is unresolvable and its columns get no provenance.
+
+    The stored lineage is built by RuleAnalyzer, which can only read a rule the
+    process imported. Project rules live in the project, so nothing imports them
+    on this path unless asked — and an unresolved rule is skipped silently, so
+    the truncated lineage looks exactly like a pipeline that has no rules.
+    """
+    from skifer.core.registry import RuleRegistry
+
+    (tmp_path / "index_rules_mod.py").write_text(
+        "from skifer.core.registry import RuleRegistry\n"
+        "@RuleRegistry.register_rule(name='index_flag_rule')\n"
+        "def index_flag_rule(df):\n"
+        "    return df.withColumn('band', df['amount'])\n",
+        encoding="utf-8",
+    )
+    path = tmp_path / "orders.yaml"
+    path.write_text(
+        """
+data_product: {id: sales.banded, version: 1.0.0}
+tables: [{name: silver.orders, alias: ord}]
+business_rules: [index_flag_rule]
+select_final:
+  - [band, amount_band]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    def _index(rules):
+        store = SqliteMetadataStore(":memory:")
+        assert run_index_command(
+            argparse.Namespace(
+                paths=[str(path)], db="unused.db", target_fqn=None,
+                strict=False, rules=rules,
+            ),
+            store=store,
+        ) == INDEX_EXIT_OK
+        record = store.get("sales.banded")
+        return [e for e in record.lineage["edges"] if e["edge_type"] == "rule"]
+
+    try:
+        assert _index([]) == []
+        assert [
+            (e["source_column"], e["target_column"]) for e in _index(["index_rules_mod"])
+        ] == [("amount", "amount_band")]
+    finally:
+        RuleRegistry._rules.pop("index_flag_rule", None)
+
+
+def test_run_index_command_rejects_an_unimportable_rules_module(tmp_path, capsys):
+    path = tmp_path / "orders.yaml"
+    path.write_text(
+        "data_product: {id: sales.plain, version: 1.0.0}\n"
+        "tables: [{name: silver.orders, alias: ord}]\n"
+        "select_final: [[amount, amount]]\n",
+        encoding="utf-8",
+    )
+    store = SqliteMetadataStore(":memory:")
+
+    result = run_index_command(
+        argparse.Namespace(
+            paths=[str(path)], db="unused.db", target_fqn=None,
+            strict=False, rules=["no_such_rules_module"],
+        ),
+        store=store,
+    )
+
+    # Blaming the pipeline for a rule the caller failed to import would send the
+    # reader to the wrong file.
+    assert result == INDEX_EXIT_USAGE
+    assert store.list_all() == []
+    assert "no_such_rules_module" in capsys.readouterr().err
+
+
 def test_run_index_command_strict_compliant_pipeline_writes_record(tmp_path, capsys):
     path = tmp_path / "orders.yaml"
     path.write_text(

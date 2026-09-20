@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `--rules` to `skifer index`, which had no way to import the project's business rules.
+  The lineage this command stores is built by `RuleAnalyzer`, which can only read a rule the
+  process imported, and an unresolved rule is skipped silently — so indexing a pipeline with
+  rules produced a record where every rule-made column had no provenance and inherited no
+  classification, indistinguishable from a pipeline that has no rules. `compile` and `run`
+  already had the flag. A module that cannot be imported is a usage error, not a warning:
+  continuing would leave exactly the gap the flag exists to close.
+
 - Documented that an operation containing a comma must be quoted in a YAML flow sequence:
   `[split:-,0]` is read as two items and silently loses the index. The documented
   `split:sep,idx` form was itself the trap.
