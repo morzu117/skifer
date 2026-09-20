@@ -416,7 +416,56 @@ class LineageTracker:
                 edge_type="select",
             ))
 
-        # 3. join — edges between join key columns across source tables
+        # 3. aggregate — group keys carry a value through, measures fold one (Plan 28)
+        #
+        # Without this the whole `aggregate:` block produced no edge at all, so an
+        # aggregated Gold table had an empty dictionary, an empty impact analysis,
+        # and — the costly one — inherited no classification: a `pii` column folded
+        # by `first` reached the target with nothing propagated, and `mode="strict"`
+        # could not object, because it rejects undeclared *inferred* elevations and
+        # there was no inference to reject. A control cannot catch what it is never
+        # shown.
+        if ps.aggregate is not None:
+            # A column produced by add_columns is not a column of any source table.
+            # Re-attributing it to the primary table would name something the reader
+            # cannot find; its own edge, added just above, already carries its origin.
+            derived = {cs.target for cs in ps.add_columns}
+
+            for key in ps.aggregate.group_by:
+                if key in derived:
+                    continue
+                source_table, source_column = _resolve_source(key)
+                graph.add_edge(LineageEdge(
+                    source_table=source_table,
+                    source_column=source_column,
+                    target_table=target,
+                    target_column=key,
+                    transformations=["group_by"],
+                    edge_type="select",
+                ))
+
+            for measure in ps.aggregate.measures:
+                if measure.source in derived:
+                    continue
+                if measure.source == "*":
+                    # `count:*` counts rows, not a column. The rows counted are the
+                    # source's, so the edge starts there and not at the target.
+                    # Emitting it at all keeps the output column visible to the
+                    # dictionary, while a `*` source matches no classification,
+                    # which is correct: a row count inherits nothing.
+                    source_table, source_column = primary_table, "*"
+                else:
+                    source_table, source_column = _resolve_source(measure.source)
+                graph.add_edge(LineageEdge(
+                    source_table=source_table,
+                    source_column=source_column,
+                    target_table=target,
+                    target_column=measure.target,
+                    transformations=[measure.func],
+                    edge_type="metric",
+                ))
+
+        # 4. join — edges between join key columns across source tables
         for pj in ps.joins:
             from_table = alias_to_table.get(pj.alias_left, pj.alias_left)
             to_table = alias_to_table.get(pj.alias_right, pj.alias_right)
@@ -430,7 +479,7 @@ class LineageTracker:
                     edge_type="join",
                 ))
 
-        # 4. business_rules — via RuleAnalyzer AST introspection
+        # 5. business_rules — via RuleAnalyzer AST introspection
         analyzer = RuleAnalyzer()
         for rule_name in ps.business_rules:
             try:

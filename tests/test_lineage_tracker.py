@@ -609,3 +609,95 @@ class TestFromSchemaAliasResolution:
             assert [e.source_table for e in select_edges] == ["<rule>"]
         finally:
             RuleRegistry._rules.pop("_test_alias_rule_classify", None)
+
+
+# ---------------------------------------------------------------------------
+# aggregate: — Plan 28's block had no lineage at all until Plan 38 groundwork
+# ---------------------------------------------------------------------------
+
+class TestAggregateLineage:
+    """`aggregate:` produced zero edges, so an aggregated Gold table had an empty
+    dictionary, an empty impact analysis, and inherited no classification."""
+
+    @staticmethod
+    def _graph(yaml_body: str):
+        from skifer.core.schema_loader import parse_schema
+
+        schema = parse_schema(
+            f"""
+tables:
+  - name: silver.orders
+    alias: o
+{yaml_body}
+"""
+        )
+        return LineageTracker.from_schema(schema, target_name="gold.agg")
+
+    def test_a_group_key_carries_its_value_through(self):
+        graph = self._graph(
+            """aggregate:
+  group_by: [country]
+  measures:
+    - [amount, total, sum]
+"""
+        )
+        edges = {(e.source_column, e.target_column): e for e in graph.edges}
+
+        key = edges[("country", "country")]
+        assert key.source_table == "silver.orders"
+        assert key.edge_type == "select"
+        assert key.transformations == ["group_by"]
+
+    def test_a_measure_names_the_function_that_folded_it(self):
+        graph = self._graph(
+            """aggregate:
+  group_by: [country]
+  measures:
+    - [amount, total, sum]
+    - [order_id, nb, count_distinct]
+"""
+        )
+        edges = {(e.source_column, e.target_column): e for e in graph.edges}
+
+        assert edges[("amount", "total")].edge_type == "metric"
+        assert edges[("amount", "total")].transformations == ["sum"]
+        assert edges[("order_id", "nb")].transformations == ["count_distinct"]
+
+    def test_count_star_keeps_its_column_visible_and_inherits_nothing(self):
+        """A row count has no source column, but dropping the edge would hide the
+        output column from the dictionary entirely — and an absent column reads as
+        'no dependency', not as 'not analysed'."""
+        graph = self._graph(
+            """aggregate:
+  group_by: [country]
+  measures:
+    - ["*", nb_rows, count]
+"""
+        )
+        counted = [e for e in graph.edges if e.target_column == "nb_rows"]
+
+        assert len(counted) == 1
+        # The rows counted are the source's, not the target's.
+        assert counted[0].source_table == "silver.orders"
+        assert counted[0].source_column == "*"
+
+    def test_a_derived_group_key_is_not_reattributed_to_a_source_table(self):
+        """`add_columns` runs before the aggregate, so a group key can be derived.
+
+        Emitting `silver.orders.amount_bucket` would name a column the reader
+        cannot find; the add_columns edge already carries the real origin.
+        """
+        graph = self._graph(
+            """add_columns:
+  - [amount, amount_bucket, ["round:0"]]
+aggregate:
+  group_by: [amount_bucket]
+  measures:
+    - [amount, total, sum]
+"""
+        )
+        bucket = [e for e in graph.edges if e.target_column == "amount_bucket"]
+
+        assert len(bucket) == 1
+        assert bucket[0].source_column == "amount"
+        assert bucket[0].transformations == ["round:0"]
