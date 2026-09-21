@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `export_odcs_31` silently dropping `contract.security`. The function's own docstring
+  promises it exports "without silently discarding metadata", and it warns for `entity` and for
+  the semantic seed — but the security block left with neither an entry nor a warning, while
+  `import_odcs_31` had been reading a top-level `security` mapping all along. Export now emits
+  that same shape, so the block survives an export/import round trip. A test now holds the whole
+  surface to the promise: for every contract attribute, either the emitted document changes or a
+  warning names it.
+
+- Fixed `export_odcs_31` emitting the same `unique` quality rule twice when a single-column grain
+  names a field that is also marked `unique: true` — the grain path and the field path each
+  appended it. A third party reads `quality` as a list of rules, so the duplicate was a constraint
+  stated twice. The existing test compared the rule *types as a set*, which is why the duplicate
+  was invisible to it; the new one counts.
+
 - Fixed `schema_from_definition` dropping `contract.grain` and `contract.security` when rebuilding
   a schema from a contract's canonical JSON. Both are in the hashed payload, so two definitions
   differing only there are correctly two identities — but every comparison built on the rebuild was
