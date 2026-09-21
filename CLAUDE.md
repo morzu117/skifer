@@ -807,14 +807,14 @@ The plan must include: context, phased steps with files to create/modify, risk a
 |---|---|---|
 | [Multi-plateforme](docs/roadmap/01_multi_plateforme_plan.md) | `multi_plateforme` | Abandonné — remplacé par le Plan 26 (produit Spark/Databricks uniquement) |
 | [Prérequis GUI (Plan 11)](docs/roadmap/11_gui_framework_prerequisites_plan.md) | `feat/gui-client-planning` | Implémenté — PR en cours |
-| [Stabilisation pré-prod (Plan 12)](docs/roadmap/12_stabilisation_preproduction_plan.md) | `main` | En attente d'implémentation |
+| [Stabilisation pré-prod (Plan 12)](docs/roadmap/12_stabilisation_preproduction_plan.md) | `main` | **Caduc.** Le plan patche `core/operations.py` et `backends/sql_base.py`, supprimés par l'aplatissement du Plan 26. Son objet — une injection SQL par interpolation dans les filtres Spark — est résolu et testé : plus aucun `F.expr(f"…")` interpolé dans `spark_backend.py`, et `sql_literal("O'Brien") == "'O''Brien'"` est épinglé. À archiver ou à réécrire contre le code actuel. |
 | [Rule Engine Optimization (Plan 13)](docs/roadmap/13_rule_engine_optimization_plan.md) | `stabilize-and-fix` (mergé via PR #18) | Implémenté |
 | [Sources externes déclaratives (Plan 14)](docs/roadmap/14_external_sources_plan.md) | `feat/external-sources` (mergé via PR #21) | Implémenté |
 | [Sanitize modules restants (Plan 15)](docs/roadmap/15_sanitize_remaining_modules_plan.md) | `sanitize_code` (mergé via PRs #22/#23) | Implémenté |
 | [JDBC sink (Plan 16)](docs/roadmap/16_jdbc_sink_plan.md) | mergé via PRs #25–#28 | Implémenté |
 | [Optimisation core : fail-fast, IR, refactor engine (Plan 17)](docs/roadmap/17_core_optimization_plan.md) | mergé via PR #29 | Partiellement implémenté (lots 0, 1, 2.1–2.2) — reste repris dans le Plan 18 |
 | [Suite optimisation core : reste plan 17 + correctifs revue (Plan 18)](docs/roadmap/18_core_optimization_followup_plan.md) | mergé via PR #30 | Implémenté |
-| [MLflow Serving & Databricks deployment (Plan 19)](docs/roadmap/19_mlflow_serving_plan.md) | `feat/mlflow-serving` | En cours d'implémentation |
+| [MLflow Serving & Databricks deployment (Plan 19)](docs/roadmap/19_mlflow_serving_plan.md) | `feat/mlflow-serving` | **Implémenté** — les 6 phases sont sur le disque : `DatabricksProvider`, `serving/` + `_response_serializer.py`, `SkiferChatModel`, `scripts/deploy_to_databricks.py`, 43 tests, `CLAUDE.md`/`AGENTS.md` à jour. Le point 6.3 (entrées CHANGELOG) est sans objet : le package est arrivé dans le commit de release initial v2.0.0, où commence l'historique. Le 6.4 (`docs/databricks_deployment.md`) est marqué hors scope par le plan lui-même. |
 | [Workflow multi-agents Claude/Codex/Antigravity (Plan 20)](docs/roadmap/20_multi_agent_workflow_plan.md) | `chore/multi-agent-workflow` | Protocole v1 validé (1er rodage OK ; review = Antigravity) |
 | [Orchestration autonome + sous-tâches/routage modèle (Plan 22)](docs/roadmap/22_autonomous_orchestration_plan.md) | mergé `main` | Implémenté — Modèle B validé sur 3 cycles (between/not_between/ceil) |
 | [Opérateur de filtre `between` (Plan 23)](docs/roadmap/23_filter_between_plan.md) | mergé via PR #44 | Implémenté |
