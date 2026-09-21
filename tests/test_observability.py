@@ -66,9 +66,15 @@ class FakeBackend:
     """
     name = "databricks"
 
-    def __init__(self, default_rows: list[dict] | None = None, sql_override=None):
+    def __init__(
+        self,
+        default_rows: list[dict] | None = None,
+        sql_override=None,
+        column_types: dict[str, str] | None = None,
+    ):
         self._default_rows = default_rows or []
         self._sql_override = sql_override
+        self._column_types = dict(column_types or {})
         self.queries: list[str] = []
 
     def sql(self, query: str) -> FakeResult:
@@ -79,6 +85,15 @@ class FakeBackend:
 
     def fetch(self, query: str) -> list[dict]:
         return list(self.sql(query).collect())
+
+    def list_column_types(self, fqn: str) -> dict[str, str]:
+        """Mirror the real backends: introspection never goes through ``sql()``.
+
+        ``DESCRIBE`` answers with a different row shape per engine, which is why
+        checks must not parse it themselves. Returning the mapping directly is
+        what ``SparkBackend`` and ``DuckDBAdapter`` both do.
+        """
+        return dict(self._column_types)
 
 
 # ---------------------------------------------------------------------------
@@ -271,35 +286,91 @@ def test_null_and_unique_checks_execute_on_real_duckdb():
         connection.close()
 
 
+def test_type_and_drift_checks_execute_on_real_duckdb():
+    """These two checks used to raise KeyError on every adapter but Spark.
+
+    They ran their own ``DESCRIBE`` and read ``col_name``/``data_type``; DuckDB
+    answers ``column_name``/``column_type``. No fake could show it, because every
+    fake in this file spoke Spark. Only a real engine proves the fix, which is
+    why this test exists next to the one above rather than as another fake.
+    """
+    duckdb = pytest.importorskip("duckdb")
+    from skifer.core.adapters.duckdb import DuckDBAdapter
+
+    connection = duckdb.connect(database=":memory:")
+    adapter = DuckDBAdapter(connection)
+    try:
+        adapter.execute_sql("CREATE SCHEMA quality")
+        adapter.execute_sql(
+            "CREATE TABLE quality.typed AS SELECT "
+            "CAST(1 AS INTEGER) AS id, CAST('x' AS VARCHAR) AS label, "
+            "CAST(1.5 AS DOUBLE) AS amount"
+        )
+
+        # DuckDB reports INTEGER/VARCHAR/DOUBLE in uppercase.
+        assert TypeCheck(
+            table="quality.typed", column="label", expected_type="varchar"
+        ).evaluate(adapter, "quality.typed").status is CheckStatus.PASS
+        assert TypeCheck(
+            table="quality.typed", column="amount", expected_type="varchar"
+        ).evaluate(adapter, "quality.typed").status is CheckStatus.FAIL
+
+        drift = SchemaDriftCheck(
+            table="quality.typed", expected_columns=["id", "label"]
+        ).evaluate(adapter, "quality.typed")
+        assert drift.status is CheckStatus.FAIL
+        assert "amount" in drift.message
+    finally:
+        connection.close()
+
+
 class TestTypeCheck:
 
     def test_type_check_passes(self):
-        def sql_override(query):
-            return [
-                {"col_name": "amount_eur", "data_type": "double"},
-                {"col_name": "id", "data_type": "bigint"},
-            ]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(column_types={"amount_eur": "double", "id": "bigint"})
         check = TypeCheck(table="silver.orders", column="amount_eur", expected_type="double")
         result = check.evaluate(backend, "silver.orders")
         assert result.passed
 
     def test_type_check_fails(self):
-        def sql_override(query):
-            return [
-                {"col_name": "amount_eur", "data_type": "string"},
-            ]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(column_types={"amount_eur": "string"})
         check = TypeCheck(table="silver.orders", column="amount_eur", expected_type="double")
         result = check.evaluate(backend, "silver.orders")
         assert not result.passed
         assert "string" in result.message
 
     def test_type_check_column_not_found(self):
-        backend = FakeBackend(default_rows=[{"col_name": "other_col", "data_type": "string"}])
+        backend = FakeBackend(column_types={"other_col": "string"})
         check = TypeCheck(table="silver.orders", column="missing_col", expected_type="double")
         result = check.evaluate(backend, "silver.orders")
         assert not result.passed
+
+    def test_type_check_reads_an_uppercase_dialect(self):
+        """DuckDB reports VARCHAR where Spark reports string.
+
+        The check compares lowercased, so the same contract holds on both
+        engines. Before the introspection primitive this test could not even be
+        written: the check parsed DESCRIBE rows by Spark's column names.
+        """
+        backend = FakeBackend(column_types={"label": "VARCHAR", "total": "DECIMAL(10,2)"})
+        assert TypeCheck(
+            table="t", column="label", expected_type="varchar"
+        ).evaluate(backend, "t").passed
+        assert TypeCheck(
+            table="t", column="total", expected_type="decimal"
+        ).evaluate(backend, "t").passed
+
+    def test_a_check_never_issues_describe_itself(self):
+        """The row shape of DESCRIBE differs per engine, so no check may parse it.
+
+        Spark answers col_name/data_type, DuckDB column_name/column_type. A check
+        that ran its own DESCRIBE raised KeyError on every adapter but Spark, and
+        no fake could reveal it because every fake spoke Spark.
+        """
+        backend = FakeBackend(column_types={"amount_eur": "double"})
+        TypeCheck(table="t", column="amount_eur", expected_type="double").evaluate(backend, "t")
+        SchemaDriftCheck(table="t", expected_columns=["amount_eur"]).evaluate(backend, "t")
+        assert backend.queries == []
 
 
 class TestFilterInvariantCheck:
@@ -668,33 +739,22 @@ class TestVolumeVariationCheck:
 class TestSchemaDriftCheck:
 
     def test_no_drift_passes(self):
-        def sql_override(query):
-            return [
-                {"col_name": "id", "data_type": "bigint"},
-                {"col_name": "amount", "data_type": "double"},
-            ]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(column_types={"id": "bigint", "amount": "double"})
         check = SchemaDriftCheck(table="t", expected_columns=["id", "amount"])
         result = check.evaluate(backend, "t")
         assert result.passed
 
     def test_added_column_detected(self):
-        def sql_override(query):
-            return [
-                {"col_name": "id", "data_type": "bigint"},
-                {"col_name": "amount", "data_type": "double"},
-                {"col_name": "new_col", "data_type": "string"},
-            ]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(
+            column_types={"id": "bigint", "amount": "double", "new_col": "string"}
+        )
         check = SchemaDriftCheck(table="t", expected_columns=["id", "amount"])
         result = check.evaluate(backend, "t")
         assert not result.passed
         assert "added" in result.message
 
     def test_removed_column_detected(self):
-        def sql_override(query):
-            return [{"col_name": "id", "data_type": "bigint"}]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(column_types={"id": "bigint"})
         check = SchemaDriftCheck(table="t", expected_columns=["id", "amount"])
         result = check.evaluate(backend, "t")
         assert not result.passed

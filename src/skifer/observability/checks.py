@@ -21,6 +21,25 @@ def _fetch(backend, query: str) -> list[dict]:
     return backend.fetch(transpile(query, target=backend.name))
 
 
+def _column_types(backend, fqn: str) -> dict[str, str]:
+    """Return ``{column: physical type}`` through the backend's own introspection.
+
+    A check must never issue ``DESCRIBE`` itself. The result shape is
+    engine-specific — Spark answers with ``col_name``/``data_type``, DuckDB with
+    ``column_name``/``column_type`` — so a check that parsed those rows raised
+    ``KeyError`` on every adapter but Spark. Every backend already implements
+    ``list_column_types`` (it is on the ``Adapter`` protocol), which is the one
+    place that engine-specific SQL belongs.
+
+    Types are lowercased here so comparisons are dialect-insensitive: DuckDB
+    reports ``VARCHAR`` where Spark reports ``string``.
+    """
+    return {
+        column: (physical_type or "").lower().strip()
+        for column, physical_type in backend.list_column_types(fqn).items()
+    }
+
+
 # ---------------------------------------------------------------------------
 # Exception
 # ---------------------------------------------------------------------------
@@ -197,18 +216,7 @@ class TypeCheck(DataContract):
     expected_type: str = ""
 
     def evaluate(self, backend, fqn: str) -> CheckResult:
-        # Use DESCRIBE to get column types — works on Spark SQL and most SQL engines
-        query = f"DESCRIBE {fqn}"
-        rows = _fetch(backend, query)
-        actual_type = None
-        for row in rows:
-            # Row may be a dict or a Row object
-            col_name = row["col_name"] if isinstance(row, dict) else getattr(row, "col_name", None)
-            data_type = row["data_type"] if isinstance(row, dict) else getattr(row, "data_type", None)
-            if col_name == self.column:
-                actual_type = (data_type or "").lower().strip()
-                break
-
+        actual_type = _column_types(backend, fqn).get(self.column)
         expected_norm = self.expected_type.lower().strip()
         # Allow partial match: "double" matches "double precision", "bigint" matches "bigint(20)", etc.
         passed = actual_type is not None and (
@@ -525,14 +533,10 @@ class SchemaDriftCheck(DataContract):
     expected_columns: list = field(default_factory=list)
 
     def evaluate(self, backend, fqn: str) -> CheckResult:
-        query = f"DESCRIBE {fqn}"
-        rows = _fetch(backend, query)
-        actual_cols = set()
-        for row in rows:
-            col_name = row["col_name"] if isinstance(row, dict) else getattr(row, "col_name", None)
-            if col_name and not col_name.startswith("#"):
-                actual_cols.add(col_name)
-
+        # Partition markers such as '# Partition Information' are filtered by the
+        # backend's own introspection, which is where that Spark-specific detail
+        # belongs.
+        actual_cols = set(_column_types(backend, fqn))
         expected_set = set(self.expected_columns)
         added = actual_cols - expected_set
         removed = expected_set - actual_cols

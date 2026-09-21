@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `TypeCheck` and `SchemaDriftCheck` raising `KeyError` on every adapter but Spark. Both ran
+  their own `DESCRIBE` and read the `col_name`/`data_type` keys Spark returns, while DuckDB answers
+  `column_name`/`column_type` — so the two checks were broken on the whole SQL-first path. They now
+  read `list_column_types`, which is already on the `Adapter` protocol and implemented by every
+  backend, keeping engine-specific introspection in one place. Types are compared lowercased, so a
+  contract holds identically where DuckDB reports `VARCHAR` and Spark reports `string`. No fake
+  could have caught this — every fake in the suite spoke Spark — so the proof is a test against a
+  real DuckDB database.
+
 - Fixed the test workflow not installing the `sql` extra, which made CI stop at collection on all
   four Python versions with `ModuleNotFoundError: No module named 'duckdb'`. Three modules import
   it, and the Spark ↔ DuckDB equivalence suite is the guarantee the SQL-first work rests on, so CI
