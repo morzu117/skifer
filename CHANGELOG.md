@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `keep_all_columns` over a join returning a different schema on each engine. The DataFrame
+  path drops the right-hand join key after joining, so a join on `left_id = right_id` yields one
+  key column — the same shape the equal-name case gets from `USING`. The compiled SQL emitted `ON`
+  and kept both, so the same YAML wrote `right_id` into the SQL-mode table and not into the Spark
+  one. That is the divergence plan 39 names as its first risk: one YAML, two results. `select_final`
+  hid it, which is why the existing join tests never saw it — they list their outputs. The
+  projection now emits `SELECT * EXCEPT (<alias>.<key>)`, verified by execution on Spark SQL 4.1.1
+  and DuckDB, with sqlglot emitting `EXCLUDE` for DuckDB and Snowflake. The key is dropped by
+  qualified name: a bare name would also remove a left-hand column that happens to share it, which
+  Spark keeps.
+
 - Fixed `export_odcs_31` silently dropping `contract.security`. The function's own docstring
   promises it exports "without silently discarding metadata", and it warns for `entity` and for
   the semantic seed — but the security block left with neither an entry nor a warning, while

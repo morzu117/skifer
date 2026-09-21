@@ -159,6 +159,16 @@ def equivalence_runtime(spark):
         [("right_id", "INTEGER"), ("right_value", "VARCHAR")],
         [(2, "right-two"), (3, "right-three"), (None, "right-null")],
     )
+    # Its `right_id` column deliberately collides with the *right* table's join
+    # key name. Dropping the joined key by bare name would remove this one too,
+    # which the DataFrame path keeps — the case that separates a qualified
+    # `EXCEPT` from a bare one.
+    _create_table(
+        runtime,
+        "join_left_colliding",
+        [("outer_key", "INTEGER"), ("right_id", "VARCHAR"), ("left_value", "VARCHAR")],
+        [(2, "kept-two", "left-two"), (3, "kept-three", "left-three")],
+    )
     _create_table(
         runtime,
         "duplicate_values",
@@ -933,3 +943,71 @@ def test_a_qualified_select_source_is_refused_by_both_engines(
         _spark_result(equivalence_runtime, schema)
     with pytest.raises(Exception):
         _duck_result(equivalence_runtime, schema)
+
+
+@pytest.mark.parametrize(
+    "join_type", ["left", "inner", "right", "full", "left_anti", "left_semi"]
+)
+def test_keep_all_columns_over_a_join_returns_the_same_schema(
+    equivalence_runtime, join_type
+):
+    """A join on differently-named keys used to return two schemas.
+
+    The DataFrame path drops the right-hand key after joining, so a join on
+    `left_id = right_id` yields one key column — the same shape the equal-name
+    case gets from Spark's own merge. The compiled SQL emitted `ON` and kept
+    both, so the same YAML wrote `right_id` into the SQL-mode table and not into
+    the Spark one. `select_final` hid it, which is why the existing join tests
+    never saw it: they list their outputs.
+
+    `left_anti` and `left_semi` keep only the left side, so there is nothing to
+    drop and the parametrisation covers that too.
+    """
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {"name": equivalence_runtime.table("join_left_different"), "alias": "l"},
+                {"name": equivalence_runtime.table("join_right_different"), "alias": "r"},
+            ],
+            "join": [
+                {
+                    "table_from": ["l", "left_id"],
+                    "table_to": ["r", "right_id"],
+                    "type": join_type,
+                }
+            ],
+            "keep_all_columns": True,
+        }
+    )
+
+    _assert_schema_equivalent(equivalence_runtime, schema)
+
+
+def test_a_dropped_join_key_does_not_take_a_homonymous_column_with_it(
+    equivalence_runtime,
+):
+    """The left table carries its own `right_id`, which the join must not remove.
+
+    The DataFrame path drops the *object* `df_right["right_id"]`, so the left
+    column of the same name survives. Removing it by bare name in SQL would
+    delete both, and no other case in this module distinguishes the two: a
+    mutation replacing the qualified name with the bare one passed everything.
+    """
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {"name": equivalence_runtime.table("join_left_colliding"), "alias": "l"},
+                {"name": equivalence_runtime.table("join_right_different"), "alias": "r"},
+            ],
+            "join": [
+                {
+                    "table_from": ["l", "outer_key"],
+                    "table_to": ["r", "right_id"],
+                    "type": "left",
+                }
+            ],
+            "keep_all_columns": True,
+        }
+    )
+
+    _assert_schema_equivalent(equivalence_runtime, schema)

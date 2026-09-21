@@ -503,6 +503,36 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
     return sql
 
 
+#: Join types where only the left side's columns survive, so there is no
+#: right-hand key to remove. Mirrors ``interpreter._LEFT_ONLY_JOIN_TYPES``.
+_LEFT_ONLY_JOIN_TYPES = frozenset({"left_anti", "left_semi"})
+
+
+def _right_join_keys_dropped_by_spark(parsed: ParsedSchema) -> list[str]:
+    """The right-hand join keys the DataFrame path removes after joining.
+
+    When the keys share a name the compiler emits ``USING``, which yields one
+    key column — the same shape the interpreter gets from Spark's own merge.
+    When they differ it emits ``ON``, which keeps both, while the interpreter
+    explicitly drops the right one. Measured with ``keep_all_columns``: Spark
+    returned ``[left_id, left_value, right_value]`` and the compiled SQL the
+    same plus ``right_id`` — one YAML, two output schemas.
+
+    The names are qualified because dropping by bare name would also remove a
+    left-hand column that happens to share it, which Spark keeps.
+    """
+    dropped: list[str] = []
+    for j in parsed.joins:
+        if j.keys_left == j.keys_right or j.join_type in _LEFT_ONLY_JOIN_TYPES:
+            continue
+        dropped.extend(
+            f"{quote_ident(j.alias_right)}.{quote_ident(key)}"
+            for key in j.keys_right
+            if key is not None
+        )
+    return dropped
+
+
 def _known_join_columns(
     parsed: ParsedSchema,
     resolve_columns: Callable[[ParsedTable], list[str]] | None,
@@ -677,8 +707,13 @@ def compile_select(
         projection = ", ".join(compile_column_spec(f, allow_raw_sql) for f in parsed.select_final)
         body = f"SELECT {projection}\nFROM {rule_source}"
     else:
-        # keep_all_columns (or neither) — pass every column through, plus add_columns.
-        projection = ", ".join(["*"] + add_columns)
+        # keep_all_columns (or neither) — pass every column through, plus add_columns,
+        # minus the join keys the DataFrame path drops so both engines return the
+        # same schema. `* EXCEPT (…)` is verified by execution on Spark SQL and
+        # DuckDB, and sqlglot emits `EXCLUDE` for DuckDB and Snowflake.
+        dropped = _right_join_keys_dropped_by_spark(parsed)
+        star = f"* EXCEPT ({', '.join(dropped)})" if dropped else "*"
+        projection = ", ".join([star] + add_columns)
         body = f"SELECT {projection}\nFROM {rule_source}"
 
     return f"WITH {ctes}\n{body}"
