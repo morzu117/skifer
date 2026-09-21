@@ -175,6 +175,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a portability guard pinning Spark and the compiled SQL together on a qualified select
+  source. Qualifying a source (`ord.id` rather than `id`) is what lets lineage attribute a joined
+  column to the table it really comes from, and `examples/23_openlineage` ships a schema that does
+  it — but no qualified form executes: Spark raises `UNRESOLVED_COLUMN` and the compiled SQL a
+  binder error, because the compiler quotes the whole string as one identifier. Whether execution
+  should learn the form or the loader should refuse it is an open product decision, recorded as
+  Plan 38 point 6. Until it is taken, one engine must not learn it alone — measured: quoting each
+  dotted part separately makes DuckDB accept the alias form while Spark still rejects it, and the
+  guard fires on exactly that case. Example 23's README now says its schema is a lineage fixture
+  rather than a runnable pipeline.
+
 - Added a drift guard on metadata persistence. `_record_to_json` serialises with `asdict`, so a
   field added to `DatasetRecord` is written automatically, while `_record_from_json` names every
   field by hand and would read the same field back as its default. The guard fails as soon as a

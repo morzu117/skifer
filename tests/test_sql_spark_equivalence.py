@@ -878,3 +878,58 @@ def test_dev_limit_job_and_production_equivalence(equivalence_runtime, context):
     spark_count = _spark_result(equivalence_runtime, schema, context=context).count()
     _, duck_rows = _duck_result(equivalence_runtime, schema, context=context)
     assert spark_count == len(duck_rows)
+
+
+@pytest.mark.parametrize(
+    "qualifier",
+    ["alias", "table_fqn", "table_short"],
+)
+def test_a_qualified_select_source_is_refused_by_both_engines(
+    equivalence_runtime, qualifier
+):
+    """Not a feature test — a portability guard on a contradiction we measured.
+
+    Qualifying a select source is what lets lineage attribute a joined column to
+    the table it really comes from, and `examples/23_openlineage` ships a schema
+    that does it. No qualified form executes: Spark raises UNRESOLVED_COLUMN and
+    the compiled SQL a binder error, because the compiler quotes the whole
+    string as one identifier — ``SELECT `o.amount` `` rather than
+    `` `o`.`amount` ``.
+
+    Whether execution should learn the form or the loader should refuse it is an
+    open product decision (Plan 38, point 6). What must not happen meanwhile is
+    one engine learning it alone: this pins them together, and fails the day
+    either side moves.
+    """
+    left = equivalence_runtime.table("join_left_same")
+    right = equivalence_runtime.table("join_right_same")
+    prefixes = {
+        "alias": ("left_side", "right_side"),
+        "table_fqn": (left, right),
+        "table_short": (left.rsplit(".", 1)[-1], right.rsplit(".", 1)[-1]),
+    }[qualifier]
+
+    schema = _normalized_schema(
+        {
+            "tables": [
+                {"name": left, "alias": "left_side"},
+                {"name": right, "alias": "right_side"},
+            ],
+            "join": [
+                {
+                    "table_from": ["left_side", "id"],
+                    "table_to": ["right_side", "id"],
+                    "type": "left",
+                }
+            ],
+            "select_final": [
+                [f"{prefixes[0]}.left_value", "lv"],
+                [f"{prefixes[1]}.right_value", "rv"],
+            ],
+        }
+    )
+
+    with pytest.raises(Exception):
+        _spark_result(equivalence_runtime, schema)
+    with pytest.raises(Exception):
+        _duck_result(equivalence_runtime, schema)
