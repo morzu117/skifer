@@ -767,7 +767,7 @@ RuleRegistry.list_loaders()  # list registered loaders
 - `engine.explain_rules(schema_dict)` prints a static redundancy report (OVERWRITE, SHARED_READ, DUPLICATE_EXPR, PHOTON_BREAKING, COMPLEXITY_HIGH) without executing anything.
 
 ### Governance
-`allow_raw_sql: false` on an environment in `config.yaml` disables `expr:` operations and the `sql` filter operator in that environment.
+`allow_raw_sql: false` on an environment in `config.yaml` disables `expr:` operations, the `sql` filter operator, **`kind="sql"` rules and `kind="sql"` loaders** in that environment (Plan 39, decision D14): the flag reads "no hand-written SQL runs here", whichever layer wrote it. The refusal sits in `validate_sql_rule_result`, whose `allow_raw_sql` argument has **no default** so that none of the three execution paths can arrive permissive. It cannot cover `F.expr` inside a `kind="projection"` rule — that is arbitrary Python, and only `CAP_PYTHON_RULES` closes it.
 
 ### QueryResolver (agentic layer)
 Builds SQL **only from names defined in semantic YAML models** — never raw SQL. Unknown names raise `SemanticQueryError` with Levenshtein suggestions.

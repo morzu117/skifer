@@ -1756,6 +1756,71 @@ def test_process_schema_allow_raw_sql_false_blocks_sql_filter(mock_engine, spark
     spark.catalog.dropTempView("ars_test_filter")
 
 
+def test_process_schema_allow_raw_sql_false_blocks_a_sql_rule(mock_engine, spark):
+    """Plan 39, decision D14 — the Spark path, which is the one that runs in prod.
+
+    A kind='sql' rule is hand-written SQL reaching the engine through the fused
+    projection stage. Until D14 was settled the flag refused a kind='sql' loader
+    and let this through, so an environment that declared "no raw SQL" still ran
+    some.
+    """
+    mock_engine.config = {"environments": {"prod": {"is_production": True, "allow_raw_sql": False}}}
+    mock_engine.env = "prod"
+
+    @RuleRegistry.register_rule(name="ars_sql_rule", kind="sql")
+    def _ars_sql_rule():
+        return {"doubled": "amount * 2"}
+
+    spark.createDataFrame([(1, 100)], ["id", "amount"]).createOrReplaceTempView("ars_test_rule")
+    schema_dict = {
+        "tables": [{"name": "ars_test_rule", "alias": "t"}],
+        "business_rules": ["ars_sql_rule"],
+        "select_final": [["id", "id", []], ["doubled", "doubled", []]],
+    }
+
+    try:
+        with pytest.raises(ValueError, match="allow_raw_sql: false"):
+            mock_engine.process_schema(schema_dict)
+    finally:
+        RuleRegistry._rules.pop("ars_sql_rule", None)
+        spark.catalog.dropTempView("ars_test_rule")
+
+
+def test_allow_raw_sql_false_blocks_a_sql_rule_on_the_unfused_path(spark):
+    """The interpreter's other branch: rules applied one by one, no fusion.
+
+    Two distinct pieces of code call the validator on the Spark side, and a
+    refusal wired into only one of them is the half-applied control D14 exists
+    to remove.
+    """
+    from skifer.core.context import ExecutionContext
+    from skifer.core.interpreter import SchemaInterpreter
+    from skifer.core.spark_backend import SparkBackend
+
+    @RuleRegistry.register_rule(name="ars_sql_rule_unfused", kind="sql")
+    def _ars_sql_rule_unfused():
+        return {"doubled": "amount * 2"}
+
+    context = ExecutionContext(
+        env="prod",
+        config={"environments": {"prod": {"is_production": True, "allow_raw_sql": False}}},
+        is_job_execution=True,
+        is_local=True,
+    )
+    interpreter = SchemaInterpreter(
+        backend=SparkBackend(spark=spark, is_local=True), context=context
+    )
+    df = spark.createDataFrame([(1, 100)], ["id", "amount"])
+
+    try:
+        with pytest.raises(ValueError, match="allow_raw_sql: false"):
+            interpreter._apply_business_rules(
+                df, ["ars_sql_rule_unfused"], fuse_rules=False
+            )
+    finally:
+        RuleRegistry._rules.pop("ars_sql_rule_unfused", None)
+
+
 def test_process_schema_allow_raw_sql_false_blocks_expr_op(mock_engine, spark):
     """process_schema raises ValueError when expr: operation is used and allow_raw_sql is false."""
     mock_engine.config = {"environments": {"prod": {"is_production": True, "allow_raw_sql": False}}}

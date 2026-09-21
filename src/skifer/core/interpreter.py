@@ -183,6 +183,11 @@ class SchemaInterpreter:
             except Exception:
                 pass  # analysis is best-effort; never block execution
 
+        # Plan 39, decision D14: `allow_raw_sql: false` means no hand-written SQL
+        # runs here, whichever layer wrote it. The loader path below already read
+        # the same setting.
+        allow_raw_sql = self._context.env_config().get("allow_raw_sql", True)
+
         if not fuse_rules:
             for rule_name in rules_list:
                 logger.info("   -> [Rule] Applying: %s", rule_name)
@@ -193,7 +198,7 @@ class SchemaInterpreter:
                         result = {
                             name: self._backend.expr(expression)
                             for name, expression in validate_sql_rule_result(
-                                rule_spec.name, result
+                                rule_spec.name, result, allow_raw_sql=allow_raw_sql
                             ).items()
                         }
                     if not isinstance(result, dict):
@@ -209,7 +214,7 @@ class SchemaInterpreter:
             return df
 
         planner = RulePlanner()
-        executor = RuleExecutor(backend=self._backend)
+        executor = RuleExecutor(backend=self._backend, allow_raw_sql=allow_raw_sql)
         stages = planner.plan(rules_list)
 
         for stage in stages:

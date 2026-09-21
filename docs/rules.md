@@ -142,17 +142,25 @@ Un même concept métier peut avoir deux implémentations — une PySpark, une S
 le YAML choisir laquelle par paramètre. `examples/24_sql_mode_portability/` fait
 tourner un pipeline unique sur les deux moteurs et échoue si les lignes diffèrent.
 
-### Gouvernance — état actuel, à connaître
+### Gouvernance
 
-Un fragment SQL est du SQL brut, mais **`allow_raw_sql: false` ne refuse pas une
-règle `kind="sql"`** aujourd'hui : le drapeau bride l'auteur du YAML (`expr:`,
-l'opérateur de filtre `sql`), pas le code Python enregistré dans le dépôt. Un
-**loader** `kind="sql"`, lui, *est* refusé — l'écart entre les deux est connu et
-n'est pas encore arbitré.
+**`allow_raw_sql: false` refuse une règle `kind="sql"`**, comme il refuse déjà un
+loader `kind="sql"`, l'opérateur de filtre `sql` et une opération `expr:`. Le
+drapeau se lit « aucun SQL écrit à la main ne s'exécute dans cet environnement »,
+sans égard à la couche qui l'a écrit. Le refus est posé sur les trois chemins qui
+peuvent exécuter une règle SQL — le compilateur SQL, l'exécuteur fusionné et
+l'interpréteur — et chacun est couvert par son propre test.
 
-Concrètement : sur un environnement `allow_raw_sql: false`, la relecture de code
-est le seul contrôle qui s'applique à une règle SQL. Si votre exigence est
-« aucun SQL écrit à la main ne s'exécute ici », ce drapeau ne la garantit pas.
+> **Jusqu'au 21 septembre 2026, ce n'était vrai qu'à moitié** : le loader était
+> refusé, la règle passait. Le drapeau annonçait donc un contrôle qu'il
+> n'appliquait pas entièrement. C'est la décision D14 du Plan 39.
+
+**Ce que le drapeau ne peut pas couvrir.** Une règle `kind="projection"` est du
+Python quelconque et peut appeler `F.expr("…")` ; aucun drapeau ne voit à
+l'intérieur. Fermer cette porte-là revient à ne pas exécuter de règles Python du
+tout, ce que fait `CAP_PYTHON_RULES` sur tout adaptateur non-Spark. La garantie
+porte sur la surface SQL que le framework déclare, pas sur tout ce qu'un code
+Python pourrait atteindre.
 
 ### Loaders `kind="sql"`
 

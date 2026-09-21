@@ -203,7 +203,7 @@ class TestSqlRuleValidation:
     def test_non_string_value_names_rule_and_column(self, spark):
         for value in (None, F.lit(1)):
             with pytest.raises(TypeError) as exc_info:
-                validate_sql_rule_result("portable_rule", {"bad_column": value})
+                validate_sql_rule_result("portable_rule", {"bad_column": value}, allow_raw_sql=True)
             message = str(exc_info.value)
             assert "portable_rule" in message
             assert "bad_column" in message
@@ -211,25 +211,27 @@ class TestSqlRuleValidation:
 
     def test_empty_expression_names_rule_and_column(self):
         with pytest.raises(ValueError) as exc_info:
-            validate_sql_rule_result("portable_rule", {"bad_column": "  "})
+            validate_sql_rule_result("portable_rule", {"bad_column": "  "}, allow_raw_sql=True)
         assert "portable_rule" in str(exc_info.value)
         assert "bad_column" in str(exc_info.value)
 
     def test_statement_separator_outside_literal_is_rejected(self):
         with pytest.raises(ValueError) as exc_info:
-            validate_sql_rule_result("portable_rule", {"bad_column": "amount; DROP TABLE x"})
+            validate_sql_rule_result("portable_rule", {"bad_column": "amount; DROP TABLE x"}, allow_raw_sql=True)
         assert "portable_rule" in str(exc_info.value)
         assert "bad_column" in str(exc_info.value)
 
     def test_statement_separator_inside_literal_is_accepted(self):
         assert validate_sql_rule_result(
-            "portable_rule", {"label": "CASE WHEN status = 'a;b' THEN 'x' ELSE 'y' END"}
+            "portable_rule",
+            {"label": "CASE WHEN status = 'a;b' THEN 'x' ELSE 'y' END"},
+            allow_raw_sql=True,
         ) == {"label": "CASE WHEN status = 'a;b' THEN 'x' ELSE 'y' END"}
 
     def test_select_statement_rejected_when_sqlglot_is_available(self):
         pytest.importorskip("sqlglot")
         with pytest.raises(ValueError) as exc_info:
-            validate_sql_rule_result("portable_rule", {"bad_column": "SELECT amount FROM x"})
+            validate_sql_rule_result("portable_rule", {"bad_column": "SELECT amount FROM x"}, allow_raw_sql=True)
         assert "portable_rule" in str(exc_info.value)
         assert "bad_column" in str(exc_info.value)
 
@@ -390,3 +392,42 @@ class TestMixedStages:
         row = result.collect()[0]
         for i in range(20):
             assert row[f"c{i}"] == f"c{i}"
+
+
+class TestSqlRuleGovernance:
+    """Plan 39, decision D14 — settled 21 September 2026.
+
+    `allow_raw_sql: false` reads "no hand-written SQL runs in this environment",
+    without regard to which layer wrote it. A kind='sql' loader was already
+    refused under the flag while a kind='sql' rule was not, so the flag announced
+    a control it applied by halves.
+    """
+
+    def test_a_sql_rule_is_refused_when_raw_sql_is_disabled(self):
+        with pytest.raises(ValueError) as exc_info:
+            validate_sql_rule_result(
+                "portable_rule", {"doubled": "amount * 2"}, allow_raw_sql=False
+            )
+
+        message = str(exc_info.value)
+        assert "portable_rule" in message
+        assert "allow_raw_sql: false" in message
+
+    def test_the_refusal_precedes_structural_validation(self):
+        """A malformed result must still be refused for the flag, not its shape.
+
+        Reporting "returned str instead of dict" would send the author to fix the
+        rule's return type, in an environment where no rule of that kind may run
+        at all.
+        """
+        with pytest.raises(ValueError, match="allow_raw_sql"):
+            validate_sql_rule_result("portable_rule", "not a dict", allow_raw_sql=False)
+
+    def test_the_parameter_has_no_default(self):
+        """Three paths reach this function; a fourth must not arrive permissive."""
+        import inspect
+
+        parameter = inspect.signature(validate_sql_rule_result).parameters["allow_raw_sql"]
+
+        assert parameter.default is inspect.Parameter.empty
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY

@@ -593,22 +593,35 @@ aggregate:
         assert "SELECT *, ROUND(`doubled`, 0) AS `rounded`" in sql
         assert "amount * 2 AS `doubled`" in sql
 
-    def test_allow_raw_sql_does_not_govern_registered_sql_rules(self, register_rule):
-        """Pins today's behaviour, which is under review as plan 39 decision D14.
+    def test_allow_raw_sql_refuses_a_registered_sql_rule(self, register_rule):
+        """Plan 39, decision D14 — settled 21 September 2026.
 
-        The flag brides the YAML author — `expr:`, the `sql` filter operator —
-        not Python registered in the repository. But a kind="sql" *loader* is
-        refused under the same flag, and the plan's D2 and D8 both state that
-        rules are governed. Code and plan therefore disagree, and this test is
-        the only thing that recorded which side shipped. Whoever settles D14
-        changes this test; until then it must say what it pins and why, because
-        its silence is what kept the contradiction invisible.
+        This test pinned the opposite until today, and its predecessor's silence
+        is what kept the contradiction invisible: the flag refused a kind='sql'
+        *loader* while letting a kind='sql' *rule* through, so it announced a
+        control it applied by halves. The decision is that `allow_raw_sql: false`
+        means no hand-written SQL runs in this environment, whichever layer wrote
+        it — the separation this library rests on is declarative sources and
+        registered rules, not SQL typed by hand on either side.
         """
         register_rule("trusted_sql", {"doubled": "amount * 2"})
 
+        with pytest.raises(SqlCompilationError, match="allow_raw_sql"):
+            _compile(
+                _single_table("business_rules:\n  - trusted_sql\nkeep_all_columns: true\n"),
+                allow_raw_sql=False,
+                resolve_columns=lambda _fqn: ["amount"],
+            )
+
+    def test_a_registered_sql_rule_still_compiles_when_raw_sql_is_allowed(
+        self, register_rule
+    ):
+        register_rule("trusted_sql_allowed", {"doubled": "amount * 2"})
+
         sql = _compile(
-            _single_table("business_rules:\n  - trusted_sql\nkeep_all_columns: true\n"),
-            allow_raw_sql=False,
+            _single_table(
+                "business_rules:\n  - trusted_sql_allowed\nkeep_all_columns: true\n"
+            ),
             resolve_columns=lambda _fqn: ["amount"],
         )
 

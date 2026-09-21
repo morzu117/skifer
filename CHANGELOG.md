@@ -640,6 +640,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`allow_raw_sql: false` now refuses a `kind="sql"` rule** (plan 39, decision D14). The flag
+  already refused a `kind="sql"` loader, an `expr:` operation and the `sql` filter operator, but let
+  a registered SQL rule through — so it announced a control it applied by halves. It now reads "no
+  hand-written SQL runs in this environment", whichever layer wrote it: the separation this library
+  rests on is declarative sources and registered rules, not SQL typed by hand on either side. The
+  refusal sits in `validate_sql_rule_result`, whose `allow_raw_sql` argument has **no default** —
+  three paths reach it (the SQL compiler, the fused executor, the interpreter) and a default would
+  let a fourth arrive permissive. Each wiring is covered by its own test and its own verified
+  mutation. Declared limit: a `kind="projection"` rule is arbitrary Python and can call `F.expr`;
+  no flag sees inside it, and only `CAP_PYTHON_RULES` closes that.
+
 - `run_process_and_split` and `run_union_sources_to_table` now refuse schemas declaring `data_product` before any processing, reads, or writes, directing certified publication through `run_process_to_table` or `run_from_yaml`. (Plan 35.5)
 - Certified publication now triggers a non-blocking metadata-index hook after
   `PROMOTED`; store failures only log a warning, and promoted records retain the

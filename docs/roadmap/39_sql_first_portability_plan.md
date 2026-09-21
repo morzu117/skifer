@@ -575,7 +575,7 @@ règle `kind="sql"` parfaitement portable, simplement non importée, était donc
 celui-là même d'où `config.yaml` est découvert ; et le refus nomme désormais les règles non enregistrées.
 Le classement prudent, lui, ne bouge pas.
 
-### D14 — ce que `allow_raw_sql` est censé interdire (ouverte, 19 septembre 2026)
+### D14 — ce que `allow_raw_sql` est censé interdire — **tranchée le 21 septembre 2026**
 
 **Mesuré.** Avec `allow_raw_sql: false`, une règle `kind="sql"` compile et s'exécute ; un **loader**
 `kind="sql"`, lui, est refusé. `expr:` et l'opérateur de filtre `sql` sont refusés aussi.
@@ -594,13 +594,29 @@ le comportement inverse, **sans docstring ni justification** : l'intention n'est
 - *Gouverner les deux.* Dans un environnement régulé, le drapeau se lit « ici, aucun SQL écrit à la main
   ne s'exécute », sans égard à qui l'a écrit. Il faut alors **durcir les règles**.
 
-**Recommandation : ne gouverner ni l'un ni l'autre**, et relâcher le loader — la relecture de code est
-un contrôle plus fort qu'un drapeau d'environnement, et deux portes pour une même capacité rendent la
-garantie illisible. Mais l'écart actuel est le pire des trois états : il annonce un contrôle qu'il
-n'applique qu'à moitié.
+**Décision : gouverner les deux.** Le drapeau se lit « aucun SQL écrit à la main ne s'exécute dans cet
+environnement », sans égard à la couche qui l'a écrit — la séparation sur laquelle repose la
+bibliothèque est *sources déclaratives / règles enregistrées*, pas du SQL tapé à la main d'un côté ou
+de l'autre.
 
-**Quoi qu'il soit décidé, le test qui fige le comportement doit porter sa raison** : c'est son absence
-qui a rendu cette contradiction invisible jusqu'ici.
+Ma recommandation initiale était l'inverse. Deux éléments l'ont renversée. D'abord l'intention écrite :
+D2, D8, la docstring de `sql_loader_relation` (« governing one and not the others would leave the same
+door open under a different name ») et l'implémentation du loader disent tous « gouverner tout » —
+seul un test non justifié disait l'inverse. Ensuite et surtout, c'est l'intention du produit, qui
+n'était écrite nulle part.
+
+**Livré.** Le refus vit dans `validate_sql_rule_result`, dont l'argument `allow_raw_sql` **n'a pas de
+défaut** : trois chemins l'atteignent — compilateur SQL, exécuteur fusionné, interpréteur — et un
+défaut laisserait un quatrième arriver silencieusement permissif. Chaque câblage a sa propre mutation
+vérifiée.
+
+**Limite déclarée.** Une règle `kind="projection"` est du Python quelconque et peut appeler `F.expr` ;
+aucun drapeau ne voit à l'intérieur. Fermer cette porte revient à ne pas exécuter de règles Python,
+ce que fait `CAP_PYTHON_RULES` sur tout adaptateur non-Spark. La garantie porte sur la surface SQL que
+le framework déclare.
+
+**Le test qui fige le comportement porte sa raison** — c'est son absence qui avait rendu la
+contradiction invisible.
 
 ## 7. Risques
 

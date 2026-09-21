@@ -570,6 +570,7 @@ def _compile_sql_rule_source(
     parsed: ParsedSchema,
     join_tree: str,
     resolve_columns: Callable[[ParsedTable], list[str]] | None,
+    allow_raw_sql: bool = True,
 ) -> str:
     """Compile portable rules only when rewrite semantics can be proved.
 
@@ -589,7 +590,9 @@ def _compile_sql_rule_source(
     for rule_name in parsed.business_rules:
         spec = RuleRegistry.get_rule(rule_name)
         try:
-            result = validate_sql_rule_result(spec.name, spec.func())
+            result = validate_sql_rule_result(
+                spec.name, spec.func(), allow_raw_sql=allow_raw_sql
+            )
         except (TypeError, ValueError) as exc:
             raise SqlCompilationError(str(exc)) from exc
         expressions.update(result)
@@ -688,7 +691,9 @@ def compile_select(
     )
     ctes = ",\n".join(cte_parts)
     join_tree = _compile_join_tree(parsed)
-    rule_source = _compile_sql_rule_source(parsed, join_tree, resolve_columns)
+    rule_source = _compile_sql_rule_source(
+        parsed, join_tree, resolve_columns, allow_raw_sql
+    )
     add_columns = [compile_column_spec(f, allow_raw_sql) for f in parsed.add_columns]
 
     if parsed.aggregate:

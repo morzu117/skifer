@@ -47,18 +47,39 @@ def _has_statement_separator(expression: str) -> bool:
     return False
 
 
-def validate_sql_rule_result(rule_name: str, result: object) -> dict[str, str]:
+def validate_sql_rule_result(
+    rule_name: str, result: object, *, allow_raw_sql: bool
+) -> dict[str, str]:
     """Validate one ``kind='sql'`` result before it reaches an SQL engine.
 
-    ``allow_raw_sql`` intentionally does not govern these expressions. That
-    setting protects raw SQL authored in declarative YAML (the "what" layer),
-    while a registered rule is reviewed and deployed Python code in the "how"
-    layer, just like a projection rule that can already call ``F.expr``.
+    ``allow_raw_sql: false`` refuses these expressions (plan 39, decision D14).
+    The flag reads "no hand-written SQL runs in this environment", without regard
+    to which layer wrote it: a ``kind='sql'`` rule is hand-written SQL, and a
+    ``kind='sql'`` loader was already refused under the same flag. Governing one
+    and not the other left the same door open under a different name.
+
+    ``allow_raw_sql`` has no default here on purpose. Three paths reach this
+    function — the SQL compiler, the fused executor and the interpreter — and a
+    default would let a fourth arrive silently permissive.
+
+    **What this does not cover.** A ``kind='projection'`` rule is arbitrary
+    Python and can call ``F.expr('…')``; no flag can see inside it. Closing that
+    means not running Python rules at all, which is what ``CAP_PYTHON_RULES``
+    does on every non-Spark adapter. The guarantee here is over the SQL surface
+    the framework declares, not over everything a Python rule could reach.
 
     Structural validation is dependency-free. When the optional ``sqlglot``
     package is installed, every value is additionally parsed as a Databricks
     expression and statement roots such as SELECT/DDL/DML are rejected.
     """
+    if not allow_raw_sql:
+        raise ValueError(
+            f"Rule '{rule_name}' is declared as kind='sql', which is raw SQL and "
+            "is disabled by 'allow_raw_sql: false' on this environment. Express "
+            "the transformation with declarative operations, or register the rule "
+            "as kind='projection' if it needs Python."
+        )
+
     if not isinstance(result, dict):
         raise TypeError(
             f"Rule '{rule_name}' is declared as kind='sql' but returned "
@@ -114,13 +135,19 @@ class RuleExecutor:
     Usage::
 
         planner = RulePlanner()
-        executor = RuleExecutor()
+        executor = RuleExecutor(allow_raw_sql=False)
         stages = planner.plan(rule_names)
         df = executor.execute(df, stages)
+
+    ``allow_raw_sql`` governs ``kind='sql'`` rules (plan 39, decision D14). The
+    interpreter always passes the environment's value; the permissive default
+    serves callers that run no SQL rule at all, and the refusal itself lives in
+    :func:`validate_sql_rule_result`, where every path must state its intent.
     """
 
-    def __init__(self, backend=None) -> None:
+    def __init__(self, backend=None, *, allow_raw_sql: bool = True) -> None:
         self._backend = backend
+        self._allow_raw_sql = allow_raw_sql
 
     def execute(self, df: "DataFrame", stages: list["RuleStage"]) -> "DataFrame":
         """
@@ -183,7 +210,9 @@ class RuleExecutor:
             if spec.kind == "sql":
                 result = {
                     name: sql_expr(expression)
-                    for name, expression in validate_sql_rule_result(spec.name, result).items()
+                    for name, expression in validate_sql_rule_result(
+                        spec.name, result, allow_raw_sql=self._allow_raw_sql
+                    ).items()
                 }
             if not isinstance(result, dict):
                 raise TypeError(
