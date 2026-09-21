@@ -338,7 +338,7 @@ class TestPatternWiring:
             def __init__(self):
                 self.calls = []
 
-            def check_from_schema(self, fqn, schema, raise_on_critical=True):
+            def check_from_schema(self, fqn, schema, raise_on_critical=True, *, contract_enforcement="off"):
                 self.calls.append(fqn)
                 raise AssertionError("monitor must not run without a materialized view")
 

@@ -182,7 +182,7 @@ class FakeMonitor:
         self.report = report
         self.history = None
 
-    def check_from_schema(self, _fqn, _schema_dict, raise_on_critical=False):
+    def check_from_schema(self, _fqn, _schema_dict, raise_on_critical=False, *, contract_enforcement="off"):
         return self.report
 
 

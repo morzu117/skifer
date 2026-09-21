@@ -111,7 +111,7 @@ tables:
     quality_checks:
       drop_nulls_in: [amount, customer_id]
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         null_checks = [c for c in contracts if isinstance(c, NullCheck)]
         assert len(null_checks) == 2
         assert {c.column for c in null_checks} == {"amount", "customer_id"}
@@ -124,7 +124,7 @@ tables:
     quality_checks:
       drop_duplicates_on: [order_id]
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         unique = [c for c in contracts if isinstance(c, UniqueCheck)]
         assert len(unique) == 1
         assert unique[0].columns == ["order_id"]
@@ -137,7 +137,7 @@ tables:
     filter:
       - status:in:ACTIVE,PENDING
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         filters = [c for c in contracts if isinstance(c, FilterInvariantCheck)]
         assert len(filters) == 1
         assert filters[0].operator == "in"
@@ -150,7 +150,7 @@ tables:
     filter:
       - customer_id:is_not_null
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         filters = [c for c in contracts if isinstance(c, FilterInvariantCheck)]
         assert len(filters) == 1
         assert filters[0].column == "customer_id"
@@ -163,7 +163,7 @@ tables:
 select_final:
   - [amount, amount_eur, [cast:double]]
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         type_checks = [c for c in contracts if isinstance(c, TypeCheck)]
         assert any(c.column == "amount_eur" and c.expected_type == "double" for c in type_checks)
 
@@ -177,13 +177,13 @@ select_final:
     ops:
       - cast:double
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         type_checks = [c for c in contracts if isinstance(c, TypeCheck)]
         assert any(c.column == "amount_eur" and c.expected_type == "double" for c in type_checks)
 
     def test_extract_no_contracts_for_empty_schema(self):
         schema = parse_schema("tables:\n  - name: silver.orders\n")
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         assert contracts == []
 
     def test_extract_multiple_table_null_checks(self):
@@ -196,12 +196,110 @@ tables:
     quality_checks:
       drop_nulls_in: [email]
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         null_checks = [c for c in contracts if isinstance(c, NullCheck)]
         assert len(null_checks) == 2
         tables = {c.table for c in null_checks}
         assert "silver.orders" in tables
         assert "silver.customers" in tables
+
+
+CONTRACT_YAML = """
+data_product:
+  id: sales.orders
+  version: 1.0.0
+tables:
+  - name: silver.orders
+contract:
+  grain: [order_id]
+  output:
+    order_id: {logical_type: string, required: true, unique: true}
+    amount:   {logical_type: double, required: true}
+    region:   {logical_type: string}
+select_final:
+  - [order_id, order_id]
+  - [amount, amount]
+  - [region, region]
+"""
+
+
+class TestContractOutputEnforcement:
+    """`contract.output` becomes verification rather than metadata (Plan 40)."""
+
+    def _extract(self, level):
+        return ContractExtractor().extract(
+            parse_schema(CONTRACT_YAML), contract_enforcement=level
+        )
+
+    def test_off_derives_nothing_from_contract_output(self):
+        """Non-regression: the default must leave existing pipelines untouched."""
+        contracts = self._extract("off")
+        assert not any(isinstance(c, LogicalTypeCheck) for c in contracts)
+        assert not any(isinstance(c, SchemaDriftCheck) for c in contracts)
+        assert not any(isinstance(c, NullCheck) for c in contracts)
+
+    def test_strict_derives_one_check_per_declaration(self):
+        contracts = self._extract("strict")
+        nulls = {c.column for c in contracts if isinstance(c, NullCheck)}
+        uniques = {tuple(c.columns) for c in contracts if isinstance(c, UniqueCheck)}
+        types = {
+            (c.column, c.logical_type)
+            for c in contracts
+            if isinstance(c, LogicalTypeCheck)
+        }
+        assert nulls == {"order_id", "amount"}
+        assert uniques == {("order_id",)}
+        assert types == {
+            ("order_id", "string"),
+            ("amount", "double"),
+            ("region", "string"),
+        }
+
+    def test_the_contract_is_exhaustive(self):
+        """A column produced but not declared is a violation.
+
+        This is the check that closes the F.expr door: a projection rule can
+        build a column any way it likes, but it cannot keep it out of the
+        produced table.
+        """
+        drift = [c for c in self._extract("strict") if isinstance(c, SchemaDriftCheck)]
+        assert len(drift) == 1
+        assert set(drift[0].expected_columns) == {"order_id", "amount", "region"}
+
+        backend = FakeBackend(
+            column_types={
+                "order_id": "string",
+                "amount": "double",
+                "region": "string",
+                "smuggled": "double",
+            }
+        )
+        result = drift[0].evaluate(backend, "t")
+        assert result.status is CheckStatus.FAIL
+        assert "smuggled" in result.message
+
+    def test_warn_and_strict_differ_only_in_severity(self):
+        """The migration path is off → warn → strict, so warn must never block."""
+        warn = self._extract("warn")
+        strict = self._extract("strict")
+        derived = (NullCheck, UniqueCheck, LogicalTypeCheck, SchemaDriftCheck)
+
+        warn_derived = [c for c in warn if isinstance(c, derived)]
+        strict_derived = [c for c in strict if isinstance(c, derived)]
+        assert len(warn_derived) == len(strict_derived)
+        assert all(c.severity == "warning" for c in warn_derived)
+        assert all(c.severity == "critical" for c in strict_derived)
+
+    def test_an_unknown_enforcement_level_is_refused(self):
+        with pytest.raises(ValueError, match="contract_enforcement"):
+            self._extract("enforce")
+
+    def test_a_schema_without_a_contract_derives_nothing(self):
+        contracts = ContractExtractor().extract(
+            parse_schema("tables:\n  - name: silver.orders\n"),
+            contract_enforcement="strict",
+        )
+        assert contracts == []
 
 
 # ---------------------------------------------------------------------------
@@ -886,7 +984,7 @@ observability:
     max_delay: "2h"
     timestamp_column: updated_at
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         freshness = [c for c in contracts if isinstance(c, FreshnessCheck)]
         assert len(freshness) == 1
         assert freshness[0].timestamp_column == "updated_at"
@@ -901,7 +999,7 @@ observability:
     min_rows: 1000
     max_rows: 10000000
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         volume = [c for c in contracts if isinstance(c, VolumeCheck)]
         assert len(volume) == 1
         assert volume[0].min_rows == 1000
@@ -915,7 +1013,7 @@ observability:
     min_rows: 1000
     variation_threshold: 0.3
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         variation = [c for c in contracts if isinstance(c, VolumeVariationCheck)]
         assert len(variation) == 1
         assert variation[0].variation_threshold == 0.3
@@ -931,7 +1029,7 @@ observability:
   schema_drift:
     enabled: true
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         drift = [c for c in contracts if isinstance(c, SchemaDriftCheck)]
         assert len(drift) == 1
         assert set(drift[0].expected_columns) == {"id", "amount"}
@@ -946,7 +1044,7 @@ observability:
       expect: 0
       severity: critical
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         custom = [c for c in contracts if isinstance(c, CustomSqlCheck)]
         assert len(custom) == 1
         assert custom[0].severity == "critical"

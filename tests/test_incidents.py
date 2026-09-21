@@ -60,7 +60,7 @@ class _Monitor:
     def __init__(self, results):
         self.results = list(results)
 
-    def check_from_schema(self, fqn, schema_dict, raise_on_critical=False):
+    def check_from_schema(self, fqn, schema_dict, raise_on_critical=False, *, contract_enforcement="off"):
         return MonitorReport(fqn, self.results)
 
 

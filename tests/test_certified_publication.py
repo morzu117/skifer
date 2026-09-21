@@ -25,7 +25,7 @@ class _Monitor:
         self.result_factory = result_factory
         self.checked_fqns = []
 
-    def check_from_schema(self, fqn, schema_dict, raise_on_critical=False):
+    def check_from_schema(self, fqn, schema_dict, raise_on_critical=False, *, contract_enforcement="off"):
         self.checked_fqns.append((fqn, raise_on_critical))
         return MonitorReport(fqn, [self.result_factory(fqn)])
 
@@ -34,7 +34,7 @@ class _SequenceMonitor:
     def __init__(self, result_factories):
         self.result_factories = list(result_factories)
 
-    def check_from_schema(self, fqn, schema_dict, raise_on_critical=False):
+    def check_from_schema(self, fqn, schema_dict, raise_on_critical=False, *, contract_enforcement="off"):
         result_factory = self.result_factories.pop(0)
         return MonitorReport(fqn, [result_factory(fqn)])
 
@@ -990,7 +990,7 @@ def test_partial_incident_failure_alerts_incidents_opened_before_failure():
             return super().open_incident(incident)
 
     class ThreeFailureMonitor:
-        def check_from_schema(self, fqn, schema_dict, raise_on_critical=False):
+        def check_from_schema(self, fqn, schema_dict, raise_on_critical=False, *, contract_enforcement="off"):
             return MonitorReport(
                 fqn,
                 [

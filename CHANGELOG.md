@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `contract.output` now produces checks against the produced table instead of staying metadata.
+  Its declarations already fed certification identity, the ODCS export, the contract diff, the
+  semantic projection, drafts and the metadata index, but nothing ever compared them to the data: a
+  contract declaring `order_id: {required: true, unique: true}` was verified nowhere. `required`
+  becomes a `NullCheck`, `unique` a `UniqueCheck`, `logical_type` a `LogicalTypeCheck`, and the
+  declared field set a `SchemaDriftCheck` — which makes the contract exhaustive, so a column
+  produced but never declared is a violation. That last one is what static analysis of Python rules
+  could never give: a rule may build a column any way it likes, but it cannot keep it out of the
+  produced table. Gated by the new `contract_enforcement` argument, which has **no default** on
+  `ContractExtractor.extract` so no future call site can arrive silently permissive.
+
 - Added `LogicalTypeCheck` and a closed set of verifiable `contract.output` logical types
   (`string`, `integer`, `long`, `double`, `decimal`, `boolean`, `date`, `timestamp`). A contract
   declares a logical type while an engine reports a physical one, so checking one against the other
