@@ -707,7 +707,10 @@ propagation par lineage, un owner structuré (`team`, `steward`, `domain`, `cont
 du contrat (`status`, `reviewers`, dates d'effet, `sla`, `security`). La canonicalisation est en v2 :
 `sla` et `security` participent au hash ; `status`, `reviewers`, `effective_from` et `effective_until`
 n'y participent pas. ODCS 3.1 est importable par `skifer contract import`; `diff_contracts()` marque
-les suppressions, retypages, durcissements de champ, baisses de classification et relâchements SLA.
+les suppressions, retypages, durcissements de champ, baisses de classification, redéfinitions de
+grain, baisses de sécurité et relâchements SLA — la règle étant que ce qui ne peut pas être montré
+sûr compte comme cassant. Tout attribut qui change le hash d'identité est visible du diff, à
+l'exception déclarée du bloc `semantic:` ; un test échoue si ce n'est plus vrai.
 
 Une quarantaine ouvre les incidents critiques ; une publication rétablie résout les incidents ouverts.
 Le routage couvre le propriétaire du dataset et les propriétaires aval, avec webhook générique,
@@ -764,7 +767,7 @@ RuleRegistry.list_loaders()  # list registered loaders
 - `engine.explain_rules(schema_dict)` prints a static redundancy report (OVERWRITE, SHARED_READ, DUPLICATE_EXPR, PHOTON_BREAKING, COMPLEXITY_HIGH) without executing anything.
 
 ### Governance
-`allow_raw_sql: false` on an environment in `config.yaml` disables `expr:` operations and the `sql` filter operator in that environment.
+`allow_raw_sql: false` on an environment in `config.yaml` disables `expr:` operations, the `sql` filter operator, **`kind="sql"` rules and `kind="sql"` loaders** in that environment (Plan 39, decision D14): the flag reads "no hand-written SQL runs here", whichever layer wrote it. The refusal sits in `validate_sql_rule_result`, whose `allow_raw_sql` argument has **no default** so that none of the three execution paths can arrive permissive. It cannot cover `F.expr` inside a `kind="projection"` rule — that is arbitrary Python, and only `CAP_PYTHON_RULES` closes it.
 
 ### QueryResolver (agentic layer)
 Builds SQL **only from names defined in semantic YAML models** — never raw SQL. Unknown names raise `SemanticQueryError` with Levenshtein suggestions.
@@ -804,14 +807,14 @@ The plan must include: context, phased steps with files to create/modify, risk a
 |---|---|---|
 | [Multi-plateforme](docs/roadmap/01_multi_plateforme_plan.md) | `multi_plateforme` | Abandonné — remplacé par le Plan 26 (produit Spark/Databricks uniquement) |
 | [Prérequis GUI (Plan 11)](docs/roadmap/11_gui_framework_prerequisites_plan.md) | `feat/gui-client-planning` | Implémenté — PR en cours |
-| [Stabilisation pré-prod (Plan 12)](docs/roadmap/12_stabilisation_preproduction_plan.md) | `main` | En attente d'implémentation |
+| [Stabilisation pré-prod (Plan 12)](docs/roadmap/12_stabilisation_preproduction_plan.md) | `main` | **Caduc.** Le plan patche `core/operations.py` et `backends/sql_base.py`, supprimés par l'aplatissement du Plan 26. Son objet — une injection SQL par interpolation dans les filtres Spark — est résolu et testé : plus aucun `F.expr(f"…")` interpolé dans `spark_backend.py`, et `sql_literal("O'Brien") == "'O''Brien'"` est épinglé. À archiver ou à réécrire contre le code actuel. |
 | [Rule Engine Optimization (Plan 13)](docs/roadmap/13_rule_engine_optimization_plan.md) | `stabilize-and-fix` (mergé via PR #18) | Implémenté |
 | [Sources externes déclaratives (Plan 14)](docs/roadmap/14_external_sources_plan.md) | `feat/external-sources` (mergé via PR #21) | Implémenté |
 | [Sanitize modules restants (Plan 15)](docs/roadmap/15_sanitize_remaining_modules_plan.md) | `sanitize_code` (mergé via PRs #22/#23) | Implémenté |
 | [JDBC sink (Plan 16)](docs/roadmap/16_jdbc_sink_plan.md) | mergé via PRs #25–#28 | Implémenté |
 | [Optimisation core : fail-fast, IR, refactor engine (Plan 17)](docs/roadmap/17_core_optimization_plan.md) | mergé via PR #29 | Partiellement implémenté (lots 0, 1, 2.1–2.2) — reste repris dans le Plan 18 |
 | [Suite optimisation core : reste plan 17 + correctifs revue (Plan 18)](docs/roadmap/18_core_optimization_followup_plan.md) | mergé via PR #30 | Implémenté |
-| [MLflow Serving & Databricks deployment (Plan 19)](docs/roadmap/19_mlflow_serving_plan.md) | `feat/mlflow-serving` | En cours d'implémentation |
+| [MLflow Serving & Databricks deployment (Plan 19)](docs/roadmap/19_mlflow_serving_plan.md) | `feat/mlflow-serving` | **Implémenté** — les 6 phases sont sur le disque : `DatabricksProvider`, `serving/` + `_response_serializer.py`, `SkiferChatModel`, `scripts/deploy_to_databricks.py`, 43 tests, `CLAUDE.md`/`AGENTS.md` à jour. Le point 6.3 (entrées CHANGELOG) est sans objet : le package est arrivé dans le commit de release initial v2.0.0, où commence l'historique. Le 6.4 (`docs/databricks_deployment.md`) est marqué hors scope par le plan lui-même. |
 | [Workflow multi-agents Claude/Codex/Antigravity (Plan 20)](docs/roadmap/20_multi_agent_workflow_plan.md) | `chore/multi-agent-workflow` | Protocole v1 validé (1er rodage OK ; review = Antigravity) |
 | [Orchestration autonome + sous-tâches/routage modèle (Plan 22)](docs/roadmap/22_autonomous_orchestration_plan.md) | mergé `main` | Implémenté — Modèle B validé sur 3 cycles (between/not_between/ceil) |
 | [Opérateur de filtre `between` (Plan 23)](docs/roadmap/23_filter_between_plan.md) | mergé via PR #44 | Implémenté |
@@ -827,7 +830,8 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Câblage de la gouvernance : alertes et classification stricte (Plan 35)](docs/roadmap/35_governance_wiring_plan.md) | mergé via PR #2 | Implémenté (35.0–35.5) — registre des définitions de contrat, routage d'alertes à la publication, propagation de classification fail-closed |
 | [Émetteur OpenLineage (Plan 36)](docs/roadmap/36_openlineage_emitter_plan.md) | mergé via PR #3 | Implémenté (36.0–36.4) — événements `RunEvent` allowlistés, émetteurs NoOp/InMemory/HTTP, émission best-effort à la publication et à l'écriture batch |
 | [Durcissement best-effort et injection de paramètres (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implémenté (37.0–37.4) — chemins best-effort jamais bloquants sous `-W error`, `\` préservé à l'injection, exemples portables Windows |
-| [Lineage du tracker : agrégats, jointures, intermédiaires (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | `feat/plan38-tracker-lineage` | Plan finalisé, non démarré |
+| [Lineage du tracker : agrégats, jointures, intermédiaires (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | — | **Pas encore un plan ; un point livré.** Le document ne contenait rien (ni fichier, ni branche, ni commit — lien mort) ; il porte désormais le **comportement mesuré**. Deux fail-open sont **fermés** : `aggregate:` produit maintenant du lineage, et l'arête d'une règle porte le nom publié par `select_final` plutôt que le nom interne de la règle — dans les deux cas, une colonne `pii` ne perd plus sa classification en chemin et `mode="strict"` peut l'attraper. Restent quatre points, qui demandent des décisions de conception : comment représenter un doute, si le tracker peut lire un schéma, comment séparer la condition de jointure du flux, et **si une source qualifiée (`ord.id`) est exécutable** — elle ne l'est aujourd'hui sur aucun moteur alors qu'elle est le seul remède à l'attribution par défaut et qu'`examples/23_openlineage` l'emploie ; un garde-fou épingle les deux moteurs ensemble en attendant. |
+| [Portabilité SQL-first : alternative à dbt hors Databricks (Plan 39)](docs/roadmap/39_sql_first_portability_plan.md) | `feat/plan39-sql-first` | En cours — **phases 39.1 à 39.6 et 39.9 terminées** : frontière `Adapter`, dialecte sqlglot, compilateur complet, règles et loaders `kind="sql"`, adaptateur DuckDB, sources fichier, les quatre stratégies d'écriture (`view`/`incremental append`/`incremental merge`/`snapshot` SCD2) prouvées équivalentes sur les deux moteurs, registres et publication certifiée sans Spark, graphe inter-pipelines et `skifer run --select` avec garde-fou de cible physique, doc et exemples. **Reste 39.7 (Snowflake) et 39.8 (BigQuery)** — les deux exigent un compte réel et un budget. Décision **D14** ouverte : portée d'`allow_raw_sql` sur les règles `kind="sql"`. |
 
 ## Key files
 

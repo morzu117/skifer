@@ -12,15 +12,23 @@ from skifer.core.rule_planner import RulePlanner, RuleStage, RuleCycleError, _to
 
 def _make_spec(name, kind="projection", func=None):
     if func is None:
-        def func(df):
-            return {}
+        if kind == "sql":
+            def func():
+                return {}
+        else:
+            def func(df):
+                return {}
     return RuleSpec(name=name, func=func, kind=kind)
 
 
 def _register(name, kind="projection", func=None):
     if func is None:
-        def func(df):
-            return {}
+        if kind == "sql":
+            def func():
+                return {}
+        else:
+            def func(df):
+                return {}
         func.__name__ = name
     spec = RuleSpec(name=name, func=func, kind=kind)
     RuleRegistry._rules[name] = spec
@@ -41,7 +49,7 @@ class TestStageGrouping:
         self.planner = RulePlanner()
 
     def teardown_method(self):
-        _cleanup("p1", "p2", "a1", "p3", "t1", "p4")
+        _cleanup("p1", "p2", "a1", "p3", "t1", "p4", "sql1")
 
     def test_single_projection_rule_one_stage(self):
         _register("p1", kind="projection")
@@ -56,6 +64,17 @@ class TestStageGrouping:
         assert len(stages) == 1
         assert stages[0].kind == "projection"
         assert len(stages[0].rules) == 2
+
+    def test_sql_rule_fuses_with_neighboring_projection_rules(self):
+        _register("p1", kind="projection")
+        _register("sql1", kind="sql")
+        _register("p2", kind="projection")
+
+        stages = self.planner.plan(["p1", "sql1", "p2"])
+
+        assert len(stages) == 1
+        assert stages[0].kind == "projection"
+        assert [rule.name for rule in stages[0].rules] == ["p1", "sql1", "p2"]
 
     def test_mixed_kinds_produce_multiple_stages(self):
         _register("p1", kind="projection")

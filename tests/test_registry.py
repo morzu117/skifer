@@ -33,6 +33,22 @@ def test_register_rule_kind_transform():
     assert spec.kind == "transform"
 
 
+def test_register_rule_kind_sql():
+    @RuleRegistry.register_rule(name="my_sql_rule", kind="sql")
+    def my_sql_rule():
+        return {"amount_taxed": "amount * 1.2"}
+
+    spec = RuleRegistry.get_rule("my_sql_rule")
+    assert spec.kind == "sql"
+
+
+def test_register_sql_rule_rejects_required_parameter():
+    with pytest.raises(TypeError, match="does not receive a DataFrame"):
+        @RuleRegistry.register_rule(name="bad_sql_signature", kind="sql")
+        def bad_sql_signature(df):
+            return {"amount_taxed": "amount * 1.2"}
+
+
 def test_register_rule_invalid_kind():
     with pytest.raises(ValueError, match="Invalid rule kind"):
         @RuleRegistry.register_rule(name="bad_kind_rule", kind="unknown_kind")

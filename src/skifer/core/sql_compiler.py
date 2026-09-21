@@ -20,7 +20,14 @@ import json
 import logging
 from typing import Any, Callable
 
-from skifer.core.ir import ParsedColumnSpec, ParsedOp, ParsedSchema, _parse_op
+from skifer.core.ir import (
+    ParsedColumnSpec,
+    ParsedOp,
+    ParsedSchema,
+    ParsedTable,
+    _parse_op,
+    parse_to_ir,
+)
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, resolve_filter_operator
 
 logger = logging.getLogger(__name__)
@@ -43,6 +50,9 @@ _SQL_JOIN_TYPES: dict[str, str] = {
 
 #: Sub-select alias for the pre-aggregation projection.
 _AGG_SOURCE_ALIAS = "_skifer_src"
+
+#: Sub-select alias for the projection produced by portable SQL rules.
+_RULE_SOURCE_ALIAS = "_skifer_rules"
 
 #: Materialization keys that are part of the *definition* of a materialized view.
 #: A change to any of them must trigger CREATE OR REPLACE, so they are hashed
@@ -272,19 +282,32 @@ def compile_measure(measure: Any) -> str:
 # Guards — never emit approximate SQL
 # ---------------------------------------------------------------------------
 
-def _reject_uncompilable(parsed: ParsedSchema) -> None:
+def _reject_uncompilable(
+    parsed: ParsedSchema,
+    *,
+    resolve_source: Callable[[ParsedTable], str] | None = None,
+    persisted_definition: bool = True,
+) -> None:
     """Raise SqlCompilationError for every construct with no faithful SQL form."""
     if parsed.business_rules:
-        raise SqlCompilationError(
-            f"Python business_rules {list(parsed.business_rules)} cannot be compiled to SQL. "
-            "Materialize them upstream in a silver table, then join/aggregate that table here."
-        )
-    if parsed.partials:
-        raise SqlCompilationError(
-            "'partials:' sub-transformations cannot be compiled to SQL (they run Python). "
-            "Materialize the partial as its own table and reference it in 'tables:'."
-        )
-    if parsed.dev_limit:
+        from skifer.core.registry import RuleRegistry
+
+        python_rules = []
+        for rule_name in parsed.business_rules:
+            try:
+                spec = RuleRegistry.get_rule(rule_name)
+            except ValueError as exc:
+                raise SqlCompilationError(
+                    f"Unknown business_rules rule '{rule_name}': {exc}"
+                ) from exc
+            if spec.kind != "sql":
+                python_rules.append(rule_name)
+        if python_rules:
+            raise SqlCompilationError(
+                f"Python business_rules {python_rules} cannot be compiled to SQL. "
+                "Materialize them upstream in a silver table, then join/aggregate that table here."
+            )
+    if persisted_definition and parsed.dev_limit:
         raise SqlCompilationError(
             "schema-level 'dev_limit' cannot be compiled to SQL — a frozen LIMIT in a "
             "persisted definition silently truncates the result."
@@ -292,12 +315,13 @@ def _reject_uncompilable(parsed: ParsedSchema) -> None:
 
     for t in parsed.tables:
         label = t.alias or t.name
-        if t.is_loader:
+        if t.is_loader and _loader_kind(t) != "sql":
             raise SqlCompilationError(
                 f"table '{label}': Python loaders cannot be compiled to SQL. "
-                "Ingest into a catalog table first, then reference that table."
+                "Declare the loader with kind='sql' so it returns a SQL relation "
+                "expression, or ingest into a catalog table first and reference that."
             )
-        if t.source_type:
+        if t.source_type and resolve_source is None:
             raise SqlCompilationError(
                 f"table '{label}': file sources ('source.type: {t.source_type}') cannot be "
                 "compiled to SQL — reference a Unity Catalog table instead (ingest in bronze first)."
@@ -307,12 +331,12 @@ def _reject_uncompilable(parsed: ParsedSchema) -> None:
                 f"table '{label}': streaming reads have no SQL equivalent here — "
                 "use 'materialization: streaming_table' for incremental append."
             )
-        if t.dev_limit:
+        if persisted_definition and t.dev_limit:
             raise SqlCompilationError(
                 f"table '{label}': 'dev_limit' cannot be compiled to SQL — a frozen LIMIT "
                 "in a persisted definition silently truncates the result."
             )
-        if t.drop_duplicates_on:
+        if persisted_definition and t.drop_duplicates_on:
             raise SqlCompilationError(
                 f"table '{label}': 'quality_checks.drop_duplicates_on' cannot be compiled to "
                 "SQL faithfully (it needs a windowed row_number with a deterministic ORDER BY). "
@@ -335,8 +359,72 @@ def _reject_uncompilable(parsed: ParsedSchema) -> None:
 # Compilation
 # ---------------------------------------------------------------------------
 
-def _compile_table_cte(table: Any, resolve_table: Callable[[str], str], allow_raw_sql: bool) -> str:
-    """Compile one source table (projection + all its predicates) to a CTE body."""
+
+def _loader_kind(table: ParsedTable) -> str:
+    """Return a loader's declared kind, or 'dataframe' when it cannot be known.
+
+    An unregistered loader stays conservatively classified as a DataFrame one, so
+    an unimported module produces the documented refusal rather than a compilation
+    that silently assumed portability.
+    """
+    from skifer.core.registry import RuleRegistry
+
+    try:
+        return RuleRegistry.get_loader_spec(table.loader_name).kind
+    except (ValueError, AttributeError):
+        return "dataframe"
+
+
+def sql_loader_relation(table: ParsedTable, allow_raw_sql: bool = True) -> str:
+    """Call a kind='sql' loader and validate the relation expression it returns.
+
+    The result lands exactly where an adapter's file-source relation lands, so a
+    portable loader is the user-space counterpart of ``Adapter.resolve_source``.
+    It is raw SQL written by a human, so it answers to ``allow_raw_sql`` like an
+    ``expr:`` operation or a kind='sql' rule — governing one and not the others
+    would leave the same door open under a different name.
+    """
+    from skifer.core.registry import RuleRegistry
+
+    if not allow_raw_sql:
+        raise SqlCompilationError(
+            f"table '{table.name}': loader '{table.loader_name}' is declared as "
+            "kind='sql', which is raw SQL and is disabled by "
+            "'allow_raw_sql: false' on this environment."
+        )
+    spec = RuleRegistry.get_loader_spec(table.loader_name)
+    try:
+        relation = spec.func(**(table.loader_args or {}))
+    except TypeError as exc:
+        raise SqlCompilationError(
+            f"table '{table.name}': loader '{table.loader_name}' could not be called "
+            f"with the YAML 'arguments:' {sorted(table.loader_args or {})}: {exc}"
+        ) from exc
+    if not isinstance(relation, str) or not relation.strip():
+        raise SqlCompilationError(
+            f"table '{table.name}': loader '{table.loader_name}' is declared as "
+            f"kind='sql' but returned {type(relation).__name__}, not a non-empty SQL "
+            "relation expression."
+        )
+    return relation.strip()
+
+
+def _compile_table_cte(
+    table: Any,
+    resolve_table: Callable[[str], str],
+    allow_raw_sql: bool,
+    *,
+    resolve_source: Callable[[ParsedTable], str] | None,
+    persisted_definition: bool,
+    schema_dev_limit: int | None,
+) -> str:
+    """Compile one source table (projection + all its predicates) to a CTE body.
+
+    Spark ``dropDuplicates`` keeps an arbitrary row for each key. Ordering a
+    ``ROW_NUMBER`` window by those same partition keys is equally arbitrary and
+    therefore faithful for one batch execution. Persisted definitions still
+    reject that choice because refreshing them could freeze a different row.
+    """
     if table.fields:
         projection = ", ".join(compile_column_spec(f, allow_raw_sql) for f in table.fields)
     else:
@@ -353,15 +441,28 @@ def _compile_table_cte(table: Any, resolve_table: Callable[[str], str], allow_ra
     if group_predicates:
         predicates.append("(" + " OR ".join(group_predicates) + ")")
 
-    sql = f"SELECT {projection} FROM {quote_fqn(resolve_table(table.name))}"
+    if table.is_loader:
+        relation = sql_loader_relation(table, allow_raw_sql)
+    elif table.source_type and resolve_source is not None:
+        relation = resolve_source(table)
+    else:
+        relation = quote_fqn(resolve_table(table.name))
+    sql = f"SELECT {projection} FROM {relation}"
     if predicates:
         sql += "\n  WHERE " + " AND ".join(predicates)
+    if table.drop_duplicates_on:
+        keys = ", ".join(quote_ident(key) for key in table.drop_duplicates_on)
+        sql += f"\n  QUALIFY ROW_NUMBER() OVER (PARTITION BY {keys} ORDER BY {keys}) = 1"
+    if not persisted_definition:
+        dev_limit = table.dev_limit or schema_dev_limit
+        if dev_limit:
+            sql += f"\n  LIMIT {dev_limit}"
     return sql
 
 
 def _compile_join_tree(parsed: ParsedSchema) -> str:
     """Compile the FROM clause: base alias followed by each join in declaration order."""
-    aliases = [t.alias for t in parsed.tables]
+    aliases = [p.alias for p in parsed.partials] + [t.alias for t in parsed.tables]
     if not aliases:
         raise SqlCompilationError("No tables declared — nothing to compile.")
 
@@ -379,8 +480,17 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
             )
         right = quote_ident(j.alias_right)
         if j.join_type == "cross":
-            sql += f"\n  {keyword} {right}"
-            continue
+            declared_keys = [k for k in (*j.keys_left, *j.keys_right) if k is not None]
+            if not declared_keys:
+                sql += f"\n  {keyword} {right}"
+                continue
+            # Spark applies the declared keys even for a cross join: the interpreter
+            # builds the equality condition and calls ``join(other, cond, "cross")``,
+            # which filters. Emitting a bare CROSS JOIN here would turn that filtered
+            # join into a cartesian product — the same YAML producing a handful of rows
+            # on Spark and every pair of rows in SQL. INNER JOIN is the faithful SQL
+            # equivalent of "cross join plus equality predicate".
+            keyword = _SQL_JOIN_TYPES["inner"]
         if j.keys_left == j.keys_right:
             using = ", ".join(quote_ident(k) for k in j.keys_left)
             sql += f"\n  {keyword} {right} USING ({using})"
@@ -393,10 +503,133 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
     return sql
 
 
+#: Join types where only the left side's columns survive, so there is no
+#: right-hand key to remove. Mirrors ``interpreter._LEFT_ONLY_JOIN_TYPES``.
+_LEFT_ONLY_JOIN_TYPES = frozenset({"left_anti", "left_semi"})
+
+
+def _right_join_keys_dropped_by_spark(parsed: ParsedSchema) -> list[str]:
+    """The right-hand join keys the DataFrame path removes after joining.
+
+    When the keys share a name the compiler emits ``USING``, which yields one
+    key column — the same shape the interpreter gets from Spark's own merge.
+    When they differ it emits ``ON``, which keeps both, while the interpreter
+    explicitly drops the right one. Measured with ``keep_all_columns``: Spark
+    returned ``[left_id, left_value, right_value]`` and the compiled SQL the
+    same plus ``right_id`` — one YAML, two output schemas.
+
+    The names are qualified because dropping by bare name would also remove a
+    left-hand column that happens to share it, which Spark keeps.
+    """
+    dropped: list[str] = []
+    for j in parsed.joins:
+        if j.keys_left == j.keys_right or j.join_type in _LEFT_ONLY_JOIN_TYPES:
+            continue
+        dropped.extend(
+            f"{quote_ident(j.alias_right)}.{quote_ident(key)}"
+            for key in j.keys_right
+            if key is not None
+        )
+    return dropped
+
+
+def _known_join_columns(
+    parsed: ParsedSchema,
+    resolve_columns: Callable[[ParsedTable], list[str]] | None,
+) -> tuple[set[str], bool]:
+    """Return known join columns and whether the relation schemas are complete.
+
+    Explicit table projections and partial outputs are known without catalog
+    access. For an unprojected table, ``resolve_columns`` may supply the schema
+    from the full table declaration. The boolean is false when at least one
+    relation remains opaque, so absence from the set cannot be mistaken for
+    proof that a column is new.
+    """
+    known: set[str] = set()
+    complete = True
+    for partial in parsed.partials:
+        child = parse_to_ir(partial.schema)
+        if child.select_final:
+            known.update(spec.target for spec in child.select_final)
+        elif child.aggregate:
+            known.update(child.aggregate.group_by)
+            known.update(measure.target for measure in child.aggregate.measures)
+        else:
+            complete = False
+    for table in parsed.tables:
+        if table.fields:
+            known.update(spec.target for spec in table.fields)
+        elif resolve_columns is not None:
+            known.update(resolve_columns(table))
+        else:
+            complete = False
+    return known, complete
+
+
+def _compile_sql_rule_source(
+    parsed: ParsedSchema,
+    join_tree: str,
+    resolve_columns: Callable[[ParsedTable], list[str]] | None,
+    allow_raw_sql: bool = True,
+) -> str:
+    """Compile portable rules only when rewrite semantics can be proved.
+
+    Guessing whether a target already exists can emit two homonymous columns.
+    Depending on the engine and downstream projection, that either raises an
+    ambiguity error at execution or writes a table different from Spark's
+    replacement semantics, so an opaque input schema is refused instead.
+    """
+    if not parsed.business_rules:
+        return join_tree
+
+    from skifer.core.registry import RuleRegistry
+    from skifer.core.rule_executor import validate_sql_rule_result
+
+    expressions: dict[str, str] = {}
+    owners: dict[str, str] = {}
+    for rule_name in parsed.business_rules:
+        spec = RuleRegistry.get_rule(rule_name)
+        try:
+            result = validate_sql_rule_result(
+                spec.name, spec.func(), allow_raw_sql=allow_raw_sql
+            )
+        except (TypeError, ValueError) as exc:
+            raise SqlCompilationError(str(exc)) from exc
+        expressions.update(result)
+        owners.update(dict.fromkeys(result, spec.name))
+
+    known_columns, schemas_complete = _known_join_columns(parsed, resolve_columns)
+    rewritten = []
+    for column in expressions:
+        if column in known_columns:
+            rewritten.append(column)
+        elif not schemas_complete:
+            raise SqlCompilationError(
+                f"SQL rule '{owners[column]}' targets column '{column}', but the compiler "
+                "cannot determine whether that column already exists. Declare explicit "
+                "'fields' projections for the relevant tables, or provide a column "
+                "resolver via resolve_columns."
+            )
+    star = "*"
+    if rewritten:
+        star += " EXCEPT (" + ", ".join(quote_ident(column) for column in rewritten) + ")"
+    projection = [star]
+    projection.extend(
+        f"{expression} AS {quote_ident(column)}"
+        for column, expression in expressions.items()
+    )
+    inner = f"SELECT {', '.join(projection)}\n  FROM {join_tree}"
+    return f"(\n  {inner}\n) AS {quote_ident(_RULE_SOURCE_ALIAS)}"
+
+
 def compile_select(
     parsed: ParsedSchema,
     resolve_table: Callable[[str], str] | None = None,
     allow_raw_sql: bool = True,
+    *,
+    resolve_source: Callable[[ParsedTable], str] | None = None,
+    resolve_columns: Callable[[ParsedTable], list[str]] | None = None,
+    persisted_definition: bool = True,
 ) -> str:
     """
     Compile a parsed schema into a single SELECT statement.
@@ -405,7 +638,20 @@ def compile_select(
         parsed:        The schema IR (``parse_to_ir(schema_dict)``).
         resolve_table: Maps a declared table name to its actual FQN (sandbox
                        resolution). Defaults to identity.
+        resolve_columns: Maps a declared table IR to its column names. This lets
+                         the pure compiler prove whether an SQL rule adds or
+                         rewrites a column without knowing whether the table is
+                         file- or catalog-backed. When input schemas remain unknown,
+                         compilation is refused because duplicate column names can
+                         fail as ambiguous or diverge from Spark output.
+        resolve_source: Maps a file-backed table IR to the adapter-specific SQL
+                        relation placed verbatim in its CTE ``FROM`` clause. When
+                        absent, file sources retain their historical refusal.
         allow_raw_sql: When False, ``expr:`` and the ``sql`` filter operator raise.
+        persisted_definition: Keep constructs with unstable refresh semantics out
+                              of persisted definitions. Set False for one-off batch
+                              execution to compile ``drop_duplicates_on`` and
+                              ``dev_limit``.
 
     Returns:
         A ``WITH … SELECT …`` statement, without trailing semicolon.
@@ -415,19 +661,45 @@ def compile_select(
                              SQL equivalent (Python rules, loaders, file sources…).
     """
     resolve = resolve_table or (lambda name: name)
-    _reject_uncompilable(parsed)
+    _reject_uncompilable(
+        parsed,
+        resolve_source=resolve_source,
+        persisted_definition=persisted_definition,
+    )
 
-    ctes = ",\n".join(
-        f"{quote_ident(t.alias)} AS (\n  {_compile_table_cte(t, resolve, allow_raw_sql)}\n)"
+    cte_parts = []
+    for partial in parsed.partials:
+        try:
+            child_sql = compile_select(
+                parse_to_ir(partial.schema),
+                resolve_table=resolve,
+                allow_raw_sql=allow_raw_sql,
+                resolve_source=resolve_source,
+                resolve_columns=resolve_columns,
+                persisted_definition=persisted_definition,
+            )
+        except SqlCompilationError as exc:
+            path = partial.resolved_path or "<inline>"
+            raise SqlCompilationError(
+                f"partial '{partial.alias}' (path '{path}') cannot be compiled: {exc}"
+            ) from exc
+        cte_parts.append(f"{quote_ident(partial.alias)} AS (\n  {child_sql}\n)")
+    cte_parts.extend(
+        f"{quote_ident(t.alias)} AS (\n  "
+        f"{_compile_table_cte(t, resolve, allow_raw_sql, resolve_source=resolve_source, persisted_definition=persisted_definition, schema_dev_limit=parsed.dev_limit)}\n)"
         for t in parsed.tables
     )
+    ctes = ",\n".join(cte_parts)
     join_tree = _compile_join_tree(parsed)
+    rule_source = _compile_sql_rule_source(
+        parsed, join_tree, resolve_columns, allow_raw_sql
+    )
     add_columns = [compile_column_spec(f, allow_raw_sql) for f in parsed.add_columns]
 
     if parsed.aggregate:
         agg = parsed.aggregate
         inner_projection = ", ".join(["*"] + add_columns)
-        inner = f"SELECT {inner_projection}\n  FROM {join_tree}"
+        inner = f"SELECT {inner_projection}\n  FROM {rule_source}"
         outputs = [quote_ident(k) for k in agg.group_by]
         outputs += [compile_measure(m) for m in agg.measures]
         body = (
@@ -438,11 +710,16 @@ def compile_select(
             body += "\nHAVING " + " AND ".join(compile_filter(h, allow_raw_sql) for h in agg.having)
     elif parsed.select_final:
         projection = ", ".join(compile_column_spec(f, allow_raw_sql) for f in parsed.select_final)
-        body = f"SELECT {projection}\nFROM {join_tree}"
+        body = f"SELECT {projection}\nFROM {rule_source}"
     else:
-        # keep_all_columns (or neither) — pass every column through, plus add_columns.
-        projection = ", ".join(["*"] + add_columns)
-        body = f"SELECT {projection}\nFROM {join_tree}"
+        # keep_all_columns (or neither) — pass every column through, plus add_columns,
+        # minus the join keys the DataFrame path drops so both engines return the
+        # same schema. `* EXCEPT (…)` is verified by execution on Spark SQL and
+        # DuckDB, and sqlglot emits `EXCLUDE` for DuckDB and Snowflake.
+        dropped = _right_join_keys_dropped_by_spark(parsed)
+        star = f"* EXCEPT ({', '.join(dropped)})" if dropped else "*"
+        projection = ", ".join([star] + add_columns)
+        body = f"SELECT {projection}\nFROM {rule_source}"
 
     return f"WITH {ctes}\n{body}"
 

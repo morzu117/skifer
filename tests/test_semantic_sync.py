@@ -571,3 +571,70 @@ sink: {type: delta, schema: gold, table: fact_orders_sync}
         ("amount", "restricted", "internal"),
     )
     assert report.contract_diff.breaking is True
+
+
+# ---------------------------------------------------------------------------
+# The contract snapshot and the drift check must stay matched
+#
+# `_attach_contract_snapshot` decides which attributes a later sync can compare,
+# and `_contract_diff_from_payload` enumerates which `ContractDiff` dimensions
+# to look at. An attribute the snapshot omits comes back absent, so checking a
+# dimension it does not store would report every contract declaring that
+# attribute as drifting on every sync. These two tests fail when the two lists
+# stop corresponding — in either direction.
+# ---------------------------------------------------------------------------
+
+_SNAPSHOT_FIELD_KEYS = {"name", "logical_type", "required", "classification"}
+_SNAPSHOT_TOP_KEYS = {"output", "sla"}
+
+FULL_CONTRACT_SYNC_YAML = """
+data_product: {id: sales.orders, version: 1.0.0}
+contract:
+  grain: [order_id]
+  sla: {refresh_frequency: 1h, max_latency: 24h}
+  security: {level: internal, access_policy: "row_filter:region"}
+  output:
+    order_id: {logical_type: identifier, required: true, unique: true, entity: order}
+    amount: {logical_type: currency, classification: restricted}
+semantic:
+  model_key: orders_snapshot
+  dimensions: [order_id]
+tables: [{name: silver.orders}]
+select_final:
+  - [id, order_id]
+  - [amount, amount]
+sink: {type: delta, schema: gold, table: fact_orders_snapshot}
+"""
+
+
+def test_the_contract_snapshot_stores_exactly_what_the_drift_check_reads(tmp_path):
+    import yaml as _yaml
+
+    from skifer.semantic.sync import _CONTRACT_SNAPSHOT_METADATA_KEY
+
+    _sync(tmp_path, FULL_CONTRACT_SYNC_YAML, write=True)
+    written = next((tmp_path / "semantic_models").rglob("*.yaml"))
+    payload = _yaml.safe_load(written.read_text(encoding="utf-8"))
+    snapshot = payload["models"][0]["metadata"][_CONTRACT_SNAPSHOT_METADATA_KEY]
+
+    assert set(snapshot) == _SNAPSHOT_TOP_KEYS, (
+        "The contract snapshot gained or lost a top-level key. "
+        "`_contract_diff_from_payload` must gain or lose the matching "
+        "ContractDiff dimension in the same change."
+    )
+    for field in snapshot["output"]:
+        assert set(field) == _SNAPSHOT_FIELD_KEYS, (
+            "The snapshot's output fields gained or lost an attribute. Storing "
+            "one without checking it makes it silently uncomparable; checking "
+            "one without storing it reports every contract as drifting."
+        )
+
+
+def test_an_unchanged_contract_with_unsnapshotted_attributes_reports_no_drift(tmp_path):
+    """`grain`, `unique`, `entity` and `security` are declared here and are not
+    in the snapshot. Re-syncing the identical contract must still report nothing:
+    a dimension checked but not stored would make every one of these drift."""
+    first = _sync(tmp_path, FULL_CONTRACT_SYNC_YAML, write=True)
+    assert first.contract_diff is None
+
+    assert _sync(tmp_path, FULL_CONTRACT_SYNC_YAML).contract_diff is None

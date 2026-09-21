@@ -33,9 +33,16 @@ VALID_SOURCE_TYPES: frozenset[str] = frozenset(
 VALID_STREAMING_SOURCE_TYPES: frozenset[str] = frozenset({"delta", "text"})
 
 #: Materialization types accepted by the top-level ``materialization:`` block
-#: (Plan 27 for ``streaming_table``, Plan 28 for ``materialized_view``).
+#: (Plans 27, 28 and 39.4.1).
 VALID_MATERIALIZATION_TYPES: frozenset[str] = frozenset(
-    {"table", "streaming_table", "materialized_view"}
+    {
+        "table",
+        "view",
+        "incremental",
+        "snapshot",
+        "streaming_table",
+        "materialized_view",
+    }
 )
 
 #: Keys allowed in the ``materialization:`` block, per type. The allowlist is
@@ -43,11 +50,35 @@ VALID_MATERIALIZATION_TYPES: frozenset[str] = frozenset(
 #: (and vice versa) — every other key is rejected at load time.
 MATERIALIZATION_ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "table": frozenset({"type"}),
+    "view": frozenset({"type"}),
+    "incremental": frozenset(
+        {"type", "strategy", "unique_key", "watermark_column"}
+    ),
+    "snapshot": frozenset(
+        {
+            "type",
+            "strategy",
+            "unique_key",
+            "updated_at",
+            "check_columns",
+            "on_missing",
+            "max_closed_ratio",
+            "on_late_arrival",
+        }
+    ),
     "streaming_table": frozenset({"type", "trigger", "checkpoint", "write_mode", "keys"}),
     "materialized_view": frozenset(
         {"type", "schedule", "comment", "cluster_by", "partition_by", "refresh"}
     ),
 }
+
+#: Strategies accepted by cumulative batch materializations (Plan 39.4.1).
+VALID_INCREMENTAL_STRATEGIES: frozenset[str] = frozenset({"append", "merge"})
+VALID_SNAPSHOT_STRATEGIES: frozenset[str] = frozenset({"timestamp", "check"})
+VALID_SNAPSHOT_ON_MISSING: frozenset[str] = frozenset({"close", "ignore"})
+VALID_SNAPSHOT_ON_LATE_ARRIVAL: frozenset[str] = frozenset({"refuse", "ignore"})
+DEFAULT_SNAPSHOT_MAX_CLOSED_RATIO: float = 0.2
+DEFAULT_SNAPSHOT_ON_LATE_ARRIVAL: str = "refuse"
 
 #: Default trigger for ``materialization: streaming_table``.
 DEFAULT_STREAMING_TRIGGER: str = "available_now"

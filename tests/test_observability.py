@@ -64,6 +64,8 @@ class FakeBackend:
     If sql_override is provided, it's called with the query string and must return
     a FakeResult. Otherwise, default_result is returned for all queries.
     """
+    name = "databricks"
+
     def __init__(self, default_rows: list[dict] | None = None, sql_override=None):
         self._default_rows = default_rows or []
         self._sql_override = sql_override
@@ -74,6 +76,9 @@ class FakeBackend:
         if self._sql_override:
             return FakeResult(self._sql_override(query))
         return FakeResult(self._default_rows)
+
+    def fetch(self, query: str) -> list[dict]:
+        return list(self.sql(query).collect())
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +241,34 @@ class TestUniqueCheck:
         result = check.evaluate(backend, "silver.orders")
         assert result.passed
         assert "order_id, line_id" in backend.queries[0]
+
+
+def test_null_and_unique_checks_execute_on_real_duckdb():
+    duckdb = pytest.importorskip("duckdb")
+    from skifer.core.adapters.duckdb import DuckDBAdapter
+
+    connection = duckdb.connect(database=":memory:")
+    adapter = DuckDBAdapter(connection)
+    try:
+        adapter.execute_sql("CREATE SCHEMA quality")
+        adapter.execute_sql(
+            "CREATE TABLE quality.orders AS "
+            "SELECT * FROM (VALUES (1, 'a'), (1, 'b'), (2, 'c')) AS rows(id, value)"
+        )
+
+        null_result = NullCheck(table="quality.orders", column="value").evaluate(
+            adapter, "quality.orders"
+        )
+        unique_result = UniqueCheck(table="quality.orders", columns=["id"]).evaluate(
+            adapter, "quality.orders"
+        )
+
+        assert null_result.status is CheckStatus.PASS
+        assert null_result.actual_value == 0
+        assert unique_result.status is CheckStatus.FAIL
+        assert unique_result.actual_value == 1
+    finally:
+        connection.close()
 
 
 class TestTypeCheck:

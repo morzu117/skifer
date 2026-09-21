@@ -13,7 +13,7 @@ def _quote_namespace(namespace):
     return ".".join(f"`{part}`" for part in parts)
 
 
-def write_dataframe(df, fqn, label, is_local, spark):
+def write_dataframe(df, fqn, label, is_local, spark, mode="overwrite"):
     """
     Writes a DataFrame to a Delta table, overwriting the schema.
 
@@ -35,14 +35,17 @@ def write_dataframe(df, fqn, label, is_local, spark):
     print(f"     -> [Write] Writing data to: {fqn} ...")
 
     if is_local:
-        write_dataframe_local(df, fqn, spark)
+        write_dataframe_local(df, fqn, spark, mode=mode)
     else:
-        df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(fqn)
+        writer = df.write.format("delta").mode(mode)
+        if mode == "overwrite":
+            writer = writer.option("overwriteSchema", "true")
+        writer.saveAsTable(fqn)
 
     print(f"     -> [Success] Table {label} written successfully.")
 
 
-def write_dataframe_local(df, fqn, spark):
+def write_dataframe_local(df, fqn, spark, mode="overwrite"):
     """
     Local-mode write: saves as Delta files then registers the table in Derby metastore.
 
@@ -56,7 +59,7 @@ def write_dataframe_local(df, fqn, spark):
     warehouse_dir = spark.conf.get("spark.sql.warehouse.dir")
     path = f"{warehouse_dir}/{schema_name}/{table_name}"
 
-    df.write.format("delta").mode("overwrite").save(path)
+    df.write.format("delta").mode(mode).save(path)
 
     spark.sql(
         f"CREATE TABLE IF NOT EXISTS `{schema_name}`.`{table_name}` "

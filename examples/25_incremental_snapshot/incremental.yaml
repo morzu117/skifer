@@ -1,0 +1,23 @@
+# One row per order_id, always carrying the latest values. No history is kept:
+# order 1 moving from `pending` to `shipped` overwrites the old status, and
+# order 3 — absent from day 2 — simply stays as day 1 left it.
+materialization:
+  type: incremental
+  strategy: merge
+  unique_key: [order_id]
+
+tables:
+  - name: orders_source
+    alias: orders
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/orders_{{ day }}.csv"
+      options:
+        header: "true"
+        inferSchema: "true"
+
+select_final:
+  - [order_id, order_id]
+  - [customer, customer]
+  - [status, status]
+  - [amount, amount]

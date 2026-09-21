@@ -601,6 +601,122 @@ persisted SQL definition.
 
 ---
 
+## Incremental and snapshot writes (`materialization`) — Plan 39
+
+Besides the default full overwrite, a pipeline can declare how its target is
+updated. Both strategies below compile to SQL and behave identically on Spark and
+on the portable SQL adapters.
+
+```yaml
+materialization:
+  type: incremental
+  strategy: merge          # append | merge
+  unique_key: [order_id]   # required for merge, refused with append
+  # watermark_column: ingested_at   # append only — skips rows at or below the
+  #                                 # maximum already stored, so a replayed
+  #                                 # extract does not duplicate itself
+```
+
+```yaml
+materialization:
+  type: snapshot           # SCD2 — adds valid_from / valid_to
+  strategy: check          # check | timestamp
+  unique_key: [order_id]
+  check_columns: [status, amount]   # with strategy: check
+  # updated_at: modified_at         # with strategy: timestamp
+  on_missing: ignore                # required — no default
+```
+
+| Strategy | Keeps | A changed row becomes |
+|---|---|---|
+| `incremental` / `append` | every run's rows | a second row, subject to the watermark |
+| `incremental` / `merge` | one row per `unique_key` | the same row, overwritten |
+| `snapshot` | every version | the old row closed, a new one opened |
+
+**`on_missing` has no default, on purpose.** A key that stops appearing in the
+source means one of two incompatible things, and only the person who knows the
+extract can say which. `close` reads it as a deletion and ends the row's validity;
+`ignore` reads it as a partial or late extract and leaves the row open. Guessing
+corrupts history quietly in either direction — a truncated export would close every
+customer, a genuine deletion would stay open forever.
+
+Two further guards apply to `snapshot`:
+
+- `max_closed_ratio` (default `0.2`) refuses a run that would close more than that
+  share of the open rows, and reports instead. A source that half failed to extract
+  looks exactly like a source where half the rows were deleted.
+- `on_late_arrival` (default `refuse`) refuses a row whose `updated_at` predates the
+  version already stored, rather than inserting it out of order.
+
+`examples/25_incremental_snapshot/` runs the same two days of orders through both
+strategies and prints the difference. It runs each pipeline **twice**, because a
+single run leaves the same rows whichever strategy you pick — including a plain
+overwrite, which is neither.
+
+---
+
+## Coming from dbt
+
+Skifer and dbt solve the same problem — declarative, versioned transformations with
+lineage and tests — from opposite ends. dbt starts from SQL and adds structure around
+it; skifer starts from structure and emits SQL. Most concepts map; the ones that do
+not are listed at the end, because a correspondence table that hides its gaps is worse
+than no table.
+
+### What maps
+
+| dbt | skifer |
+|---|---|
+| `ref('model')` | declare the table in `tables:`; the edge is derived by `skifer index` |
+| `source('name', 'table')` | a catalog table name, or a table with `source:` for a file |
+| `{{ config(materialized='table') }}` | `materialization: {type: table}` (the default) |
+| `materialized='view'` | `materialization: {type: view}` |
+| `materialized='incremental'` + `is_incremental()` | `materialization: {type: incremental, strategy: append\|merge}` |
+| `unique_key` | `unique_key:` under `materialization:` |
+| snapshots (`check` / `timestamp`) | `materialization: {type: snapshot, strategy: check\|timestamp}` |
+| `dbt run --select model+` | `skifer run --select 'model+'` |
+| `dbt compile` | `skifer compile PIPELINE --target <dialect>` |
+| `dbt docs` lineage | `skifer index`, then `graph`, `lineage`, `dictionary` |
+| generic tests (`not_null`, `unique`) | `quality_checks:` and `contract:` output declarations |
+| `dbt build` failing on a test | the monitor quarantines and leaves the target untouched |
+
+### What is different on purpose
+
+**There is no `ref()` function, because there is no templating language.** A skifer YAML
+is data, not a program: `{{ param }}` is a pre-parse substitution, there is no Jinja2
+dependency, no macros and no conditionals. A dependency is a table name, and the graph
+is derived from what pipelines declare — never from a call the file makes to itself.
+The cost is that you cannot compute a model name; the benefit is that the file can be
+read, diffed and validated without executing anything.
+
+**Logic that is not SQL is Python, registered and named.** dbt has Python models; skifer
+has `business_rules`, and a rule is either `kind="sql"` — portable, compiled into the
+SELECT — or PySpark, which runs on Spark only and is refused **by name** elsewhere. The
+`What` in YAML and the `How` in Python are separated deliberately, so two engines can
+share a pipeline while each keeps its own implementation of a business concept.
+
+**Tests are a contract, not a suite.** dbt tests run after the model is built, against
+the built table. A skifer pipeline with `data_product:` **stages** its output, checks it,
+and only then promotes — or quarantines it with the offending rows tagged. The consumer's
+table is never the thing being tested.
+
+### What skifer does not have
+
+- **No package ecosystem.** There is no `packages.yml`, no hub, no `dbt-utils`.
+- **No macros, no Jinja.** See above — this is a design choice, not a gap to fill later.
+- **No `dbt seed`.** Reference data is a file source or a table you load yourself.
+- **Fewer adapters.** Databricks and DuckDB today; Snowflake and BigQuery are planned.
+  dbt's adapter list is far longer, and that is a real reason to choose it.
+- **No `--defer` / state comparison.** `skifer run --select` reads the indexed graph;
+  it has no notion of a previous run's manifest to defer to.
+
+If your warehouse is not on that adapter list, or your team's leverage comes from the
+dbt package ecosystem, dbt is the better answer. Skifer's argument is for teams whose
+pipelines carry governance — contracts, certification, lineage, quarantine — as part of
+the pipeline rather than alongside it.
+
+---
+
 ## Filter operators
 
 Filters are supported in `tables[].filter` and at the top-level `filter` key.
@@ -654,6 +770,22 @@ Operations are applied sequentially to a column before the final select.
 | `then:val` | Then branch value | Part of chained `when/then/else` |
 | `else:val` | Else fallback | Part of chained `when/then/else` |
 
+!!! warning "Quote any operation containing a comma"
+
+    In a YAML **flow sequence** the comma is a separator, so
+    `[amount, parts, [split:-,0]]` is read as two items — `split:-` and `0` — and the
+    operation loses its index. Quote it:
+
+    ```yaml
+    select_final:
+      - [amount, parts, ["split:-,0"]]        # correct
+      - [amount, label, ["lit:Paris, France"]]
+    ```
+
+    This affects `split:sep,idx`, `substring:start,len`, and any literal containing a
+    comma. An operation left short of an argument is refused at load time, naming the
+    column, the operation and what was expected — it is not a silent truncation.
+
 ---
 
 ## RuleRegistry
@@ -681,6 +813,11 @@ Rules are plain PySpark functions — they can be unit-tested independently of t
 names `classify_order`, its Python registers that projection rule, and the script
 prints the joined rows with `priority`/`standard` labels before printing the
 declarative aggregate and its `having` result.
+
+`examples/24_sql_mode_portability/` runs one parameterized pipeline on both local
+Spark and DuckDB, then fails unless the two engines return the same rows. It keeps
+the declarative transformation fixed while selecting a PySpark or SQL implementation
+of the same named business concept.
 
 ```python
 # List registered rules
@@ -724,6 +861,145 @@ environments:
 ```
 
 The engine tests catalog access at startup and selects the first accessible environment from `priority_check`.
+
+### Choosing an execution engine (Plan 39)
+
+An environment selects its runtime; a pipeline YAML never does. The `What` stays
+portable precisely because the `How` is chosen outside it.
+
+```yaml
+environments:
+  LOCAL_SQL:
+    catalog: null
+    engine: sql              # spark (default) | sql
+    adapter: duckdb          # databricks (default) | duckdb | snowflake | bigquery
+    database: warehouse.duckdb   # where the adapter connects
+```
+
+`database:` defaults to `:memory:`, which is fine for tests and exploration and
+useless for anything else: two engines built from the same `config.yaml` share
+nothing, and the process boundary loses whatever a run wrote. `skifer run` refuses
+an in-memory database by name rather than reporting a success that wrote nowhere.
+
+`engine: sql` must be selected **before** Spark initialization — through
+`force_env`, `default_env` or `priority_check` — so the engine takes its Spark-free
+startup branch.
+
+### What each adapter supports
+
+A pipeline that needs something its adapter cannot do is **refused by name**, before
+anything is written. The refusal states the missing capability and the YAML construction
+that asked for it, so the fix is never a guess.
+
+| YAML construction | Capability | Databricks | DuckDB |
+|---|---|:--:|:--:|
+| `business_rules:` with a PySpark rule | `python_rules` | ✅ | ❌ |
+| `business_rules:` with `kind="sql"` | — | ✅ | ✅ |
+| `tables[].source:` (csv, parquet, json…) | `file_sources` | ✅ | ✅ |
+| `tables[].source_type: loader` | `loaders` | ✅ | ❌ |
+| `tables[].streaming: true` | `streaming` | ✅ | ❌ |
+| `materialization: table` (default) | — | ✅ | ✅ |
+| `materialization: view` | `view` | ✅ | ✅ |
+| `materialization: incremental` | `incremental` | ✅ | ✅ |
+| `materialization: snapshot` | `snapshot` | ✅ | ✅ |
+| `materialization: materialized_view` | `materialized_view` | ✅ | ❌ |
+| `sink: {type: postgres\|jdbc}` | `jdbc_sink` | ✅ | ❌ |
+| `dev_limit:` | `dev_limit` | ✅ | ✅ |
+| `drop_duplicates_on:` | `drop_duplicates` | ✅ | ✅ |
+| `preprocess.qualify` | `preprocess_qualify` | ✅ | ❌ |
+| `data_product:` (certified publication) | `certified_publication` | ✅ | ✅ |
+
+A `kind="sql"` **loader** needs no capability: it returns a relation expression, which
+every adapter can place. Only a loader that opens its own connection requires `loaders`.
+
+The four constructions DuckDB refuses are the ones with no portable form: PySpark
+objects, Structured Streaming, Unity Catalog materialized views, and a JDBC sink.
+Everything else — including SCD2 snapshots and certified publication — is proved
+equivalent on both engines by tests that run the same YAML twice and compare rows.
+
+### The SQL-first command line
+
+Three commands work on the project rather than on a single run. None of them needs
+a Spark session; `compile` and `graph` open no connection at all.
+
+```bash
+skifer compile PIPELINE --target duckdb          # print the SQL, run nothing
+skifer graph --db .skifer_metadata.db            # the inter-pipeline graph
+skifer run --select '+mart.kpi' --dry-run        # the execution plan
+skifer run --select '+mart.kpi'                  # actually run it
+```
+
+**Your rules live in your project, so the CLI has to be told where.** Nothing imports
+them on its behalf, and an unimported rule is indistinguishable from a missing one.
+`compile` and `run` take `--rules MODULE`, repeatable, resolved from the directory you
+run in:
+
+```bash
+skifer run --select mart.kpi --rules rules.orders --rules rules.customers
+```
+
+Without it, a pipeline naming a business rule is refused — and the refusal says the
+rule is not registered, rather than blaming it for being Python. A `kind="sql"` rule
+that was simply never imported is perfectly portable, and its author should not be
+sent to rewrite it.
+
+**`skifer compile`** prints the SQL a pipeline would run, to stdout, with diagnostics
+on stderr — so it pipes. Because it opens nothing, it cannot read the catalog, and a
+`kind="sql"` rule that needs its tables' columns to know whether it adds or rewrites
+a column is **refused** rather than guessed at — declare explicit `fields:` on the
+tables concerned and it compiles. Plausible-but-wrong SQL would be worse
+than a refusal: it gets copied and pasted.
+
+**`skifer graph`** reads the metadata registry populated by `skifer index` and prints
+what each pipeline reads. An input with no indexed producer is listed as an external
+source with its `kind`:
+
+```text
+External sources:
+  gold.orders <- raw.orders (table)
+  mart.report <- s3_extract.csv (file)
+```
+
+`table` means the producer may simply not be indexed yet. `file` and `loader` read
+outside the catalog, so no amount of further indexing will turn them into an edge —
+which is why the three are not collapsed into one word.
+
+**`skifer run --select`** resolves a selection against that graph and runs it in
+dependency order. The selector is dbt's, so `+` sits on the side the selection travels
+towards:
+
+| Selector | Runs |
+|---|---|
+| `mart.kpi` | that pipeline alone |
+| `mart.kpi+` | it, and everything that reads it |
+| `+mart.kpi` | everything it reads, and it |
+| `+mart.kpi+` | all three |
+
+Omitting `--select` runs everything indexed; repeating it unions the selections. A
+pipeline is named by its target FQN or by its YAML path, and several matching paths
+are **refused by name** rather than arbitrated — picking one would run a pipeline
+nobody asked for.
+
+Among pipelines that are ready to run, the first by name runs first. The graph does
+not decide that, so the rule is pinned by a test: two runs of the same registry print
+the same plan, and a reordering in a diff means a real dependency changed.
+
+A failure blocks only what reads the failed pipeline, transitively; independent work
+still runs.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | everything selected succeeded |
+| `1` | a pipeline failed, or the registry could not be read |
+| `2` | the selection names nothing, is ambiguous, or a target is not physical |
+
+**A target must be physical.** `skifer index` derives a target FQN from four sources,
+and only two of them name a place to write: an explicit `--target-fqn`, and a declared
+`sink:`. A `data_product.id` is a logical name — `sales.orders` is routinely published
+to `gold.orders` — and the last resort is a placeholder built from the first input
+table. A single non-physical target refuses the **whole** selection, so the plan you
+read and the work that happens cannot diverge.
+
 
 ### Sandbox mode
 

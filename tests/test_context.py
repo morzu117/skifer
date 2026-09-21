@@ -8,13 +8,77 @@ resolution (config keys are upper-cased, self.env is upper-cased).
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from skifer.core.context import ExecutionContext
+from skifer.core.core import _peek_runtime_mode
 
 
 def _ctx(env="DEV", db="demo_catalog", env_block=None):
     config = {"environments": {"DEV": env_block or {}}}
     return ExecutionContext(env=env, db=db, config=config)
+
+
+@pytest.mark.parametrize(
+    ("config", "requested_env"),
+    [
+        (
+            {
+                "default_env": "sql_env",
+                "environments": {
+                    "spark_env": {"engine": "spark", "adapter": "databricks"},
+                    "sql_env": {"engine": "sql", "adapter": "duckdb"},
+                },
+            },
+            None,
+        ),
+        (
+            {"environments": {"only": {"engine": "sql", "adapter": "duckdb"}}},
+            None,
+        ),
+        (
+            {
+                "default_env": "spark_env",
+                "environments": {
+                    "spark_env": {"engine": "spark", "adapter": "databricks"},
+                    "sql_env": {"engine": "sql", "adapter": "duckdb"},
+                },
+            },
+            "sql_env",
+        ),
+        (
+            {"environments": {"Local": {"engine": "sql", "adapter": "duckdb"}}},
+            "LOCAL",
+        ),
+        ({"environments": {"local": {}}}, "local"),
+        (
+            {"environments": {"local": {"engine": "sql", "adapter": "duckdb"}}},
+            "unknown",
+        ),
+    ],
+    ids=[
+        "default-env",
+        "single-environment",
+        "forced-over-default",
+        "case-insensitive",
+        "runtime-defaults",
+        "unknown-environment",
+    ],
+)
+def test_peek_and_execution_context_resolve_same_runtime_pair(
+    tmp_path, config, requested_env
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    context_env = requested_env or config.get("default_env") or next(
+        iter(config["environments"])
+    )
+    context = ExecutionContext(env=context_env, config=config)
+
+    peek_pair = _peek_runtime_mode(str(config_path), requested_env)
+    context_pair = (context.engine_mode(), context.adapter_name())
+
+    assert peek_pair == context_pair
 
 
 # ---------------------------------------------------------------------------

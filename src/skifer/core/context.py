@@ -11,6 +11,72 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+IN_MEMORY_DATABASE = ":memory:"
+
+
+def _environment_config(config: dict, force_env: str | None) -> dict:
+    """Return the active environment block, matching its key case-insensitively."""
+    environments = config.get("environments", {})
+    selected_env = force_env or config.get("default_env")
+    if selected_env is None and isinstance(environments, dict) and len(environments) == 1:
+        selected_env = next(iter(environments))
+
+    if not isinstance(environments, dict):
+        return {}
+    target = str(selected_env).casefold()
+    return next(
+        (
+            value
+            for key, value in environments.items()
+            if str(key).casefold() == target and isinstance(value, dict)
+        ),
+        {},
+    )
+
+
+def resolve_runtime_mode(
+    config: dict, force_env: str | None
+) -> tuple[str, str]:
+    """Resolve and validate the engine/adapter pair for one environment."""
+    env_config = _environment_config(config, force_env)
+
+    engine = env_config.get("engine", "spark")
+    allowed_engines = {"spark", "sql"}
+    if engine not in allowed_engines:
+        raise ValueError(
+            f"Invalid config key 'engine': received {engine!r}; "
+            f"allowed values are {sorted(allowed_engines)}."
+        )
+
+    adapter = env_config.get("adapter", "databricks")
+    allowed_adapters = {"databricks", "duckdb", "snowflake", "bigquery"}
+    if adapter not in allowed_adapters:
+        raise ValueError(
+            f"Invalid config key 'adapter': received {adapter!r}; "
+            f"allowed values are {sorted(allowed_adapters)}."
+        )
+    return engine, adapter
+
+
+def resolve_adapter_database(config: dict, force_env: str | None) -> str:
+    """Resolve the database an adapter connects to, defaulting to in-memory.
+
+    The default keeps every existing configuration working, but an in-memory
+    database is destroyed with the process: nothing a run writes survives it.
+    Callers that persist results check for that rather than assume a path.
+    """
+    env_config = _environment_config(config, force_env)
+    database = env_config.get("database", IN_MEMORY_DATABASE)
+    if database is None:
+        return IN_MEMORY_DATABASE
+    if not isinstance(database, str) or not database.strip():
+        raise ValueError(
+            "Invalid config key 'database': expected a non-empty path or "
+            f"':memory:'; received {database!r}."
+        )
+    return database.strip()
+
+
 @dataclass
 class ExecutionContext:
     """
@@ -79,6 +145,20 @@ class ExecutionContext:
     def classification_propagation(self) -> str:
         """Classification propagation mode for the active environment."""
         return self.env_config().get("classification_propagation", "warn")
+
+    def engine_mode(self) -> str:
+        """Execution engine selected for the active environment."""
+        engine, _ = resolve_runtime_mode(self.config, self.env)
+        return engine
+
+    def adapter_name(self) -> str:
+        """Runtime adapter selected for the active environment."""
+        _, adapter = resolve_runtime_mode(self.config, self.env)
+        return adapter
+
+    def adapter_database(self) -> str:
+        """Database the adapter connects to for the active environment."""
+        return resolve_adapter_database(self.config, self.env)
 
     @property
     def default_params(self) -> dict:

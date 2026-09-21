@@ -10,6 +10,8 @@ import yaml
 from dotenv import load_dotenv
 import os
 from contextlib import nullcontext
+from datetime import datetime, timezone
+from typing import Callable
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -17,7 +19,7 @@ from skifer.core.rule_analyzer import RuleAnalyzer
 from skifer.core.sandbox import SandboxResolver
 from skifer.core.schema_loader import _find_file_upwards as _find_file_upwards_fn
 from skifer.core import environment as _env
-from skifer.core.context import ExecutionContext
+from skifer.core.context import ExecutionContext, resolve_runtime_mode
 from skifer.core.interpreter import SchemaInterpreter
 from skifer.core.patterns import PipelinePatterns
 from skifer.observability.tracing import (
@@ -45,6 +47,21 @@ _LOCAL_LINEAGE_DATASET_NAMESPACE = "skifer://local"
 _LINEAGE_HOSTNAME_ALLOWLIST = re.compile(
     r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
 )
+
+
+def _peek_runtime_mode(
+    config_path: str | None, force_env: str | None
+) -> tuple[str, str]:
+    """Read only enough config to select a backend before importing Spark."""
+    if not config_path:
+        return "spark", "databricks"
+    try:
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle) or {}
+        return resolve_runtime_mode(config, force_env)
+    except (AttributeError, OSError, TypeError, yaml.YAMLError):
+        # The normal config loader below owns the actionable diagnostic.
+        return "spark", "databricks"
 
 
 def _resolve_lineage_dataset_namespace(lineage_config, *, is_local, environ) -> str:
@@ -175,6 +192,8 @@ class SkiferEngine:
         monitor=None,
         certification_store=None,
         metadata_store=None,
+        connection=None,
+        clock: Callable[[], datetime] | None = None,
     ):
         """
         Initializes the SkiferEngine.
@@ -198,6 +217,11 @@ class SkiferEngine:
             metadata_store (MetadataStore, optional): Explicit metadata registry store.
                                              When provided, certified publication indexes
                                              promoted datasets non-blockingly.
+            connection: Explicit DuckDB connection for ``engine: sql``. When omitted,
+                                             the engine creates one private in-memory
+                                             connection through the lazy DuckDB factory.
+            clock: Optional wall-clock provider used by cumulative materializations that
+                                             need a run timestamp, notably SCD2 snapshots.
         """
         # Initialize _context unconditionally before any property access so that a
         # partially-constructed engine (init raises mid-way) never silently exposes a
@@ -205,6 +229,9 @@ class SkiferEngine:
         # AttributeError on _context itself (no _context attr) rather than
         # returning an empty string.
         object.__setattr__(self, "_context", ExecutionContext())
+        if clock is not None and not callable(clock):
+            raise TypeError("clock must be callable.")
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
         # ======================================================================
         # 0. CHARGEMENT DES VARIABLES D'ENVIRONNEMENT (.env)
@@ -220,21 +247,36 @@ class SkiferEngine:
         # ======================================================================
         # 1. BACKEND + SPARK SESSION
         # ======================================================================
-        # Connect v2 patches are applied inside SparkBackend.__init__
-        from skifer.spark_factory import get_spark_session
-        if spark:
-            self.spark = spark
-            self._spark_mode = "provided"
+        # Peek only far enough to take the SQL branch before importing the Spark
+        # factory. The ordinary Spark/Databricks initialization below is otherwise
+        # byte-for-byte the historical path.
+        hinted_config_path = config_path or self._find_file_upwards("config.yaml")
+        hinted_runtime = _peek_runtime_mode(hinted_config_path, force_env)
+        sql_runtime_requested = hinted_runtime == ("sql", "duckdb")
+
+        if sql_runtime_requested:
+            self.spark = None
+            self._spark_mode = "sql"
+            self.is_local = True
+            self.dbutils = None
         else:
-            self.spark, self._spark_mode = get_spark_session()
+            # Connect v2 patches are applied inside SparkBackend.__init__
+            from skifer.spark_factory import get_spark_session
 
-        self.is_local = (self._spark_mode == "local")
+            if spark:
+                self.spark = spark
+                self._spark_mode = "provided"
+            else:
+                self.spark, self._spark_mode = get_spark_session()
 
-        if not self.spark:
-            raise RuntimeError("CRITICAL: Failed to initialize Spark Session.")
+            self.is_local = (self._spark_mode == "local")
 
-        from skifer.core.spark_backend import SparkBackend
-        self._backend = SparkBackend(spark=self.spark, is_local=self.is_local)
+            if not self.spark:
+                raise RuntimeError("CRITICAL: Failed to initialize Spark Session.")
+
+            from skifer.core.spark_backend import SparkBackend
+
+            self._backend = SparkBackend(spark=self.spark, is_local=self.is_local)
 
         if self.spark:
             try:
@@ -286,6 +328,40 @@ class SkiferEngine:
             self.is_local = (self.db is None)
             logger.info("[Config] force_env='%s': bypassing auto-detection -> catalog='%s'", force_env, self.db)
 
+        engine_mode = self._context.engine_mode()
+        adapter_name = self._context.adapter_name()
+        if (engine_mode, adapter_name) not in {
+            ("spark", "databricks"),
+            ("sql", "duckdb"),
+        }:
+            raise ValueError(
+                f"Configuration engine={engine_mode!r}, adapter={adapter_name!r} is "
+                "recognized but not implemented in Plan 39 phase 39.1; support is "
+                "planned for Plan 39 phases 39.3+."
+            )
+        if (engine_mode, adapter_name) == ("sql", "duckdb"):
+            if spark is not None:
+                raise ValueError(
+                    f"Configuration engine={engine_mode!r}, adapter={adapter_name!r} is "
+                    "recognized but cannot use a SparkSession; support is available "
+                    "without spark= in Plan 39 phases 39.3+."
+                )
+            if not sql_runtime_requested:
+                raise ValueError(
+                    "Configuration engine='sql', adapter='duckdb' must be selected "
+                    "before Spark initialization; set force_env or default_env to that "
+                    "environment."
+                )
+            if connection is None:
+                from skifer.duckdb_factory import get_duckdb_connection
+
+                connection = get_duckdb_connection(
+                    self._context.adapter_database()
+                )
+            from skifer.core.adapters.duckdb import DuckDBAdapter
+
+            self._backend = DuckDBAdapter(connection=connection)
+
         from skifer.core.config import parse_tracing_config
         from skifer.observability.tracing_exporters import create_tracer
 
@@ -304,7 +380,10 @@ class SkiferEngine:
         # ======================================================================
         # 3. DÉTECTION UTILISATEUR & SANDBOX
         # ======================================================================
-        self.current_user = self._get_clean_username()
+        if engine_mode == "sql":
+            self.current_user = self._backend.get_current_user() or ""
+        else:
+            self.current_user = self._get_clean_username()
         self.is_job_execution = self._is_running_as_job()
 
         self.schema_suffix = ""
@@ -312,7 +391,9 @@ class SkiferEngine:
         is_prod_env = self._context.is_production
 
         # On active la Sandbox SEULEMENT si : PAS Prod ET PAS Job
-        if not is_prod_env and not self.is_job_execution:
+        if engine_mode == "sql":
+            logger.info("[SQL Mode] Sandbox is not enabled for the DuckDB execution path.")
+        elif not is_prod_env and not self.is_job_execution:
             logger.info("[Interactive Mode] Sandbox enabled for: %s", self.current_user)
             self.schema_suffix = f"_{self.current_user}"
         else:
@@ -603,6 +684,139 @@ class SkiferEngine:
         """Drops a table if it exists. Delegates to backend."""
         self._get_backend().drop_table(fqn)
 
+    @staticmethod
+    def _target_parts(fqn: str) -> tuple[str | None, str, str]:
+        clean = fqn.replace("`", "")
+        parts = [part for part in clean.split(".") if part]
+        if len(parts) == 2:
+            return None, parts[0], parts[1]
+        if len(parts) == 3:
+            return parts[0], parts[1], parts[2]
+        raise ValueError(
+            f"Incremental materialization requires a two- or three-part target FQN, got {fqn!r}."
+        )
+
+    def _target_exists(self, fqn: str) -> bool:
+        catalog, schema, table = self._target_parts(fqn)
+        return self._get_backend().table_exists(catalog, schema, table)
+
+    def _target_max_value(self, fqn: str, column: str):
+        from skifer.core.sql_compiler import quote_ident
+
+        alias = "_skifer_max_watermark"
+        rows = self._get_backend().fetch(
+            f"SELECT MAX({quote_ident(column)}) AS {quote_ident(alias)} FROM {fqn}"
+        )
+        return rows[0].get(alias) if rows else None
+
+    def _apply_incremental_append_bound(self, df, fqn: str, materialization: dict):
+        watermark_column = materialization.get("watermark_column")
+        if not watermark_column or not self._target_exists(fqn):
+            return df
+        max_value = self._target_max_value(fqn, watermark_column)
+        if max_value is None:
+            return df
+        # The bound is strictly greater than the previous maximum. Using >= would
+        # reinsert every row on the last processed boundary on each run.
+        if hasattr(df, "_rows"):
+            return self._get_backend().filter(
+                df,
+                lambda row: row.get(watermark_column) is not None
+                and row.get(watermark_column) > max_value,
+            )
+        from pyspark.sql import functions as F
+
+        return df.filter(F.col(f"`{watermark_column}`") > F.lit(max_value))
+
+    def _merge_incremental_dataframe(self, df, fqn: str, materialization: dict) -> None:
+        if not self._target_exists(fqn):
+            self._get_backend().write_table(df, fqn)
+            return
+
+        from skifer.core.merge_sql import assert_merge_columns_match, build_merge_sql
+        from skifer.core.sql_compiler import quote_ident
+
+        backend = self._get_backend()
+        unique_key = materialization["unique_key"]
+        source_columns = list(getattr(df, "columns", []))
+        target_columns = backend.list_relation_columns(fqn)
+        assert_merge_columns_match(
+            source_columns=source_columns,
+            target_columns=target_columns,
+            unique_key=unique_key,
+        )
+        view_name = f"_skifer_incremental_merge_src_{uuid4().hex}"
+        backend.register_temp_view(df, view_name)
+        backend.execute_sql(
+            build_merge_sql(
+                target_relation=fqn,
+                source_relation=quote_ident(view_name),
+                unique_key=unique_key,
+                target_columns=target_columns,
+                target=backend.name,
+            )
+        )
+
+    def _snapshot_run_at(self) -> datetime:
+        value = self._clock()
+        if not isinstance(value, datetime):
+            raise TypeError("Snapshot clock must return datetime values.")
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Snapshot clock must return timezone-aware datetimes.")
+        return value.astimezone(timezone.utc)
+
+    def _apply_snapshot_dataframe(self, df, fqn: str, materialization: dict) -> None:
+        from skifer.core.merge_sql import (
+            build_snapshot_apply_sql,
+            build_snapshot_initial_select_sql,
+        )
+        from skifer.core.snapshot_preflight import (
+            build_snapshot_preflight_report,
+            collect_snapshot_preflight_inputs,
+        )
+        from skifer.core.sql_compiler import quote_ident
+
+        backend = self._get_backend()
+        target_exists = self._target_exists(fqn)
+        source_view = f"_skifer_snapshot_src_{uuid4().hex}"
+        source_relation = quote_ident(source_view)
+        backend.register_temp_view(df, source_view)
+        inputs = collect_snapshot_preflight_inputs(
+            backend,
+            source_relation=source_relation,
+            target_relation=fqn,
+            materialization=materialization,
+            target_exists=target_exists,
+        )
+        report = build_snapshot_preflight_report(materialization, inputs)
+        if not report.safe_to_apply:
+            rendered = "\n\n".join(finding.render() for finding in report.findings)
+            raise ValueError(rendered)
+
+        run_at = self._snapshot_run_at()
+        if not target_exists:
+            snapshot_df = backend.sql(
+                build_snapshot_initial_select_sql(
+                    source_relation=source_relation,
+                    source_columns=list(inputs.source_columns),
+                    materialization=materialization,
+                    target=backend.name,
+                    run_at=run_at,
+                )
+            )
+            backend.write_table(snapshot_df, fqn)
+            return
+
+        for statement in build_snapshot_apply_sql(
+            target_relation=fqn,
+            source_relation=source_relation,
+            source_columns=list(inputs.source_columns),
+            materialization=materialization,
+            target=backend.name,
+            run_at=run_at,
+        ):
+            backend.execute_sql(statement)
+
     def _write_dataframe(self, df, fqn, label, sink_config=None, materialization=None):
         """Writes a DataFrame to the configured sink."""
         if sink_config and sink_config.get("type") in ("postgres", "jdbc"):
@@ -621,6 +835,33 @@ class SkiferEngine:
                 "Run it through run_process_to_table/run_from_yaml, which route "
                 "materialized views to the DDL path."
             )
+
+        if materialization and materialization.get("type") == "view":
+            raise ValueError(
+                f"[_write_dataframe] '{fqn}' declares 'materialization: view' — "
+                "a view is defined by SQL, not written from a DataFrame. "
+                "Run it through run_process_to_table/run_from_yaml, which route "
+                "views to the DDL path."
+            )
+
+        if materialization and materialization.get("type") == "incremental":
+            strategy = materialization.get("strategy")
+            if strategy == "append":
+                df = self._apply_incremental_append_bound(df, fqn, materialization)
+                self._get_backend().write_table(df, fqn, mode="append")
+                return
+            if strategy == "merge":
+                self._merge_incremental_dataframe(df, fqn, materialization)
+                return
+            if strategy:
+                raise NotImplementedError(
+                    f"[incremental] strategy {strategy!r} is not implemented yet; "
+                    "only 'append' and 'merge' are supported."
+                )
+
+        if materialization and materialization.get("type") == "snapshot":
+            self._apply_snapshot_dataframe(df, fqn, materialization)
+            return
 
         if materialization and materialization.get("type") == "streaming_table":
             self._get_backend().write_stream_table(
@@ -671,6 +912,24 @@ class SkiferEngine:
     # ------------------------------------------------------------------
     # Materialized views (Plan 28)
     # ------------------------------------------------------------------
+
+    def _create_view(
+        self, schema_dict: dict, actual_schema: str, target_table_name: str
+    ) -> None:
+        """Compile the schema to a persisted SQL view and execute its DDL."""
+        from skifer.core.ir import parse_to_ir
+        from skifer.core.sql_compiler import compile_select
+
+        self._ensure_schema_exists(actual_schema)
+        fqn = self._build_fqn(actual_schema, target_table_name)
+        allow_raw_sql = self._context.env_config().get("allow_raw_sql", True)
+        select_sql = compile_select(
+            parse_to_ir(schema_dict),
+            resolve_table=self._interpreter.resolve_source_table,
+            allow_raw_sql=allow_raw_sql,
+            persisted_definition=True,
+        )
+        self._get_backend().execute_sql(f"CREATE OR REPLACE VIEW {fqn} AS {select_sql}")
 
     def resolve_sql_warehouse_id(self) -> str | None:
         """
@@ -1024,6 +1283,14 @@ class SkiferEngine:
         run_id=None,
     ):
         """Delegates to PipelinePatterns.run_process_to_table (plan17-2.4)."""
+        from skifer.core.capabilities_matrix import assert_supported
+        from skifer.core.ir import parse_to_ir
+
+        assert_supported(
+            parse_to_ir(schema_dict),
+            adapter_name=self._backend.name,
+            supported=self._backend.capabilities,
+        )
         # Minted on the business path, never only when tracing is on: this id is
         # what the certification registry persists, so an audit trail that
         # existed only under an exporter would be no audit trail at all.

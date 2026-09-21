@@ -6,6 +6,8 @@ from pyspark.sql import functions as F
 from skifer.core.registry import RuleSpec
 from skifer.core.rule_planner import RuleStage
 from skifer.core.rule_executor import RuleExecutor
+from skifer.core.rule_executor import validate_sql_rule_result
+from tests.fakes.fake_backend import FakeBackend, FakeColumn, FakeDataFrame
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +147,93 @@ class TestProjectionFusion:
         executor = RuleExecutor()
         result = executor.execute(df, [_proj_stage(_spec("empty", "projection", empty_rule))])
         assert result.columns == original_cols
+
+    def test_sql_rule_matches_projection_and_fuses_with_neighbors(self):
+        class RecordingBackend(FakeBackend):
+            def __init__(self):
+                super().__init__()
+                self.select_calls = 0
+
+            def expr(self, sql_expr):
+                column = FakeColumn(name=f"expr({sql_expr})")
+                if sql_expr == "amount * 2":
+                    column._eval = lambda row: row["amount"] * 2
+                return column
+
+            def select(self, df, columns):
+                self.select_calls += 1
+                return super().select(df, columns)
+
+        backend = RecordingBackend()
+        df = FakeDataFrame([{"amount": 3}])
+
+        def before(df):
+            return {"before": backend.lit("yes")}
+
+        def sql_rule():
+            return {"doubled": "amount * 2"}
+
+        def equivalent_projection(df):
+            column = FakeColumn(name="doubled")
+            column._eval = lambda row: row["amount"] * 2
+            return {"doubled": column}
+
+        def after(df):
+            return {"after": backend.lit("yes")}
+
+        sql_result = RuleExecutor(backend=backend).execute(
+            df,
+            [_proj_stage(
+                _spec("before", "projection", before),
+                _spec("portable", "sql", sql_rule),
+                _spec("after", "projection", after),
+            )],
+        )
+        projection_result = RuleExecutor(backend=FakeBackend()).execute(
+            df,
+            [_proj_stage(_spec("equivalent", "projection", equivalent_projection))],
+        )
+
+        assert backend.select_calls == 1
+        assert sql_result._rows[0]["doubled"] == projection_result._rows[0]["doubled"] == 6
+        assert sql_result.columns == ["amount", "before", "doubled", "after"]
+
+
+class TestSqlRuleValidation:
+    def test_non_string_value_names_rule_and_column(self, spark):
+        for value in (None, F.lit(1)):
+            with pytest.raises(TypeError) as exc_info:
+                validate_sql_rule_result("portable_rule", {"bad_column": value}, allow_raw_sql=True)
+            message = str(exc_info.value)
+            assert "portable_rule" in message
+            assert "bad_column" in message
+            assert "kind='sql'" in message
+
+    def test_empty_expression_names_rule_and_column(self):
+        with pytest.raises(ValueError) as exc_info:
+            validate_sql_rule_result("portable_rule", {"bad_column": "  "}, allow_raw_sql=True)
+        assert "portable_rule" in str(exc_info.value)
+        assert "bad_column" in str(exc_info.value)
+
+    def test_statement_separator_outside_literal_is_rejected(self):
+        with pytest.raises(ValueError) as exc_info:
+            validate_sql_rule_result("portable_rule", {"bad_column": "amount; DROP TABLE x"}, allow_raw_sql=True)
+        assert "portable_rule" in str(exc_info.value)
+        assert "bad_column" in str(exc_info.value)
+
+    def test_statement_separator_inside_literal_is_accepted(self):
+        assert validate_sql_rule_result(
+            "portable_rule",
+            {"label": "CASE WHEN status = 'a;b' THEN 'x' ELSE 'y' END"},
+            allow_raw_sql=True,
+        ) == {"label": "CASE WHEN status = 'a;b' THEN 'x' ELSE 'y' END"}
+
+    def test_select_statement_rejected_when_sqlglot_is_available(self):
+        pytest.importorskip("sqlglot")
+        with pytest.raises(ValueError) as exc_info:
+            validate_sql_rule_result("portable_rule", {"bad_column": "SELECT amount FROM x"}, allow_raw_sql=True)
+        assert "portable_rule" in str(exc_info.value)
+        assert "bad_column" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -303,3 +392,42 @@ class TestMixedStages:
         row = result.collect()[0]
         for i in range(20):
             assert row[f"c{i}"] == f"c{i}"
+
+
+class TestSqlRuleGovernance:
+    """Plan 39, decision D14 — settled 21 September 2026.
+
+    `allow_raw_sql: false` reads "no hand-written SQL runs in this environment",
+    without regard to which layer wrote it. A kind='sql' loader was already
+    refused under the flag while a kind='sql' rule was not, so the flag announced
+    a control it applied by halves.
+    """
+
+    def test_a_sql_rule_is_refused_when_raw_sql_is_disabled(self):
+        with pytest.raises(ValueError) as exc_info:
+            validate_sql_rule_result(
+                "portable_rule", {"doubled": "amount * 2"}, allow_raw_sql=False
+            )
+
+        message = str(exc_info.value)
+        assert "portable_rule" in message
+        assert "allow_raw_sql: false" in message
+
+    def test_the_refusal_precedes_structural_validation(self):
+        """A malformed result must still be refused for the flag, not its shape.
+
+        Reporting "returned str instead of dict" would send the author to fix the
+        rule's return type, in an environment where no rule of that kind may run
+        at all.
+        """
+        with pytest.raises(ValueError, match="allow_raw_sql"):
+            validate_sql_rule_result("portable_rule", "not a dict", allow_raw_sql=False)
+
+    def test_the_parameter_has_no_default(self):
+        """Three paths reach this function; a fourth must not arrive permissive."""
+        import inspect
+
+        parameter = inspect.signature(validate_sql_rule_result).parameters["allow_raw_sql"]
+
+        assert parameter.default is inspect.Parameter.empty
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY

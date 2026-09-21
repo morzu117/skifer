@@ -526,6 +526,7 @@ import the engine. CLI surfaces: `skifer api serve|openapi`, incident management
 | [OpenLineage emitter (Plan 36)](docs/roadmap/36_openlineage_emitter_plan.md) | merged via PR #3 | Implemented (36.0–36.4) |
 | [Best-effort hardening and parameter injection (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implemented (37.0–37.4) |
 | [Tracker lineage: aggregates, join keys, intermediates (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | `feat/plan38-tracker-lineage` | Plan finalised, not started |
+| [SQL-first portability: a dbt alternative beyond Databricks (Plan 39)](docs/roadmap/39_sql_first_portability_plan.md) | `feat/plan39-sql-first` | In progress — 39.1, 39.2 (4 slices) and 39.3.1 delivered: `Adapter` boundary, sqlglot dialect, complete compiler, `kind="sql"` rules, Spark ↔ DuckDB equivalence, DuckDB adapter running without Spark |
 
 ## Key files
 | File | Purpose |

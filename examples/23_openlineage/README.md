@@ -15,6 +15,12 @@ python examples/23_openlineage/run.py
 No Spark session and no engine are needed — `build_run_event` is pure Python, and the emitters
 here (including `HttpEmitter`) use only the Python standard library, no extra dependency.
 
+The schema below writes `ord.id` rather than `id`: qualifying a source is what lets lineage
+attribute a joined column to the table it really comes from, instead of defaulting to the base
+table. **This schema is a lineage fixture, not a runnable pipeline** — a qualified source is
+rejected by both Spark and the compiled SQL at run time, which is recorded as an open decision in
+[Plan 38](../../docs/roadmap/38_tracker_lineage_plan.md).
+
 ## What you should see
 
 ```text

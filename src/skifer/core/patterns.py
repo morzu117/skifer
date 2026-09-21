@@ -89,6 +89,12 @@ class PipelinePatterns:
         mat = schema_dict.get("materialization")
         return bool(mat and mat.get("type") == "materialized_view")
 
+    @staticmethod
+    def _is_view_schema(schema_dict: dict) -> bool:
+        """True when the schema declares ``materialization: view`` (Plan 39.4.2)."""
+        mat = schema_dict.get("materialization")
+        return bool(mat and mat.get("type") == "view")
+
     # ------------------------------------------------------------------
     # run_process_to_table
     # ------------------------------------------------------------------
@@ -102,6 +108,99 @@ class PipelinePatterns:
         run_id: str | None = None,
     ) -> None:
         e = self._engine
+        if e.context.engine_mode() == "sql":
+            from skifer.core.sql_runner import (
+                compile_sql_pipeline_relation,
+                run_sql_pipeline,
+            )
+
+            actual_schema = e.get_target_schema(target_layer)
+            target_fqn = e._build_fqn(actual_schema, target_table_name)
+            has_data_product = schema_dict.get("data_product") is not None
+            if has_data_product:
+                sink_config = schema_dict.get("sink")
+                materialization = schema_dict.get("materialization")
+                is_streaming = bool(
+                    materialization
+                    and materialization.get("type") == "streaming_table"
+                )
+                if (
+                    bool(
+                        sink_config
+                        and sink_config.get("type") in ("postgres", "jdbc")
+                    )
+                    or is_streaming
+                    or self._is_materialized_view_schema(schema_dict)
+                    or self._is_view_schema(schema_dict)
+                ):
+                    raise ValueError(
+                        "Certified publication (schema declares 'data_product') does not "
+                        "support streaming, JDBC sinks, or materialized views yet; views "
+                        "are also unsupported."
+                    )
+                if e.certification_store is None or getattr(e, "monitor", None) is None:
+                    raise ValueError(
+                        "Schema declares 'data_product' but SkiferEngine was built without "
+                        "certification_store and/or monitor — pass both to enable certified "
+                        "publication."
+                    )
+
+            e._ensure_schema_exists(actual_schema)
+            if has_data_product:
+                from skifer.core.ir import parse_to_ir
+                from skifer.observability.certification import canonicalize_contract
+                from skifer.observability.checks import DataQualityError
+                from skifer.observability.publication import PublicationCoordinator
+
+                handle = compile_sql_pipeline_relation(
+                    e._get_backend(),
+                    schema_dict,
+                    context=e.context,
+                    allow_raw_sql=e.context.env_config().get("allow_raw_sql", True),
+                )
+                definition = canonicalize_contract(parse_to_ir(schema_dict))
+                alert_router, alert_config = _build_alert_router(e)
+                coordinator = PublicationCoordinator(
+                    e._get_backend(),
+                    e.monitor,
+                    e.certification_store,
+                    metadata_store=getattr(e, "metadata_store", None),
+                    alert_router=alert_router,
+                    alert_config=alert_config,
+                    lineage_emitter=getattr(e, "lineage_emitter", None),
+                    lineage_context=getattr(e, "lineage_context", None),
+                )
+                result = coordinator.publish(
+                    handle,
+                    target_fqn,
+                    schema_dict,
+                    definition,
+                    run_id=run_id,
+                )
+                if result.state == "QUARANTINED":
+                    raise DataQualityError(result.report)
+                logger.info(
+                    "   -> [Certified Publication] run=%s state=%s (target: %s)",
+                    result.run.run_id,
+                    result.state,
+                    target_fqn,
+                )
+                if result.state == "PROMOTED":
+                    _index_promoted_metadata(
+                        e, schema_dict, target_fqn, result.run.run_id
+                    )
+                return
+
+            run_sql_pipeline(
+                e._get_backend(),
+                schema_dict,
+                target_fqn,
+                context=e.context,
+                allow_raw_sql=e.context.env_config().get("allow_raw_sql", True),
+                clock=e._clock,
+            )
+            return
+
         sink_config = schema_dict.get("sink")
         uses_jdbc_sink = bool(sink_config and sink_config.get("type") in ("postgres", "jdbc"))
         actual_schema = e.get_target_schema(target_layer)
@@ -114,10 +213,16 @@ class PipelinePatterns:
 
         has_data_product = schema_dict.get("data_product") is not None
         if has_data_product:
-            if uses_jdbc_sink or is_streaming or self._is_materialized_view_schema(schema_dict):
+            if (
+                uses_jdbc_sink
+                or is_streaming
+                or self._is_materialized_view_schema(schema_dict)
+                or self._is_view_schema(schema_dict)
+            ):
                 raise ValueError(
                     "Certified publication (schema declares 'data_product') does not support "
-                    "streaming, JDBC sinks, or materialized views yet."
+                    "streaming, JDBC sinks, or materialized views yet; views are also "
+                    "unsupported."
                 )
             if e.certification_store is None or getattr(e, "monitor", None) is None:
                 raise ValueError(
@@ -176,6 +281,17 @@ class PipelinePatterns:
                     "   -> [Monitor] %s — %s/%s checks passed.",
                     summary.get("status", "PASS"), summary["passed"], summary["total_checks"],
                 )
+            logger.info("--- Pattern 'process_to_table' completed. ---")
+            return
+
+        # Logical view (Plan 39.4.2): like materialized views, a persisted SQL
+        # definition must never run through the DataFrame write path.
+        if self._is_view_schema(schema_dict):
+            logger.info(
+                "--- Executing Pattern: process_to_table [view] (Target: %s) ---",
+                target_table_name,
+            )
+            e._create_view(schema_dict, actual_schema, target_table_name)
             logger.info("--- Pattern 'process_to_table' completed. ---")
             return
 
@@ -289,6 +405,12 @@ class PipelinePatterns:
                 "materialized view per slice (each with its own filter), or split "
                 "downstream in batch."
             )
+        if self._is_view_schema(schema_dict):
+            raise NotImplementedError(
+                "run_process_and_split does not support views — a view is one SQL "
+                "definition, it cannot fan out into N targets. Declare one view per "
+                "slice or split downstream in batch."
+            )
         if self._is_streaming_schema(schema_dict):
             raise NotImplementedError(
                 "run_process_and_split does not support streaming schemas (cache() and "
@@ -365,6 +487,12 @@ class PipelinePatterns:
                 "which has no place in a persisted SQL definition. List the sources "
                 "explicitly in 'tables:' (UNION ALL compilation is planned for a "
                 "later plan)."
+            )
+        if self._is_view_schema(schema_dict):
+            raise NotImplementedError(
+                "run_union_sources_to_table does not support views — this pattern "
+                "discovers its sources at run time and injects a DataFrame, which "
+                "has no place in a persisted SQL definition."
             )
         if self._is_streaming_schema(schema_dict):
             raise NotImplementedError(

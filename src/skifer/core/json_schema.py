@@ -20,8 +20,12 @@ from __future__ import annotations
 from skifer.core.constants import (
     CLASSIFICATION_LEVELS,
     VALID_CONTRACT_STATUSES,
+    VALID_INCREMENTAL_STRATEGIES,
     VALID_MATERIALIZATION_TYPES,
     VALID_MV_REFRESH_MODES,
+    VALID_SNAPSHOT_ON_LATE_ARRIVAL,
+    VALID_SNAPSHOT_ON_MISSING,
+    VALID_SNAPSHOT_STRATEGIES,
     VALID_SOURCE_TYPES,
 )
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, FILTER_OPERATORS, COLUMN_OPS
@@ -99,9 +103,9 @@ def generate_json_schema() -> dict:
             },
             "materialization": {
                 "description": (
-                    "Target materialization: batch table (default), streaming_table "
-                    "(Plan 27) or materialized_view (Plan 28). String shorthand or dict "
-                    "form; the allowed keys depend on the type."
+                    "Target materialization: batch table (default), view, incremental, "
+                    "snapshot, streaming_table (Plan 27), or materialized_view (Plan 28). "
+                    "String shorthand or dict form; the allowed keys depend on the type."
                 ),
                 "$ref": "#/$defs/MaterializationDef",
             },
@@ -573,20 +577,25 @@ def generate_json_schema() -> dict:
                 },
             },
             # ------------------------------------------------------------------
-            # Materialization (Plan 27)
+            # Materialization (Plans 27, 28 and 39)
             # ------------------------------------------------------------------
             "MaterializationDef": {
                 "description": (
-                    "Target materialization: batch table (default), incremental streaming "
-                    "table with checkpoint, or Databricks materialized view. Keys are "
-                    "type-specific — the loader rejects options that do not apply to the "
-                    "declared type."
+                    "Target materialization: batch table (default), logical view, cumulative "
+                    "incremental table, SCD2 snapshot, incremental streaming table with "
+                    "checkpoint, or Databricks materialized view. Snapshot output uses fixed "
+                    "valid_from and valid_to columns, with NULL valid_to for the current "
+                    "version. Keys are type-specific — the loader rejects options that do not "
+                    "apply to the declared type."
                 ),
                 "oneOf": [
                     {
                         "type": "string",
                         "enum": sorted(VALID_MATERIALIZATION_TYPES),
-                        "description": "Shorthand form — defaults applied for streaming_table.",
+                        "description": (
+                            "Shorthand form — defaults are applied where the type supports "
+                            "them; incremental and snapshot still require a strategy."
+                        ),
                     },
                     {
                         "type": "object",
@@ -596,6 +605,83 @@ def generate_json_schema() -> dict:
                             "type": {
                                 "type": "string",
                                 "enum": sorted(VALID_MATERIALIZATION_TYPES),
+                            },
+                            "strategy": {
+                                "description": (
+                                    "Write strategy: append or merge for incremental; "
+                                    "timestamp or check for snapshot."
+                                ),
+                                "oneOf": [
+                                    {
+                                        "type": "string",
+                                        "enum": sorted(VALID_INCREMENTAL_STRATEGIES),
+                                        "description": "incremental only — append or merge.",
+                                    },
+                                    {
+                                        "type": "string",
+                                        "enum": sorted(VALID_SNAPSHOT_STRATEGIES),
+                                        "description": "snapshot only — timestamp or check.",
+                                    },
+                                ],
+                            },
+                            "unique_key": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"type": "string", "minLength": 1},
+                                "description": (
+                                    "Required for incremental merge and every snapshot; "
+                                    "forbidden for incremental append."
+                                ),
+                            },
+                            "watermark_column": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": (
+                                    "incremental append only — optional source watermark "
+                                    "column."
+                                ),
+                            },
+                            "updated_at": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": (
+                                    "snapshot timestamp only — source modification timestamp "
+                                    "column."
+                                ),
+                            },
+                            "check_columns": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"type": "string", "minLength": 1},
+                                "description": (
+                                    "snapshot check only — columns whose changes create a new "
+                                    "SCD2 version."
+                                ),
+                            },
+                            "on_missing": {
+                                "type": "string",
+                                "enum": sorted(VALID_SNAPSHOT_ON_MISSING),
+                                "description": (
+                                    "snapshot only — required policy for current target rows "
+                                    "absent from the batch."
+                                ),
+                            },
+                            "max_closed_ratio": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1,
+                                "description": (
+                                    "snapshot with on_missing: close only — maximum share of "
+                                    "current rows this run may close."
+                                ),
+                            },
+                            "on_late_arrival": {
+                                "type": "string",
+                                "enum": sorted(VALID_SNAPSHOT_ON_LATE_ARRIVAL),
+                                "description": (
+                                    "snapshot timestamp only — policy for rows older than the "
+                                    "current version of the same key."
+                                ),
                             },
                             "trigger": {
                                 "type": "string",

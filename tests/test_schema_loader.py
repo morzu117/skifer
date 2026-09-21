@@ -4,6 +4,7 @@ Tests for schema_loader: load_schema, parse_schema, normalization functions.
 import pytest
 
 from skifer.core.schema_loader import (
+    _validate_write_strategy_schema,
     parse_schema,
     parse_schema_localized,
     load_schema,
@@ -1973,3 +1974,473 @@ business_rules:
   - some_rule
 keep_all_columns: true
 """)
+
+
+# ==============================================================================
+# Batch write strategies — view / incremental / snapshot (Plan 39.4.1)
+# ==============================================================================
+
+class TestBatchWriteStrategyValidation:
+    """Load-time grammar and cross-validation for Plan 39 batch writes."""
+
+    @pytest.mark.parametrize("declaration", ["view", "{type: view}"])
+    def test_view_string_and_mapping_forms_normalize(self, declaration):
+        schema = parse_schema(
+            f"materialization: {declaration}\ntables:\n  - name: silver.orders\n"
+        )
+
+        assert schema["materialization"] == {"type": "view"}
+
+    def test_incremental_append_normalizes_with_optional_watermark(self):
+        schema = parse_schema("""
+materialization:
+  type: incremental
+  strategy: append
+  watermark_column: updated_at
+tables:
+  - name: silver.orders
+""")
+
+        assert schema["materialization"] == {
+            "type": "incremental",
+            "strategy": "append",
+            "watermark_column": "updated_at",
+        }
+
+    def test_incremental_merge_normalizes_unique_key(self):
+        schema = parse_schema("""
+materialization:
+  type: incremental
+  strategy: merge
+  unique_key: [order_id, source_system]
+tables:
+  - name: silver.orders
+""")
+
+        assert schema["materialization"] == {
+            "type": "incremental",
+            "strategy": "merge",
+            "unique_key": ["order_id", "source_system"],
+        }
+
+    def test_snapshot_timestamp_normalizes_scd2_inputs(self):
+        schema = parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+tables:
+  - name: silver.orders
+""")
+
+        assert schema["materialization"] == {
+            "type": "snapshot",
+            "strategy": "timestamp",
+            "unique_key": ["order_id"],
+            "updated_at": "modified_at",
+            "on_missing": "close",
+            "max_closed_ratio": 0.2,
+            "on_late_arrival": "refuse",
+        }
+
+    def test_snapshot_check_normalizes_scd2_inputs(self):
+        schema = parse_schema("""
+materialization:
+  type: snapshot
+  strategy: check
+  unique_key: [order_id]
+  check_columns: [status, amount]
+  on_missing: ignore
+  on_late_arrival: ignore
+tables:
+  - name: silver.orders
+""")
+
+        assert schema["materialization"] == {
+            "type": "snapshot",
+            "strategy": "check",
+            "unique_key": ["order_id"],
+            "check_columns": ["status", "amount"],
+            "on_missing": "ignore",
+            "on_late_arrival": "ignore",
+        }
+
+    def test_snapshot_close_normalizes_explicit_closed_ratio(self):
+        schema = parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+  max_closed_ratio: 1.0
+tables:
+  - name: silver.orders
+""")
+
+        assert schema["materialization"]["max_closed_ratio"] == 1.0
+
+    @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])
+    def test_strategy_is_required(self, mat_type):
+        with pytest.raises(ValueError, match=r"'strategy'.*required"):
+            parse_schema(
+                f"materialization:\n  type: {mat_type}\ntables:\n  - name: t\n"
+            )
+
+    @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])
+    def test_unknown_strategy_is_rejected(self, mat_type):
+        with pytest.raises(ValueError, match=r"Unknown 'strategy'.*Expected"):
+            parse_schema(
+                "materialization:\n"
+                f"  type: {mat_type}\n"
+                "  strategy: overwrite\n"
+                "tables:\n  - name: t\n"
+            )
+
+    @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])
+    def test_non_string_strategy_is_rejected(self, mat_type):
+        with pytest.raises(ValueError, match=r"'strategy'.*must be a string.*Expected"):
+            parse_schema(
+                "materialization:\n"
+                f"  type: {mat_type}\n"
+                "  strategy: 1\n"
+                "tables:\n  - name: t\n"
+            )
+
+    @pytest.mark.parametrize(
+        "materialization",
+        [
+            "type: incremental\n  strategy: merge",
+            "type: snapshot\n  strategy: timestamp\n  updated_at: modified_at",
+        ],
+    )
+    def test_unique_key_is_required(self, materialization):
+        with pytest.raises(ValueError, match=r"requires 'unique_key'.*non-empty list"):
+            parse_schema(
+                f"materialization:\n  {materialization}\ntables:\n  - name: t\n"
+            )
+
+    @pytest.mark.parametrize(
+        "invalid_unique_key",
+        ["[]", "order_id", "[order_id, '']"],
+    )
+    def test_unique_key_must_be_non_empty_column_list(self, invalid_unique_key):
+        with pytest.raises(ValueError, match=r"'unique_key'.*non-empty list of column names"):
+            parse_schema("""
+materialization:
+  type: incremental
+  strategy: merge
+  unique_key: %s
+tables:
+  - name: t
+""" % invalid_unique_key)
+
+    def test_unique_key_is_rejected_for_incremental_append(self):
+        with pytest.raises(ValueError, match=r"'unique_key'.*not allowed.*append"):
+            parse_schema("""
+materialization:
+  type: incremental
+  strategy: append
+  unique_key: [order_id]
+tables:
+  - name: t
+""")
+
+    def test_watermark_column_is_rejected_for_incremental_merge(self):
+        with pytest.raises(ValueError, match=r"'watermark_column'.*append.*merge"):
+            parse_schema("""
+materialization:
+  type: incremental
+  strategy: merge
+  unique_key: [order_id]
+  watermark_column: updated_at
+tables:
+  - name: t
+""")
+
+    def test_watermark_column_must_be_a_column_name(self):
+        with pytest.raises(ValueError, match=r"'watermark_column'.*non-empty column name"):
+            parse_schema("""
+materialization:
+  type: incremental
+  strategy: append
+  watermark_column: ""
+tables:
+  - name: t
+""")
+
+    def test_updated_at_is_required_for_timestamp_snapshot(self):
+        with pytest.raises(ValueError, match=r"timestamp.*requires 'updated_at'"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  on_missing: close
+tables:
+  - name: t
+""")
+
+    def test_updated_at_is_rejected_for_check_snapshot(self):
+        with pytest.raises(ValueError, match=r"'updated_at'.*timestamp.*check"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: check
+  unique_key: [order_id]
+  updated_at: modified_at
+  check_columns: [status]
+  on_missing: close
+tables:
+  - name: t
+""")
+
+    def test_check_columns_are_required_for_check_snapshot(self):
+        with pytest.raises(ValueError, match=r"check.*requires 'check_columns'"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: check
+  unique_key: [order_id]
+  on_missing: close
+tables:
+  - name: t
+""")
+
+    def test_check_columns_are_rejected_for_timestamp_snapshot(self):
+        with pytest.raises(ValueError, match=r"'check_columns'.*check.*timestamp"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+  check_columns: [status]
+tables:
+  - name: t
+""")
+
+    def test_snapshot_on_missing_is_required_with_no_default_rationale(self):
+        with pytest.raises(ValueError) as exc_info:
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+tables:
+  - name: t
+""")
+
+        message = str(exc_info.value)
+        assert "on_missing" in message
+        assert "no default" in message
+        assert "complete snapshot" in message
+        assert "partial extract" in message
+        assert "close the whole current table" in message
+
+    def test_snapshot_on_missing_must_be_known_policy(self):
+        with pytest.raises(ValueError, match=r"Unknown 'on_missing'.*close.*ignore"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: delete
+tables:
+  - name: t
+""")
+
+    def test_snapshot_on_missing_must_be_string(self):
+        with pytest.raises(ValueError, match=r"'on_missing'.*must be a string"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: 1
+tables:
+  - name: t
+""")
+
+    @pytest.mark.parametrize("ratio", ["-0.1", "1.1", "true", '"many"'])
+    def test_snapshot_max_closed_ratio_must_be_number_between_zero_and_one(self, ratio):
+        with pytest.raises(ValueError, match=r"'max_closed_ratio'.*between 0 and 1"):
+            parse_schema(f"""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+  max_closed_ratio: {ratio}
+tables:
+  - name: t
+""")
+
+    def test_snapshot_max_closed_ratio_is_rejected_when_missing_rows_are_ignored(self):
+        with pytest.raises(ValueError, match=r"'max_closed_ratio'.*on_missing: close"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: ignore
+  max_closed_ratio: 0.5
+tables:
+  - name: t
+""")
+
+    def test_snapshot_on_late_arrival_must_be_known_policy(self):
+        with pytest.raises(ValueError, match=r"Unknown 'on_late_arrival'.*ignore.*refuse"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+  on_late_arrival: reorder
+tables:
+  - name: t
+""")
+
+    def test_snapshot_on_late_arrival_must_be_string(self):
+        with pytest.raises(ValueError, match=r"'on_late_arrival'.*must be.*string"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+  on_late_arrival: 1
+tables:
+  - name: t
+""")
+
+    @pytest.mark.parametrize("invalid_check_columns", ["[]", "status", "[status, '']"])
+    def test_check_columns_must_be_non_empty_column_list(self, invalid_check_columns):
+        with pytest.raises(ValueError, match=r"'check_columns'.*non-empty list of column names"):
+            parse_schema("""
+materialization:
+  type: snapshot
+  strategy: check
+  unique_key: [order_id]
+  check_columns: %s
+  on_missing: close
+tables:
+  - name: t
+""" % invalid_check_columns)
+
+    @staticmethod
+    def _strategy_block(mat_type):
+        if mat_type == "incremental":
+            return "type: incremental\n  strategy: append"
+        return (
+            "type: snapshot\n  strategy: timestamp\n"
+            "  unique_key: [order_id]\n  updated_at: modified_at\n"
+            "  on_missing: close"
+        )
+
+    @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])
+    def test_streaming_input_is_rejected(self, mat_type):
+        with pytest.raises(ValueError, match=rf"\[{mat_type}\].*streaming: true"):
+            parse_schema(
+                "materialization:\n  "
+                + self._strategy_block(mat_type)
+                + "\ntables:\n  - name: bronze.events\n    streaming: true\n"
+            )
+
+    @pytest.mark.parametrize("sink_type", ["jdbc", "postgres"])
+    @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])
+    def test_external_database_sink_is_rejected(self, mat_type, sink_type):
+        with pytest.raises(ValueError, match=rf"\[{mat_type}\].*sink"):
+            parse_schema(
+                "materialization:\n  "
+                + self._strategy_block(mat_type)
+                + f"\nsink:\n  type: {sink_type}\ntables:\n  - name: t\n"
+            )
+
+    @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])
+    def test_schema_dev_limit_is_rejected(self, mat_type):
+        with pytest.raises(ValueError, match=rf"\[{mat_type}\].*schema-level 'dev_limit'"):
+            parse_schema(
+                "materialization:\n  "
+                + self._strategy_block(mat_type)
+                + "\ndev_limit: 10\ntables:\n  - name: t\n"
+            )
+
+    @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])
+    def test_table_dev_limit_is_rejected(self, mat_type):
+        with pytest.raises(ValueError, match=rf"\[{mat_type}\].*table 't'.*'dev_limit'"):
+            parse_schema(
+                "materialization:\n  "
+                + self._strategy_block(mat_type)
+                + "\ntables:\n  - name: t\n    dev_limit: 10\n"
+            )
+
+    @pytest.mark.parametrize("mat_type", ["incremental", "snapshot"])
+    def test_data_product_is_rejected(self, mat_type):
+        with pytest.raises(ValueError, match=rf"\[{mat_type}\].*'data_product'"):
+            parse_schema(
+                "materialization:\n  "
+                + self._strategy_block(mat_type)
+                + "\ndata_product: {id: sales.orders, version: 1.0.0}\n"
+                "tables:\n  - name: t\n"
+            )
+
+    def test_view_data_product_is_rejected(self):
+        with pytest.raises(ValueError, match=r"\[view\].*'data_product'.*nothing to certify"):
+            parse_schema("""
+materialization: view
+data_product: {id: sales.orders, version: 1.0.0}
+tables:
+  - name: t
+""")
+
+
+def test_incremental_refuses_dev_limit_declared_inside_a_nested_partial():
+    """A limit inside a partial truncates the rows a cumulative write accumulates.
+
+    The child cannot see the parent's materialization, so only the parent can refuse.
+    The validator runs on the resolved schema, where each partial carries its loaded
+    child under 'schema' — the shape a YAML 'path:' produces once resolved. Both
+    nesting levels are asserted: a check that stopped at depth one would leave the
+    deeper limit silent, and silence here means durable data loss.
+    """
+    resolved = {
+        "materialization": {"type": "incremental", "strategy": "append"},
+        "tables": [{"name": "silver.orders"}],
+        "partials": [
+            {
+                "alias": "outer",
+                "schema": {
+                    "tables": [{"name": "silver.lines", "dev_limit": 10}],
+                    "partials": [
+                        {
+                            "alias": "inner",
+                            "schema": {
+                                "dev_limit": 5,
+                                "tables": [{"name": "silver.deep"}],
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_write_strategy_schema(resolved)
+
+    message = str(exc_info.value)
+    assert "partial 'outer' table 'silver.lines'" in message
+    assert "partial 'outer > inner'" in message
+    assert "2 error(s)" in message

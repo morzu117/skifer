@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import reduce
 from uuid import UUID, uuid4
 from pyspark.sql import functions as F
@@ -780,9 +780,15 @@ def test_run_process_to_table_survives_failed_process(mock_engine, mocker, spark
 
 
 def _engine_for_run_id_tests(mocker):
+    from skifer.core.capabilities_matrix import DATABRICKS_CAPABILITIES
+
     engine = object.__new__(SkiferEngine)
     object.__setattr__(engine, "_context", ExecutionContext(env="test", is_local=True))
     engine._tracer = NoOpTracer()
+    engine._backend = mocker.Mock(
+        name="databricks", capabilities=DATABRICKS_CAPABILITIES
+    )
+    engine._backend.name = "databricks"
     engine._patterns = mocker.Mock()
     return engine
 
@@ -807,6 +813,168 @@ def test_run_process_to_table_accepts_and_returns_injected_run_id(mocker):
         intermediate_mode="inline",
         run_id=run_id,
     )
+
+
+def test_databricks_accepts_snapshot_strategy_before_patterns(mocker):
+    engine = _engine_for_run_id_tests(mocker)
+    schema = {
+        "tables": [{"name": "silver.orders"}],
+        "materialization": {
+            "type": "snapshot",
+            "strategy": "timestamp",
+            "unique_key": ["order_id"],
+            "updated_at": "modified_at",
+            "on_missing": "close",
+        },
+    }
+
+    run_id = engine.run_process_to_table(schema, "gold", "orders")
+
+    UUID(run_id)
+    engine._patterns.run_process_to_table.assert_called_once_with(
+        schema,
+        "gold",
+        "orders",
+        intermediate_mode="inline",
+        run_id=run_id,
+    )
+
+
+def test_databricks_accepts_incremental_merge_strategy_before_patterns(mocker):
+    engine = _engine_for_run_id_tests(mocker)
+
+    schema = {
+        "tables": [{"name": "silver.orders"}],
+        "materialization": {
+            "type": "incremental",
+            "strategy": "merge",
+            "unique_key": ["order_id"],
+        },
+    }
+    run_id = engine.run_process_to_table(schema, "gold", "orders")
+
+    UUID(run_id)
+    engine._patterns.run_process_to_table.assert_called_once_with(
+        schema,
+        "gold",
+        "orders",
+        intermediate_mode="inline",
+        run_id=run_id,
+    )
+
+
+@pytest.mark.parametrize("strategy", ["timestamp", "check"])
+def test_spark_snapshot_write_runs_preflight_and_applies_scd2(spark, strategy):
+    schema = f"snapshot_spark_{strategy}_{uuid4().hex[:8]}"
+    fqn = f"`{schema}`.`orders`"
+    run_at = {"value": datetime(2026, 1, 1, 9, tzinfo=timezone.utc)}
+    engine = object.__new__(SkiferEngine)
+    object.__setattr__(engine, "_context", ExecutionContext(env="local", is_local=True))
+    engine._backend = SparkBackend(spark=spark, is_local=True)
+    engine.db = None
+    engine._clock = lambda: run_at["value"]
+    engine._ensure_schema_exists(schema)
+    if strategy == "timestamp":
+        materialization = {
+            "type": "snapshot",
+            "strategy": "timestamp",
+            "unique_key": ["order_id"],
+            "updated_at": "modified_at",
+            "on_missing": "close",
+            "max_closed_ratio": 1.0,
+        }
+        first = spark.createDataFrame(
+            [
+                (1, "old", 10, datetime(2026, 1, 1)),
+                (2, "missing", 20, datetime(2026, 1, 1)),
+                (4, "steady", 40, datetime(2026, 1, 1)),
+            ],
+            ["order_id", "status", "amount", "modified_at"],
+        )
+        duplicate = spark.createDataFrame(
+            [(1, "old", 10, datetime(2026, 1, 1)), (1, "dup", 15, datetime(2026, 1, 2))],
+            ["order_id", "status", "amount", "modified_at"],
+        )
+        second = spark.createDataFrame(
+            [
+                (1, "new", 15, datetime(2026, 1, 2)),
+                (3, "new", 30, datetime(2026, 1, 2)),
+                (4, "steady", 40, datetime(2026, 1, 1)),
+            ],
+            ["order_id", "status", "amount", "modified_at"],
+        )
+        old_from = datetime(2026, 1, 1)
+        new_from = datetime(2026, 1, 2)
+        missing_to = datetime(2026, 1, 2, 9)
+    else:
+        materialization = {
+            "type": "snapshot",
+            "strategy": "check",
+            "unique_key": ["order_id"],
+            "check_columns": ["status", "amount"],
+            "on_missing": "close",
+            "max_closed_ratio": 1.0,
+        }
+        first = spark.createDataFrame(
+            [(1, "old", 10), (2, "missing", 20), (4, "steady", 40)],
+            ["order_id", "status", "amount"],
+        )
+        duplicate = spark.createDataFrame(
+            [(1, "old", 10), (1, "dup", 15)],
+            ["order_id", "status", "amount"],
+        )
+        second = spark.createDataFrame(
+            [(1, "new", 15), (3, "new", 30), (4, "steady", 40)],
+            ["order_id", "status", "amount"],
+        )
+        old_from = datetime(2026, 1, 1, 9)
+        new_from = datetime(2026, 1, 2, 9)
+        missing_to = datetime(2026, 1, 2, 9)
+
+    try:
+        engine._write_dataframe(first, fqn, "orders", materialization=materialization)
+        before = [
+            row.asDict()
+            for row in spark.sql(
+                f"SELECT order_id, status, amount, valid_from, valid_to FROM {fqn} "
+                "ORDER BY order_id, valid_from"
+            ).collect()
+        ]
+
+        with pytest.raises(ValueError, match="unique_key.*not unique"):
+            engine._write_dataframe(duplicate, fqn, "orders", materialization=materialization)
+        after_refusal = [
+            row.asDict()
+            for row in spark.sql(
+                f"SELECT order_id, status, amount, valid_from, valid_to FROM {fqn} "
+                "ORDER BY order_id, valid_from"
+            ).collect()
+        ]
+        assert after_refusal == before
+
+        run_at["value"] = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
+        engine._write_dataframe(second, fqn, "orders", materialization=materialization)
+
+        rows = [
+            row.asDict()
+            for row in spark.sql(
+                f"SELECT order_id, status, amount, valid_from, valid_to FROM {fqn} "
+                "ORDER BY order_id, valid_from"
+            ).collect()
+        ]
+        assert rows == [
+            {"order_id": 1, "status": "old", "amount": 10, "valid_from": old_from, "valid_to": new_from},
+            {"order_id": 1, "status": "new", "amount": 15, "valid_from": new_from, "valid_to": None},
+            {"order_id": 2, "status": "missing", "amount": 20, "valid_from": old_from, "valid_to": missing_to},
+            {"order_id": 3, "status": "new", "amount": 30, "valid_from": new_from, "valid_to": None},
+            # Key 4 is byte-identical in both batches. It must keep its FIRST
+            # valid_from and stay open: an implementation that closes and
+            # reinserts everything on each run passes every other case here.
+            {"order_id": 4, "status": "steady", "amount": 40, "valid_from": old_from, "valid_to": None},
+        ]
+    finally:
+        spark.sql(f"DROP TABLE IF EXISTS {fqn}")
+        spark.sql(f"DROP SCHEMA IF EXISTS `{schema}` CASCADE")
 
 
 def test_run_from_yaml_mints_and_returns_same_run_id(mocker):
@@ -1586,6 +1754,71 @@ def test_process_schema_allow_raw_sql_false_blocks_sql_filter(mock_engine, spark
         mock_engine.process_schema(schema_dict)
 
     spark.catalog.dropTempView("ars_test_filter")
+
+
+def test_process_schema_allow_raw_sql_false_blocks_a_sql_rule(mock_engine, spark):
+    """Plan 39, decision D14 — the Spark path, which is the one that runs in prod.
+
+    A kind='sql' rule is hand-written SQL reaching the engine through the fused
+    projection stage. Until D14 was settled the flag refused a kind='sql' loader
+    and let this through, so an environment that declared "no raw SQL" still ran
+    some.
+    """
+    mock_engine.config = {"environments": {"prod": {"is_production": True, "allow_raw_sql": False}}}
+    mock_engine.env = "prod"
+
+    @RuleRegistry.register_rule(name="ars_sql_rule", kind="sql")
+    def _ars_sql_rule():
+        return {"doubled": "amount * 2"}
+
+    spark.createDataFrame([(1, 100)], ["id", "amount"]).createOrReplaceTempView("ars_test_rule")
+    schema_dict = {
+        "tables": [{"name": "ars_test_rule", "alias": "t"}],
+        "business_rules": ["ars_sql_rule"],
+        "select_final": [["id", "id", []], ["doubled", "doubled", []]],
+    }
+
+    try:
+        with pytest.raises(ValueError, match="allow_raw_sql: false"):
+            mock_engine.process_schema(schema_dict)
+    finally:
+        RuleRegistry._rules.pop("ars_sql_rule", None)
+        spark.catalog.dropTempView("ars_test_rule")
+
+
+def test_allow_raw_sql_false_blocks_a_sql_rule_on_the_unfused_path(spark):
+    """The interpreter's other branch: rules applied one by one, no fusion.
+
+    Two distinct pieces of code call the validator on the Spark side, and a
+    refusal wired into only one of them is the half-applied control D14 exists
+    to remove.
+    """
+    from skifer.core.context import ExecutionContext
+    from skifer.core.interpreter import SchemaInterpreter
+    from skifer.core.spark_backend import SparkBackend
+
+    @RuleRegistry.register_rule(name="ars_sql_rule_unfused", kind="sql")
+    def _ars_sql_rule_unfused():
+        return {"doubled": "amount * 2"}
+
+    context = ExecutionContext(
+        env="prod",
+        config={"environments": {"prod": {"is_production": True, "allow_raw_sql": False}}},
+        is_job_execution=True,
+        is_local=True,
+    )
+    interpreter = SchemaInterpreter(
+        backend=SparkBackend(spark=spark, is_local=True), context=context
+    )
+    df = spark.createDataFrame([(1, 100)], ["id", "amount"])
+
+    try:
+        with pytest.raises(ValueError, match="allow_raw_sql: false"):
+            interpreter._apply_business_rules(
+                df, ["ars_sql_rule_unfused"], fuse_rules=False
+            )
+    finally:
+        RuleRegistry._rules.pop("ars_sql_rule_unfused", None)
 
 
 def test_process_schema_allow_raw_sql_false_blocks_expr_op(mock_engine, spark):

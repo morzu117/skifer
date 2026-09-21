@@ -10,10 +10,26 @@ import threading
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from skifer.core.constants import CLASSIFICATION_LEVELS
+from skifer.core.dialect import split_fqn
 from skifer.core.sql_compiler import sql_literal
+from skifer.observability.sql_registry import (
+    METADATA_DATASETS,
+    SqlRegistry,
+    TableDefinition,
+)
 
 if TYPE_CHECKING:
     from skifer.lineage.tracker import LineageEdge, LineageGraph
+
+
+# How ``DatasetRecord.target_fqn`` was obtained. The first two name a physical
+# location; the last two do not, and a run must refuse them rather than guess.
+PHYSICAL_TARGET_PROVENANCES = frozenset({"explicit", "sink"})
+TARGET_PROVENANCES = PHYSICAL_TARGET_PROVENANCES | {
+    "data_product",
+    "derived",
+    "unknown",
+}
 
 
 @dataclass(frozen=True)
@@ -45,9 +61,27 @@ class DatasetRecord:
     indexed_at: datetime
     last_run_id: str | None = None
     lineage: dict = field(default_factory=dict)
+    target_provenance: str = "unknown"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "columns", tuple(self.columns))
+        if self.target_provenance not in TARGET_PROVENANCES:
+            raise ValueError(
+                f"target_provenance {self.target_provenance!r} is invalid. "
+                f"Allowed: {sorted(TARGET_PROVENANCES)}"
+            )
+
+    @property
+    def target_is_physical(self) -> bool:
+        """Whether ``target_fqn`` names a place a run may actually write to.
+
+        Only an explicitly supplied FQN and a declared sink do. A data product
+        id is a logical name — `sales.orders` is routinely published to
+        `gold.orders` — and the derived form is a placeholder built from the
+        first input table. Writing to either would create a table nobody asked
+        for, under a name that reads plausible.
+        """
+        return self.target_provenance in PHYSICAL_TARGET_PROVENANCES
 
 
 @runtime_checkable
@@ -197,6 +231,7 @@ def _record_from_json(payload: str) -> DatasetRecord:
         indexed_at=_coerce_datetime(raw["indexed_at"]),
         last_run_id=raw.get("last_run_id"),
         lineage=raw.get("lineage") or {},
+        target_provenance=raw.get("target_provenance", "unknown"),
     )
 
 
@@ -346,6 +381,107 @@ class SqliteMetadataStore:
 
     def close(self) -> None:
         self._conn.close()
+
+
+def _registry_definition(table_fqn: str, definition: TableDefinition) -> tuple[str, TableDefinition]:
+    parts = split_fqn(table_fqn)
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(
+            "SQL registry-backed stores require a two-part table FQN "
+            f"'schema.table'; received {table_fqn!r}."
+        )
+    schema, table = parts
+    if table == definition.name:
+        return schema, definition
+    # Both branches must return the same shape. Returning the definition alone here
+    # raised `cannot unpack non-iterable TableDefinition` at the caller — invisible
+    # while the default name is used, and broken for the one argument that exists
+    # to be changed.
+    return schema, TableDefinition(
+        name=table, columns=definition.columns, key=definition.key
+    )
+
+
+class SqlMetadataStore:
+    """Adapter-backed metadata store using the portable SQL registry."""
+
+    def __init__(self, adapter, table_fqn: str = "_skifer_metadata.datasets"):
+        schema, definition = _registry_definition(table_fqn, METADATA_DATASETS)
+        self._registry = SqlRegistry(adapter, schema)
+        self._definition = definition
+
+    def upsert(self, record: DatasetRecord) -> bool:
+        content_hash = _content_fingerprint(record)
+        existing = self._registry.find(
+            self._definition,
+            where={
+                "target_fqn": record.target_fqn,
+                "definition_hash": record.definition_hash,
+            },
+            limit=1,
+        )
+        if existing and existing[0]["content_hash"] == content_hash:
+            return False
+
+        self._registry.upsert(
+            self._definition,
+            {
+                "target_fqn": record.target_fqn,
+                "definition_hash": record.definition_hash,
+                "content_hash": content_hash,
+                "record": _record_to_json(record),
+                "indexed_at": record.indexed_at,
+            },
+        )
+        return True
+
+    def attach_run_id(
+        self,
+        target_fqn: str,
+        definition_hash: str,
+        last_run_id: str,
+    ) -> bool:
+        """Attach the latest certified run id without changing content idempotence."""
+        rows = self._registry.find(
+            self._definition,
+            where={"target_fqn": target_fqn, "definition_hash": definition_hash},
+            limit=1,
+        )
+        if not rows:
+            return False
+        row = rows[0]
+        record = _record_from_json(row["record"])
+        if record.last_run_id == last_run_id:
+            return False
+        updated = replace(record, last_run_id=last_run_id)
+        self._registry.upsert(
+            self._definition,
+            {**row, "record": _record_to_json(updated)},
+        )
+        return True
+
+    def get(self, target_fqn: str) -> DatasetRecord | None:
+        rows = self._registry.find(
+            self._definition,
+            where={"target_fqn": target_fqn},
+            order_by=(("indexed_at", "DESC"),),
+            limit=1,
+        )
+        return _record_from_json(rows[0]["record"]) if rows else None
+
+    def list_all(self) -> list[DatasetRecord]:
+        rows = self._registry.find(
+            self._definition,
+            order_by=(
+                ("target_fqn", "ASC"),
+                ("indexed_at", "DESC"),
+                ("definition_hash", "ASC"),
+            ),
+        )
+        return [_record_from_json(row["record"]) for row in rows]
+
+    def search_columns(self, text: str) -> list[tuple[str, ColumnRecord]]:
+        return _search_records(self.list_all(), text)
 
 
 class DeltaMetadataStore:

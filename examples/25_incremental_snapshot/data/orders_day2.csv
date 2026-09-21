@@ -1,0 +1,4 @@
+order_id,customer,status,amount
+1,Ada,shipped,100
+2,Grace,shipped,250
+4,Katherine,pending,410

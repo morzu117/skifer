@@ -210,11 +210,35 @@ class FakeBackend:
         return None
 
     @property
+    def name(self) -> str:
+        return "databricks"
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        from skifer.core.capabilities_matrix import DATABRICKS_CAPABILITIES
+
+        return DATABRICKS_CAPABILITIES
+
+    @property
     def is_local(self) -> bool:
         return True
 
     def execute_sql(self, sql: str) -> Any:
         return None
+
+    def fetch(self, query: str) -> list[dict]:
+        import re
+
+        match = re.fullmatch(
+            r"SELECT MAX\(`([^`]+)`\) AS `([^`]+)` FROM `([^`]+)`\.`([^`]+)`",
+            query,
+        )
+        if not match:
+            raise NotImplementedError(f"[FakeBackend] Unsupported fetch query: {query}")
+        column, alias, schema, table = match.groups()
+        rows = self._tables.get(f"{schema}.{table}", [])
+        values = [row.get(column) for row in rows if row.get(column) is not None]
+        return [{alias: max(values) if values else None}]
 
     def check_catalog_access(self, catalog: str) -> bool:
         return True
@@ -242,7 +266,16 @@ class FakeBackend:
             raise ValueError(
                 f"[write_table] Cannot batch-write a streaming DataFrame to '{fqn}'."
             )
-        self._written[fqn] = list(df._rows)
+        clean = fqn.replace("`", "")
+        if mode == "overwrite":
+            rows = list(df._rows)
+        elif mode == "append":
+            rows = [*self._tables.get(clean, []), *df._rows]
+        else:
+            raise ValueError(f"[write_table] Unsupported write mode {mode!r}.")
+        self._written[fqn] = rows
+        self._tables[clean] = rows
+        self._missing_tables.discard(clean)
 
     def write_staging(self, df: FakeDataFrame, fqn: str) -> None:
         self.write_table(df, fqn)
@@ -418,6 +451,26 @@ class FakeBackend:
         if rows:
             return list(rows[0].keys())
         return []
+
+    def list_relation_columns(self, relation: str) -> list[str]:
+        """Return the columns of a relation expression.
+
+        The fake only knows table names, so a bare quoted name resolves like
+        ``list_columns``; anything else is unknown to it and says so rather than
+        answering an empty list, which the compiler would read as proof that a
+        rule's columns are new.
+        """
+        clean = relation.replace("`", "").replace('"', "")
+        if clean in self._tables:
+            return list(self._tables[clean][0].keys()) if self._tables[clean] else []
+        raise ValueError(
+            f"[FakeBackend] Relation '{relation}' is not a known table; this double "
+            "resolves table names only."
+        )
+
+    def sql(self, query: str) -> Any:
+        """Mirror ``execute_sql`` — the double runs no SQL, it records intent."""
+        return self.execute_sql(query)
 
     def list_schemas(self, catalog: str | None = None) -> list[str]:
         return []

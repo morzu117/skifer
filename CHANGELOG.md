@@ -8,6 +8,472 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the test workflow not installing the `sql` extra, which made CI stop at collection on all
+  four Python versions with `ModuleNotFoundError: No module named 'duckdb'`. Three modules import
+  it, and the Spark ↔ DuckDB equivalence suite is the guarantee the SQL-first work rests on, so CI
+  now installs it rather than skipping past it. Those modules also `importorskip` it now, so the
+  documented `pip install -e ".[dev]"` yields a smaller suite instead of a collection error — and
+  because that kindness would otherwise let a trimmed install line keep CI green while the
+  equivalence tests never ran, three guards were added: the workflow must install every extra the
+  suite needs, every `importorskip` target must map to a declared extra, and every such extra must
+  be either run in CI or recorded as knowingly unrun. Measured and recorded that way: 7 tests
+  behind `fastapi` and 1 behind `mcp` do not run in CI today.
+
+- Fixed `keep_all_columns` over a join returning a different schema on each engine. The DataFrame
+  path drops the right-hand join key after joining, so a join on `left_id = right_id` yields one
+  key column — the same shape the equal-name case gets from `USING`. The compiled SQL emitted `ON`
+  and kept both, so the same YAML wrote `right_id` into the SQL-mode table and not into the Spark
+  one. That is the divergence plan 39 names as its first risk: one YAML, two results. `select_final`
+  hid it, which is why the existing join tests never saw it — they list their outputs. The
+  projection now emits `SELECT * EXCEPT (<alias>.<key>)`, verified by execution on Spark SQL 4.1.1
+  and DuckDB, with sqlglot emitting `EXCLUDE` for DuckDB and Snowflake. The key is dropped by
+  qualified name: a bare name would also remove a left-hand column that happens to share it, which
+  Spark keeps.
+
+- Fixed `export_odcs_31` silently dropping `contract.security`. The function's own docstring
+  promises it exports "without silently discarding metadata", and it warns for `entity` and for
+  the semantic seed — but the security block left with neither an entry nor a warning, while
+  `import_odcs_31` had been reading a top-level `security` mapping all along. Export now emits
+  that same shape, so the block survives an export/import round trip. A test now holds the whole
+  surface to the promise: for every contract attribute, either the emitted document changes or a
+  warning names it.
+
+- Fixed `export_odcs_31` emitting the same `unique` quality rule twice when a single-column grain
+  names a field that is also marked `unique: true` — the grain path and the field path each
+  appended it. A third party reads `quality` as a list of rules, so the duplicate was a constraint
+  stated twice. The existing test compared the rule *types as a set*, which is why the duplicate
+  was invisible to it; the new one counts.
+
+- Fixed `schema_from_definition` dropping `contract.grain` and `contract.security` when rebuilding
+  a schema from a contract's canonical JSON. Both are in the hashed payload, so two definitions
+  differing only there are correctly two identities — but every comparison built on the rebuild was
+  blind to them. `PublicationCoordinator` reconstructs **both** sides of its breaking-change
+  comparison this way, so a `security.level` downgraded from `restricted` to `public` and a
+  redefined grain produced no alert at all. Slice 35.2a's acceptance criterion — a round trip
+  showing no change — passed precisely because `diff_contracts` was blind in the same place: two
+  gaps that masked each other.
+
+- Fixed `diff_contracts` ignoring attributes that change the contract's identity hash. `unique`,
+  `entity`, `grain` and the whole `security` block were invisible, so a contract could change
+  identity while the governance tooling reported nothing. A grain redefinition is breaking because
+  it changes what one row means. A `security.level` is a free string, so two levels are comparable
+  only when both are known taxonomy levels; an `access_policy` is an expression rather than a rank
+  and can never be compared — anything that cannot be shown safe counts as breaking, which is the
+  rule this module already applied to an SLA. Withdrawing `unique` is reported without being
+  breaking, for the same reason dropping `required` is. A test now fails when any hashed attribute
+  becomes invisible to the diff, with the `semantic:` seed as the one declared exception.
+
+- Fixed a business rule's lineage edge carrying the rule's internal column name instead of the
+  name `select_final` actually publishes. When the two differ, the edge pointed at a column the
+  target does not have, and the column it *does* have was left with no provenance at all — so a
+  classification inherited through the rule reached nothing. Measured end to end: `email`
+  classified `pii` upstream, a rule deriving `email_masked` from it, `select_final` publishing it
+  as `hashed_contact`, and `skifer index --strict` reporting no violation and `hashed_contact`
+  classified `None`. Same family as the `aggregate:` fail-open below. A rule column that
+  `select_final` never mentions is now emitted as no target edge at all: it is computed and then
+  dropped, so advertising it invented a column that `skifer lineage` would answer for and the
+  dictionary would list. `keep_all_columns` and the identity case are unchanged.
+
+- Fixed `aggregate:` producing no column lineage at all, which silently dropped classification.
+  The Plan 28 block had never been wired into `LineageTracker`, so an aggregated Gold table — the
+  most common shape there is — had an empty dictionary, an empty impact analysis, and inherited
+  nothing: a `pii` column folded by `first` reached the target with no classification, and
+  `mode="strict"` could not object, because it rejects undeclared *inferred* elevations and there
+  was no inference to reject. A control cannot catch what it is never shown. A group key now
+  carries a `select` edge marked `group_by`, a measure a `metric` edge marked with its function.
+  `count:*` starts at the source rather than the target, since the rows counted are the source's,
+  and is emitted despite having no source column — dropping the edge would hide the output column
+  from the dictionary, and an absent column reads as "no dependency" rather than "not analysed".
+  A group key produced by `add_columns` is not re-attributed to a source table, because that would
+  name a column the reader cannot find; its own edge already carries the real origin.
+
+- Fixed `incremental merge` accepting a batch whose `unique_key` is not unique. Measured on the
+  same YAML and the same rows: Delta refuses with
+  `DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE`, while DuckDB accepted the statement
+  and kept one of the conflicting rows, arbitrarily, with nothing in the result saying a row had
+  been dropped. That is a hard divergence in the one feature this plan claims is equivalent, and
+  the permissive side is the dangerous one. The snapshot path already refused the same batch;
+  only the merge branch never asked the question. It now refuses by name, citing the key and the
+  number of duplicated keys and never a data value, and only when the target already exists — a
+  first run still creates the table exactly as Spark's `CREATE TABLE AS` does, duplicates included.
+
+- Fixed a column operation missing a required argument raising a bare
+  `IndexError: tuple index out of range`. Every backend indexes `op.args` positionally —
+  `op.args[1]` for `split:` — so `round` with no argument, or `split:x`, surfaced a Python
+  traceback naming neither the column, nor the operation, nor what was expected, on the Spark
+  path as much as the SQL one. `COLUMN_OPS` had declared each operation's arity all along and
+  nothing read it. Only a **minimum** is enforced: `lit:Paris, France` legitimately hands
+  several comma-separated parts to a `single` operation and the backends rejoin them on
+  purpose, so an upper bound would reject valid YAML.
+
+- Fixed `skifer compile` and `skifer run` being unable to handle any pipeline that names a
+  business rule. Rules live in the user's project, not in the package, and no CLI command
+  imported them — so every such pipeline was refused. Both commands now take `--rules MODULE`,
+  repeatable, resolved from the directory the command runs in, which is the same project root
+  `config.yaml` is discovered from. An import failure is fatal rather than a warning, because
+  continuing would refuse the pipeline and blame the pipeline instead of the import.
+- Fixed the capability refusal blaming a portable rule for being Python. An unregistered rule
+  is classified as `python_rules` conservatively — which stays — but `required_capabilities`
+  assumed "the execution/compiler boundary will issue the named error", and it does not: the
+  capability check fires first and its message wins. A `kind="sql"` rule that was merely never
+  imported was therefore reported as requiring Python, sending its author to rewrite a rule
+  that was already correct. The refusal now names the rules that are not registered.
+- Fixed the pipeline graph's text output omitting each external source's `kind`. The field
+  exists so a reader can tell a source that will never become an edge from one whose producer
+  is simply not indexed yet; printing it in JSON alone hid it from everyone who runs the
+  command without `--format`.
+
+- Fixed the inter-pipeline graph inventing an edge from a file source. A table declared
+  `name: gold.orders` with `source: {type: csv}` reads a file, not the `gold.orders` table
+  another pipeline writes, but its declared name was matched against indexed targets all the
+  same. The graph then claimed a dependency that does not exist — and since `--select` derives
+  execution order from it, the consumer would have waited for a producer it never reads and
+  been skipped when that producer failed. Only a catalog reference can now match a producer,
+  and external sources carry a `kind` (`table`, `file` or `loader`) saying whether indexing
+  more pipelines could ever turn them into an edge.
+
+- Fixed `test_missing_dependency_warning_says_what_to_install` asserting on `caplog.text`
+  rather than on the record the code emits. `caplog.text` is rendered by whatever formatter
+  the process has installed; a structured one escapes the quotes in `.[tracing]`, so the
+  test failed on formatting while the message was exactly right. It now reads
+  `record.getMessage()`, which is what the code actually produced.
+
+- Fixed certified publication being skipped in silence on the SQL path. A schema declaring
+  `data_product:` was written with no contract check, no certification record and no
+  quarantine, because the SQL branch of `run_process_to_table` returns before the guard the
+  Spark path applies — so a certified pipeline moved to another engine lost its whole
+  governance layer without a word. `data_product:` now requires a `certified_publication`
+  capability that Databricks declares and DuckDB does not, so the refusal is by name and no
+  table is written. DuckDB will declare it when publication is ported (Plan 39.5.4b).
+- Fixed the shared `FakeBackend` double falling behind the Adapter boundary: it had never
+  learned `list_relation_columns`, added to the Protocol earlier in this plan, nor `sql`,
+  and more than ten test modules rely on it. A double that no longer follows the boundary
+  it imitates keeps its tests green while production has already moved. A conformance test
+  now fails when a Protocol member is missing from it — member presence only, deliberately
+  not signatures, because the double narrows `Any` to `FakeDataFrame` on two methods, which
+  is more informative than the Protocol rather than less.
+- Fixed data-quality checks reaching for Spark to read their own results: the nine checks
+  called `backend.sql(query).collect()`, a DataFrame method, so none of them ran on a
+  non-Spark adapter — the plan had recorded `checks.py` as "already SQL", which was true of
+  the queries and not of how their rows were read. Checks keep emitting pivot SQL and learn
+  no dialect; one helper transpiles to the adapter's dialect and reads through
+  `Adapter.fetch`. Databricks gets its query back byte for byte, and real DuckDB coverage
+  proves a passing nullity check and a failing uniqueness check. Quoting per dialect inside
+  the checks would have fixed only the quoting, leaving the next date function broken.
+  (Plan 39.5.4a, decision D13)
+- Fixed the registry-backed stores rejecting any table name other than the default: the
+  FQN resolver returned a pair on one branch and a bare definition on the other, so
+  unpacking raised `cannot unpack non-iterable TableDefinition`. The default path worked,
+  which left every test green while the one argument meant to be changed was broken.
+  (Plan 39.5.3, decision D12)
+- Fixed SQL business rules on file-backed tables, which could not compile at all: the
+  compiler asked the catalog for the columns of a table that only exists as a file. The
+  column resolver now receives the declared table and answers from the adapter's relation
+  expression, so a rewrite keeps a single output column instead of emitting a homonym.
+  An unreadable relation raises instead of returning no column, since an empty answer
+  would have been read as proof that every rule column is new. (Plan 39.3.3)
+- Fixed DuckDB file-source defaults to follow Spark rather than the warehouse: an absent
+  `header` or `inferSchema` no longer lets DuckDB auto-detect, which silently read a
+  different dataset than Spark from the same file. `multiLine: true` now maps to a JSON
+  array instead of auto-detection, measured against Spark: on several JSON objects
+  concatenated in one file Spark keeps only the first while auto-detection read them all.
+  The source resolver is also passed only to adapters declaring the `file_sources`
+  capability, so an adapter without it gets the documented refusal. (Plan 39.3.2)
+- The engine and adapter of an environment are now resolved by a single shared function.
+  The pre-Spark peek in the engine and `ExecutionContext` previously re-implemented the same
+  environment resolution, so a future divergence would have started a Spark session for an
+  environment asking for the SQL runtime. (Plan 39.3.1)
+- Fixed a cross join with declared keys compiling to an unconditional `CROSS JOIN`.
+  The DataFrame path applies the key condition, so the same YAML returned a filtered
+  result on Spark and a cartesian product in SQL — including in materialized views,
+  which compile through the same path. (Plan 39)
+- Dialect-aware FQN quoting now understands pivot quoting: dots inside quoted identifiers,
+  doubled-backtick escapes and already-quoted names translate correctly to non-Databricks
+  targets, and unbalanced quoting is refused. (Plan 39.2.1)
+- Dialect error wrapping is restricted to sqlglot exceptions, so a programming error no longer
+  masquerades as a dialect incompatibility. (Plan 39.2.1)
+
+### Added
+
+- Added a guard that every `docs/roadmap/*_plan.md` link in `CLAUDE.md` and `AGENTS.md` resolves.
+  Those tables are the map an agent reads before starting, and Plan 38 sat in it as "finalised, not
+  started" while no file, no branch and no commit existed for it — nothing failed, because nothing
+  looked. The guard also refuses to pass when a brief lists no plan at all, so it cannot go vacuous
+  the way a link-checker does when the pattern stops matching.
+
+- Added a portability guard pinning Spark and the compiled SQL together on a qualified select
+  source. Qualifying a source (`ord.id` rather than `id`) is what lets lineage attribute a joined
+  column to the table it really comes from, and `examples/23_openlineage` ships a schema that does
+  it — but no qualified form executes: Spark raises `UNRESOLVED_COLUMN` and the compiled SQL a
+  binder error, because the compiler quotes the whole string as one identifier. Whether execution
+  should learn the form or the loader should refuse it is an open product decision, recorded as
+  Plan 38 point 6. Until it is taken, one engine must not learn it alone — measured: quoting each
+  dotted part separately makes DuckDB accept the alias form while Spark still rejects it, and the
+  guard fires on exactly that case. Example 23's README now says its schema is a lineage fixture
+  rather than a runnable pipeline.
+
+- Added a drift guard on metadata persistence. `_record_to_json` serialises with `asdict`, so a
+  field added to `DatasetRecord` is written automatically, while `_record_from_json` names every
+  field by hand and would read the same field back as its default. The guard fails as soon as a
+  field is left at its default in the round-trip fixture, which forces it to be exercised, and the
+  round trip then catches a lossy read. The consequence is spelled out by a second test:
+  `target_provenance` coming back `unknown` turns every `skifer run` selection into a refusal,
+  and the default being the safe direction is exactly what would make that loss silent.
+
+- Added drift guards on the coupling between `semantic sync`'s contract snapshot and the
+  `ContractDiff` dimensions it checks. The snapshot is what defines the comparable surface, so the
+  two lists have to match in both directions: storing an attribute without checking it makes it
+  silently uncomparable, and checking one without storing it makes every contract that declares it
+  drift on every sync. Measured — adding `grain_changed` to the check without snapshotting the
+  grain reports drift on a contract that did not change. This is why `diff_contracts` gaining new
+  dimensions did not extend `semantic sync`: widening its snapshot is a draft-format change that
+  has to decide what an older draft, which has no such key, should report.
+
+- Added drift guards on contract identity. `canonicalize_contract` builds the hashed payload from
+  a hand-written list of field names, so a field added to `ParsedOutputField`, `ParsedSla`,
+  `ParsedSecurity` or `ParsedSemanticSeed` would silently stay out of the hash — and two
+  materially different contracts would then share one certification identity, which is the single
+  guarantee the hash exists to provide. Every attribute of those four dataclasses must now be
+  declared as either part of the identity or documentation-only, and the tests prove the
+  distinction rather than asserting it: each contractual attribute is flipped and the hash must
+  change, `description` is flipped and the hash must not. This also closed a coverage gap —
+  `name`, `required`, `unique`, `classification` and `entity` were in the payload with no test
+  showing that changing them changed anything.
+
+- Added `--rules` to `skifer index`, which had no way to import the project's business rules.
+  The lineage this command stores is built by `RuleAnalyzer`, which can only read a rule the
+  process imported, and an unresolved rule is skipped silently — so indexing a pipeline with
+  rules produced a record where every rule-made column had no provenance and inherited no
+  classification, indistinguishable from a pipeline that has no rules. `compile` and `run`
+  already had the flag. A module that cannot be imported is a usage error, not a warning:
+  continuing would leave exactly the gap the flag exists to close.
+
+- Added cross-engine equivalence cases for the column operations that had none — `abs`, `ceil`,
+  `length`, `col` and `expr`. They had been added to the catalog and never to the hand-kept specs
+  list, so no test had ever compared them on Spark and DuckDB. They agree, including `CEIL` of a
+  negative and `LENGTH` over surrounding spaces, but that is now proved rather than assumed.
+  Three guards keep the three hand-kept lists — column operations, aggregate functions, filter
+  operators — from falling behind their catalogs again; each fails by naming what is uncovered.
+
+- Added offline target-dialect coverage (`tests/test_target_dialect_coverage.py`): every filter
+  operator, column operation, aggregate function and join type is compiled and transpiled to
+  Databricks, DuckDB, Snowflake and BigQuery, then parsed back in each dialect. It iterates the
+  operator catalogs rather than a fixed list, so an operator added later is covered the day it
+  is added — the alternative being to discover the gap while writing an adapter that needs a
+  paid account. All four targets pass today, which locates the remaining risk for Snowflake and
+  BigQuery in the **write statements** (`MERGE`, SCD2 bounds) rather than in expressions. What
+  this proves is a syntactic floor, not semantics; it does not replace running on a warehouse.
+- Documented that an operation containing a comma must be quoted in a YAML flow sequence:
+  `[split:-,0]` is read as two items and silently loses the index. The documented
+  `split:sep,idx` form was itself the trap.
+
+- Added the per-adapter capability matrix to `docs/core.md`, and a test that fails when it
+  drifts from the adapters. A documentation table that goes stale is worse than none, because
+  it is trusted and it is wrong; the guard fails in both directions — a flipped cell and a
+  capability added to the code but missing from the page.
+
+- Added a "Coming from dbt" section to `docs/core.md`: what maps (`ref`, `source`,
+  materializations, snapshots, `--select`, `compile`, tests), what differs on purpose (no
+  templating language, so a dependency is a table name rather than a call the file makes to
+  itself; tests as a staged contract rather than a suite run against the built table), and
+  what skifer does not have — no package ecosystem, no macros, no seed, a far shorter adapter
+  list. The gaps are listed because a correspondence table that hides them is worse than none,
+  and the section says plainly when dbt is the better answer.
+
+- Documented the SQL-first command line (`skifer compile`, `skifer graph`,
+  `skifer run --select`) in `docs/core.md`, with the selector grammar, the exit codes and
+  why a target must be physical. None of the three had any user-facing documentation.
+
+- Documented `kind="sql"` rules and loaders in `docs/rules.md`, including what
+  `allow_raw_sql: false` does **not** cover. Measured: the flag refuses `expr:`, the `sql`
+  filter operator and a `kind="sql"` loader, but not a `kind="sql"` rule — so an environment
+  configured to forbid hand-written SQL still executes it through the one path whose purpose
+  is to inject an expression. The gap is recorded as plan 39 decision D14 rather than closed
+  either way, because it turns on what the flag is meant to promise, and the test that pinned
+  the shipped behaviour carried no rationale at all. That test now states what it pins and
+  why, since its silence is what kept the contradiction invisible.
+
+- Added `examples/25_incremental_snapshot/`: the same two days of orders written through
+  `incremental merge` and through an SCD2 `snapshot`, and what separates them. Each pipeline
+  runs twice, because a single run leaves the same rows whichever strategy is chosen —
+  including a plain overwrite, which is neither. The two CSV files differ in four deliberate
+  ways, one per behaviour worth proving; the unchanged order is the one that catches a wrong
+  implementation, since a snapshot that closes and reinserts every key is correct for the
+  changed and the new row and wrong only there.
+- Documented the incremental and snapshot write strategies, and the `engine`/`adapter`/
+  `database` environment keys, in `docs/core.md`. `database:` defaults to `:memory:`, which
+  is useful for tests and useless otherwise, so the page says what that costs rather than
+  leaving a reader to find out after a run.
+
+- Added execution to `skifer run --select`: the selected pipelines now run in dependency
+  order through the configured engine. A failure blocks only what reads the failed pipeline,
+  transitively — independent work still runs, because cancelling an unrelated pipeline wastes
+  a run and teaches the reader that the skipped list means nothing.
+- Added `environments.<env>.database` to `config.yaml`. Without it every engine built from
+  configuration alone opened an in-memory DuckDB database: two engines from the same file
+  shared nothing, and a process boundary lost whatever a run had written. A real run now
+  refuses an in-memory database by name rather than reporting a success that wrote nowhere.
+- Added `DatasetRecord.target_provenance`, recording which of the four sources answered when
+  the index resolved a target FQN. Two of them name a physical table (an explicitly supplied
+  FQN, a declared `sink:`); the other two do not — a data product id is a logical name, and
+  the last resort is a placeholder built from the first input table. Nothing downstream could
+  tell them apart from the string alone, so `skifer run` would have written a plausible-looking
+  table nobody declared. One non-physical target now refuses the whole selection, rather than
+  running the runnable subset and leaving the plan the caller read and the work actually done
+  to diverge.
+
+- Added `skifer run --select [+]NAME[+] --dry-run`: the selection grammar and the execution
+  order, resolved from the indexed pipeline graph without opening a Spark session or a
+  warehouse connection. `+` sits on the side the selection travels towards, as in dbt, so a
+  reader who knows one tool reads the other. A pipeline is named by its target FQN or by its
+  YAML path; several matching paths are refused by name rather than arbitrated, since picking
+  one would run a pipeline the caller did not ask for. Among pipelines that are ready to run,
+  the first by name runs first — a rule the graph does not decide and that is therefore pinned
+  by a test, so two runs of the same registry print the same plan. Execution itself is not
+  wired: without `--dry-run` the command refuses rather than quietly doing nothing, because an
+  indexed target FQN may be a logical product id or a fabricated placeholder rather than a
+  physical location, and that guard is the next slice.
+
+- Added cross-engine coverage for the certified-publication example: `examples/02_quality_and_contract`
+  now runs on Spark and on the compiled DuckDB path in the same test, which asserts the two
+  produce identical rows *and* that both record a `CERTIFIED` verdict. Publishing the same
+  contract over different data would be worse than refusing to publish, so row equality and
+  the certification verdict are checked together rather than each engine being checked alone.
+
+- Added certified publication on the SQL path: a `data_product:` pipeline now routes
+  through the existing `PublicationCoordinator`, which needed no change. It never inspects
+  the staged value, so the adapter decides what it is — a DataFrame on Spark, a compiled
+  relation on DuckDB. Staging, contract checks, transactional promotion, quarantine with
+  its reserved `_violations`/`_run_id`/`_contract_version` columns, and crash recovery all
+  run on a real DuckDB connection. The guarantee a consumer actually buys is tested as
+  such: after a critical failure the existing target is compared byte for byte and is
+  unchanged. DuckDB declares `certified_publication` only now that it can quarantine —
+  a publication that cannot quarantine is not a certified one. (Plan 39.5.4b)
+- Added portable `SqlHistoryStore` and `SqlMetadataStore` over the generic SQL registry,
+  leaving the Delta classes untouched as the Databricks path — every registry now has a
+  portable implementation beside its Delta one, and the whole package still imports with
+  `pyspark` and `delta` blocked. Behaviour is
+  written once and parameterized over both implementations, including the content-hash
+  contract where rewriting an identical record reports no change — the case an
+  implementation that always writes would otherwise pass. `search_columns` keeps filtering
+  in Python because it searches columns nested inside the record's JSON, which no SQL LIKE
+  would reach, so `%` and `_` stay literal.
+- Added `SqlRegistryBackend`, which speaks the sixteen certification, incident and usage
+  methods the Delta stores already call, on top of the generic SQL registry. The stores
+  therefore run on a non-Spark adapter without a line changed in them — no `hasattr`
+  dispatch, no branch, no new Adapter member. The behaviour tests are written once and
+  parameterized over both backends, so the two cannot drift apart: writing them twice is
+  exactly the divergence this slice exists to prevent. Signatures are checked by reflection
+  against `SparkBackend`, and the usage-event time bounds went into the generic registry
+  rather than hand-built SQL in the shim. (Plan 39.5.2, decision D12)
+- Added a generic SQL registry above the Adapter Protocol, written once instead of as
+  fourteen more adapter methods: declarative definitions for contract definitions,
+  materialization runs, check results, incidents and semantic usage events, with one
+  escaped literal renderer, dialect-quoted identifiers and deterministically ordered reads.
+  The Protocol stays at twenty members, and a test fails if anyone adds one — without it
+  the boundary would grow back to the forty-method shape Plan 26 removed. Adversarial
+  values round-trip unchanged on DuckDB and execute nothing. (Plan 39.5.1, decision D12)
+- Added portable loaders: `@RuleRegistry.register_loader(kind="sql")` returns a SQL relation
+  expression instead of a DataFrame, and lands where an adapter puts a file source's
+  relation — so one YAML runs on Spark and on the compiled SQL path and returns the same
+  rows. sqlglot carries the expression to each dialect, rewriting a `VALUES` constructor as
+  `UNNEST([STRUCT(...)])` for BigQuery, work the loader never has to know about. A portable
+  loader declaring `backend` is refused at registration, since it could then reach for Spark
+  and compile everywhere while running in one place; it answers to `allow_raw_sql` like
+  `expr:` and kind='sql' rules; and an unregistered loader stays classified as needing an
+  engine rather than being assumed portable. (Plan 39.3.5, decision D8)
+- Added `skifer graph`, the inter-pipeline dataset graph built from the metadata registry
+  without Spark: an edge exists when a pipeline reads a table another pipeline produces.
+  A declared table with no indexed producer is reported as an external source rather than
+  guessed at, a cycle is an error naming the pipelines in it instead of a `RecursionError`,
+  and a pipeline declaring its own output keeps its self-edge so the cycle check can name
+  it. Output is deterministic under any `PYTHONHASHSEED`, in text, JSON or Mermaid.
+  (Plan 39.6.2)
+- Added `skifer compile PIPELINE --target databricks|duckdb|snowflake|bigquery`, which prints
+  the SQL a pipeline would run and executes nothing. The SQL goes to stdout alone so the
+  command can be redirected to a file; every diagnostic goes to stderr. The `databricks`
+  target emits the pivot verbatim, since a materialized view's definition hash is computed
+  on that exact text. The command opens no connection, so a pipeline whose compilation needs
+  to read a catalog is refused by name with exit code 2 rather than rendered approximately —
+  plausible SQL gets pasted. (Plan 39.6.1)
+- Added write-strategy equivalence tests running the same YAML through both engines,
+  twice, with the source changed in between: `view`, `incremental append` with and without
+  a watermark, `incremental merge` and both SCD2 snapshot strategies. A single run proves
+  nothing here — it fills an empty table, where every strategy and a plain overwrite are
+  indistinguishable. Each test was checked by mutation: turning append into an overwrite,
+  a view into a table, an unchanged row into a changed one, or making the SQL path ignore
+  the injected clock each makes exactly one of them fail. (Plan 39.4.6)
+- Added SCD2 `materialization: snapshot` on both engines, with `valid_from`/`valid_to`
+  bounds that meet exactly, so a key's history has neither gap nor overlap. The preflight
+  runs before every write and nothing is emitted unless it is clean. An unchanged row
+  creates no new version — the case an implementation that closes and reinserts everything
+  would still pass every other test on. Closing rows absent from the batch on Delta goes
+  through a merge, since a correlated `UPDATE ... WHERE NOT EXISTS` is unsupported there.
+  A run interrupted between statements converges when replayed rather than compounding,
+  which is the property reachable on engines without multi-statement transactions.
+  (Plan 39.4.5.2)
+- Added the SCD2 snapshot guardrails: `on_missing` is required with no default, since
+  Skifer cannot tell a complete snapshot from a partial extract and guessing wrong closes
+  every row; `max_closed_ratio` (0.2) refuses a run that would close an unusual share of
+  open rows; `on_late_arrival` refuses data older than the version already current rather
+  than reordering history in silence. A fail-closed preflight reports six findings —
+  NULL keys, non-unique keys, over-wide closure, NULL `updated_at`, late arrivals and
+  column drift — each carrying the YAML fragment to paste, none ever applied on its own,
+  and none quoting a data value. Nothing writes in SCD2 yet: the guardrails ship before
+  the write they protect. (Plan 39.4.5.1)
+- Added incremental `strategy: merge`, compiled to a native `MERGE INTO` with explicit
+  source and target column lists. The explicit lists are not a style choice: `UPDATE SET *`
+  crosses sqlglot unchanged and is then rejected by Snowflake and BigQuery, so a merge built
+  with stars would look portable and break at the first client. Unique keys are excluded from
+  the update, and any source/target column divergence is refused by name rather than merged on
+  the intersection, where a new source column would have been dropped in silence. Plan 27
+  streaming keeps its own `SET *` merge: it targets Databricks only, and reading the target's
+  columns on every micro-batch would cost a query for no portability gain. (Plan 39.4.4)
+- Added `materialization: view`, compiled as a persisted definition and created with
+  `CREATE OR REPLACE VIEW` on both engines. `dev_limit` and `drop_duplicates_on` are
+  refused by name there rather than frozen into the definition, where they would have
+  truncated or reshuffled every future read instead of one run. (Plan 39.4.2)
+- Added `materialization: {type: incremental, strategy: append}`. A missing target is
+  created from the compiled query and later runs append to it, with an optional
+  `watermark_column` bounding the insert strictly above the maximum already stored.
+  `strategy: merge` is refused as not implemented on any adapter, so it can never fall
+  through to an append that would duplicate rows instead of updating them. (Plan 39.4.3)
+- Added the `view`, `incremental` and `snapshot` write strategies to the `materialization:`
+  grammar, validated at load time with `strategy`, `unique_key`, `watermark_column`,
+  `updated_at` and `check_columns`. No adapter declares these capabilities yet, so a schema
+  using one is refused by name on both the Spark and the SQL path rather than silently
+  falling back to a full overwrite. `dev_limit` is refused for cumulative strategies,
+  including when it is declared inside a nested partial, where truncating the rows feeding
+  the parent would corrupt the target durably. (Plan 39.4.1)
+- Added a repository example and parity tests proving one YAML produces identical rows on
+  local Spark and on the compiled DuckDB SQL path. Examples 01, 05 and 06 are compared by the
+  strict equivalence helper, and the shipped configuration exposes a `LOCAL_SQL` environment
+  that auto-detection can never select. (Plan 39.3.4)
+- Added file sources to the portable SQL path: the compiler delegates the source relation
+  to the adapter, and DuckDB reads CSV, Parquet and JSON with strict option translation and
+  escaped path literals. Spark option defaults are emitted explicitly and unknown options
+  are refused by name. (Plan 39.3.2)
+- Added the first end-to-end DuckDB SQL execution path: a pipeline compiles, transpiles
+  and materializes as a DuckDB table without importing PySpark, with context-aware
+  `dev_limit` handling and catalog-backed column resolution for SQL rules. (Plan 39.3.1)
+- Added construction-level equivalence tests between the Spark DataFrame path and the
+  compiled SQL executed on DuckDB: filters, joins, aggregates, column operations, nested
+  partials, portable SQL rules, deduplication and `dev_limit`. Non-deterministic cases
+  assert row counts and membership, never which row is kept. (Plan 39.2.4)
+- Added portable `kind="sql"` business rules: a rule returns validated SQL expressions,
+  runs on Spark through the backend `expr` primitive and compiles into the SQL path, so the
+  same pipeline stays portable across engines. The compiler refuses to guess whether a rule
+  rewrites an existing column: it proves it from explicit projections or an optional column
+  resolver, and fails closed otherwise. (Plan 39.2.3)
+- Batch SQL compilation now supports recursive `partials:` CTEs, `drop_duplicates_on`
+  through `QUALIFY`, and table/schema `dev_limit`. Persisted definitions keep refusing
+  all three, since a refresh could freeze a different row or a truncated result. (Plan 39.2.2)
+- Added the Plan 39 tranche 39.2.1 SQL dialect boundary, with lazy optional
+  transpilation and dialect-aware identifier quoting.
+- Added the Plan 39 phase 39.1 `Adapter` boundary and capability matrix.
+
 ## [2.2.0] - 2026-09-14
 
 ### Fixed
@@ -184,6 +650,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `include_filter_values` is set — sensitivity overrides disclosure, never grants it.
 
 ### Changed
+
+- **`allow_raw_sql: false` now refuses a `kind="sql"` rule** (plan 39, decision D14). The flag
+  already refused a `kind="sql"` loader, an `expr:` operation and the `sql` filter operator, but let
+  a registered SQL rule through — so it announced a control it applied by halves. It now reads "no
+  hand-written SQL runs in this environment", whichever layer wrote it: the separation this library
+  rests on is declarative sources and registered rules, not SQL typed by hand on either side. The
+  refusal sits in `validate_sql_rule_result`, whose `allow_raw_sql` argument has **no default** —
+  three paths reach it (the SQL compiler, the fused executor, the interpreter) and a default would
+  let a fourth arrive permissive. Each wiring is covered by its own test and its own verified
+  mutation. Declared limit: a `kind="projection"` rule is arbitrary Python and can call `F.expr`;
+  no flag sees inside it, and only `CAP_PYTHON_RULES` closes that.
 
 - `run_process_and_split` and `run_union_sources_to_table` now refuse schemas declaring `data_product` before any processing, reads, or writes, directing certified publication through `run_process_to_table` or `run_from_yaml`. (Plan 35.5)
 - Certified publication now triggers a non-blocking metadata-index hook after

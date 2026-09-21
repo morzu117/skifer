@@ -28,10 +28,15 @@ from skifer.cli import (
     SEMANTIC_EXIT_DRIFT,
     SEMANTIC_EXIT_ERROR,
     SEMANTIC_EXIT_OK,
+    SNAPSHOT_EXIT_ERROR,
+    SNAPSHOT_EXIT_FINDING,
+    SNAPSHOT_EXIT_OK,
+    SNAPSHOT_EXIT_REFUSAL,
     run_contract_command,
     run_audit,
     run_semantic_sync,
     run_semantic_validate,
+    run_snapshot_check,
     _run_api,
 )
 from skifer.core.ir import parse_to_ir
@@ -98,6 +103,18 @@ select_final:
 """
 
 
+SNAPSHOT_PIPELINE = """\
+materialization:
+  type: snapshot
+  strategy: timestamp
+  unique_key: [order_id]
+  updated_at: modified_at
+  on_missing: close
+tables:
+  - name: silver.orders
+"""
+
+
 def _seed_base_and_curated(
     tmp_path: Path,
     yaml_text: str,
@@ -158,6 +175,55 @@ def test_cli_main_importable():
     )
     assert result.returncode == 0
     assert "ok" in result.stdout
+
+
+def test_snapshot_check_exit_zero_when_preflight_is_clean(tmp_path):
+    from skifer.core.snapshot_preflight import SnapshotPreflightReport
+
+    pipeline = tmp_path / "snapshot.yaml"
+    pipeline.write_text(SNAPSHOT_PIPELINE, encoding="utf-8")
+
+    exit_code = run_snapshot_check(
+        str(pipeline),
+        runner=lambda _schema: SnapshotPreflightReport(),
+    )
+
+    assert exit_code == SNAPSHOT_EXIT_OK
+
+
+def test_snapshot_check_exit_one_on_technical_error(tmp_path):
+    exit_code = run_snapshot_check(str(tmp_path / "missing.yaml"))
+
+    assert exit_code == SNAPSHOT_EXIT_ERROR
+
+
+def test_snapshot_check_exit_two_when_preflight_has_finding(tmp_path):
+    from skifer.core.snapshot_preflight import SnapshotFinding, SnapshotPreflightReport
+
+    pipeline = tmp_path / "snapshot.yaml"
+    pipeline.write_text(SNAPSHOT_PIPELINE, encoding="utf-8")
+    report = SnapshotPreflightReport(
+        findings=(
+            SnapshotFinding(
+                kind="unique_key_not_unique",
+                message="[snapshot] REFUSED - duplicate key",
+                suggested_yaml="quality_checks:\n  drop_duplicates_on: [order_id]",
+            ),
+        )
+    )
+
+    exit_code = run_snapshot_check(str(pipeline), runner=lambda _schema: report)
+
+    assert exit_code == SNAPSHOT_EXIT_FINDING
+
+
+def test_snapshot_check_exit_three_when_no_runner_is_provided(tmp_path):
+    pipeline = tmp_path / "snapshot.yaml"
+    pipeline.write_text(SNAPSHOT_PIPELINE, encoding="utf-8")
+
+    exit_code = run_snapshot_check(str(pipeline))
+
+    assert exit_code == SNAPSHOT_EXIT_REFUSAL
 
 
 def test_api_serve_help_exits_zero():

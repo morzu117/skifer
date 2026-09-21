@@ -593,6 +593,10 @@ def test_upsert_batch_fn_merges_on_keys(mock_spark):
     assert "t.`order_id` = s.`order_id` AND t.`src` = s.`src`" in merge_sql
     assert "WHEN MATCHED THEN UPDATE SET *" in merge_sql
     assert "WHEN NOT MATCHED THEN INSERT *" in merge_sql
+    # Plan 27 streaming keeps ``SET *``: it targets Databricks only, where the
+    # pivot dialect is emitted verbatim. The explicit-column builder exists for
+    # Snowflake and BigQuery, and using it here would query the target's columns
+    # on every micro-batch for no portability gain.
 
 
 def test_upsert_batch_fn_creates_target_when_absent(mock_spark):

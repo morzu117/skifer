@@ -21,8 +21,14 @@ excluded, so workflow or documentation edits do not invalidate certification.
 
 `export_odcs_31(schema, definition)` exports the supported surface to an ODCS
 3.1-shaped document: fundamentals, output properties, required/unique quality
-rules, owner team and a read role. It returns warnings for metadata that has no
-portable ODCS mapping rather than dropping it silently.
+rules, the `security` block, owner team and a read role. It returns warnings for
+metadata that has no portable ODCS mapping rather than dropping it silently, and
+a test holds it to that: for every contract attribute, either the emitted
+document changes or a warning names it.
+
+A single-column grain and a field marked `unique` produce one quality rule
+between them, not two — the grain already implies the constraint, and a document
+a third party reads as a list of rules must not state it twice.
 
 `import_odcs_31(document)` performs the supported reverse mapping; the CLI
 prints the resulting `data_product` and `contract` blocks with explicit warning
@@ -33,8 +39,18 @@ skifer contract import contract.odcs.yaml
 ```
 
 `diff_contracts(old, new)` detects additions and breaking removals, retypes,
-required hardening, classification downgrades, and SLA relaxation. The complete
-YAML surface is in [Pipeline governance metadata](yaml_spec.md#pipeline-governance-metadata-plan-31).
+required hardening, uniqueness changes, entity changes, classification
+downgrades, grain redefinitions, SLA relaxation, and security changes. The
+complete YAML surface is in [Pipeline governance
+metadata](yaml_spec.md#pipeline-governance-metadata-plan-31).
+
+The rule it applies to the whole contract is that anything it cannot show to be
+safe counts as breaking. A grain redefinition changes what one row means, so it
+has no safe direction. A `security.level` is a free string, so two levels are
+comparable only when both are known taxonomy levels; an `access_policy` is an
+expression rather than a rank and can never be compared. Withdrawing `unique` is
+reported without being breaking, for the same reason dropping `required` is: it
+loosens what the producer owes.
 
 Certification persistence is append-only. `SqliteCertificationStore` is the
 local implementation; `DeltaCertificationStore` uses the same event IDs to

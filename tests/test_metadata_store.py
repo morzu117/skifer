@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import inspect
+from uuid import uuid4
 
+import pytest
+
+from skifer.core.adapters.duckdb import DuckDBAdapter
+from skifer.core.spark_backend import SparkBackend
 from skifer.observability.metadata_store import (
     ColumnRecord,
     DatasetRecord,
     DeltaMetadataStore,
     MetadataStore,
+    SqlMetadataStore,
     SqliteMetadataStore,
 )
 
@@ -77,6 +84,109 @@ def _raw_row(store: SqliteMetadataStore) -> tuple[str, str, str]:
     return store._conn.execute(
         "SELECT content_hash, record, indexed_at FROM metadata_registry"
     ).fetchone()
+
+
+@pytest.fixture(params=("spark", "duckdb"))
+def portable_metadata_store(request):
+    schema = f"metadata_store_{uuid4().hex}"
+    table_fqn = f"{schema}.datasets"
+    if request.param == "spark":
+        spark = request.getfixturevalue("spark")
+        spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{schema}`")
+        try:
+            yield DeltaMetadataStore(
+                SparkBackend(spark=spark, is_local=True),
+                table_fqn=table_fqn,
+            )
+        finally:
+            spark.sql(f"DROP SCHEMA IF EXISTS `{schema}` CASCADE")
+        return
+
+    duckdb = pytest.importorskip("duckdb")
+    connection = duckdb.connect()
+    try:
+        yield SqlMetadataStore(DuckDBAdapter(connection), table_fqn=table_fqn)
+    finally:
+        connection.close()
+
+
+def test_sql_metadata_store_has_exactly_the_delta_store_method_signatures():
+    public_methods = {
+        name
+        for name, member in inspect.getmembers(SqlMetadataStore, inspect.isfunction)
+        if not name.startswith("_")
+    }
+
+    assert public_methods == {
+        name
+        for name, member in inspect.getmembers(DeltaMetadataStore, inspect.isfunction)
+        if not name.startswith("_")
+    }
+    for name in public_methods:
+        assert inspect.signature(getattr(SqlMetadataStore, name)) == inspect.signature(
+            getattr(DeltaMetadataStore, name)
+        )
+
+
+def test_metadata_store_behaves_identically_on_delta_and_sql(portable_metadata_store):
+    store = portable_metadata_store
+    record = _record()
+
+    assert store.get(record.target_fqn) is None
+    assert store.upsert(record) is True
+    assert store.get(record.target_fqn) == record
+
+    assert store.upsert(record) is False
+    assert store.get(record.target_fqn) == record
+
+    rerun = replace(record, last_run_id="run-2")
+    assert store.upsert(rerun) is False
+    assert store.get(record.target_fqn) == record
+
+    assert store.attach_run_id(record.target_fqn, record.definition_hash, "run-2") is True
+    assert store.attach_run_id(record.target_fqn, record.definition_hash, "run-2") is False
+    assert store.get(record.target_fqn) == replace(record, last_run_id="run-2")
+    assert store.attach_run_id("missing.table", record.definition_hash, "run-3") is False
+
+    changed = replace(
+        record,
+        columns=record.columns
+        + (
+            ColumnRecord(
+                name="net_amount",
+                logical_type="currency",
+                classification="internal",
+                description="Net amount after adjustments",
+                sources=("amount",),
+            ),
+        ),
+        indexed_at=datetime(2026, 9, 11, 9, 0, tzinfo=timezone.utc),
+    )
+    assert store.upsert(changed) is True
+    assert store.get(record.target_fqn) == changed
+
+    other = _record(
+        definition_hash="sha256:definition-b",
+        indexed_at=datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc),
+    )
+    assert store.upsert(other) is True
+    assert store.get(record.target_fqn) == other
+    assert store.list_all() == [other, changed]
+
+
+def test_metadata_search_treats_percent_and_underscore_as_literals(
+    portable_metadata_store,
+):
+    store = portable_metadata_store
+    percent = ColumnRecord(name="percent_col", description="Gross% margin")
+    underscore = ColumnRecord(name="underscore_col", description="Gross_ margin")
+    plain = ColumnRecord(name="plain_col", description="Gross margin")
+    record = _record(columns=(percent, underscore, plain))
+
+    assert store.upsert(record) is True
+
+    assert store.search_columns("GROSS%") == [(record.target_fqn, percent)]
+    assert store.search_columns("GROSS_") == [(record.target_fqn, underscore)]
 
 
 def test_sqlite_roundtrip_preserves_all_fields():
@@ -246,3 +356,100 @@ def test_delta_store_escapes_backslashes_in_keys_and_record_json():
     assert "target_fqn = 'silver.orders\\\\'" in lookup_sql
     assert "'silver.orders\\\\' AS target_fqn" in merge_sql
     assert r'"owner": "caf\\u00e9"' in merge_sql
+
+
+# ---------------------------------------------------------------------------
+# Writing a record is automatic; reading one back is not
+#
+# `_record_to_json` serialises with `asdict`, so a field added to DatasetRecord
+# is written without anyone doing anything. `_record_from_json` names every
+# field by hand, so the same field is read back as its default. The content
+# fingerprint is built with `asdict` too, which makes the asymmetry worse than
+# a lost value: the stored record would never match the one in memory, so an
+# unchanged pipeline would be rewritten on every index instead of being a no-op.
+# ---------------------------------------------------------------------------
+
+def _fully_populated_record() -> DatasetRecord:
+    return DatasetRecord(
+        target_fqn="gold.orders",
+        pipeline_path="schemas/gold/orders.yaml",
+        data_product_id="sales.orders",
+        contract_version="1.2.3",
+        definition_hash="deadbeef",
+        owner="data-platform",
+        columns=(
+            ColumnRecord(
+                name="email",
+                logical_type="string",
+                classification="pii",
+                description="Contact address",
+                sources=("silver.contacts.email",),
+            ),
+        ),
+        indexed_at=datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc),
+        last_run_id="run-1",
+        lineage={"edges": [], "tables": ["gold.orders"]},
+        target_provenance="sink",
+    )
+
+
+@pytest.mark.parametrize("dataclass_name", ["DatasetRecord", "ColumnRecord"])
+def test_the_round_trip_fixture_exercises_every_field(dataclass_name):
+    """A field left at its default round-trips by accident, not by design."""
+    import dataclasses
+
+    record = _fully_populated_record()
+    subject = record if dataclass_name == "DatasetRecord" else record.columns[0]
+
+    unexercised = [
+        f.name
+        for f in dataclasses.fields(subject)
+        if f.default is not dataclasses.MISSING and getattr(subject, f.name) == f.default
+    ]
+
+    assert unexercised == [], (
+        f"{dataclass_name} field(s) {unexercised} are left at their default in the "
+        "round-trip fixture, so nothing proves they survive persistence. Give "
+        "them a distinct value."
+    )
+
+
+def test_a_fully_populated_record_survives_the_json_round_trip():
+    from skifer.observability.metadata_store import _record_from_json, _record_to_json
+
+    record = _fully_populated_record()
+
+    assert _record_from_json(_record_to_json(record)) == record
+
+
+def test_reindexing_an_unchanged_record_is_a_no_op(tmp_path):
+    """Idempotent re-indexing, which the docs promise.
+
+    This does not depend on the read path: `content_hash` is its own stored
+    column, computed from the record in memory, so a lossy read cannot make a
+    second index report a write. The read path is covered by the round trip
+    above, and the consequence of losing a field is the test that follows.
+    """
+    store = SqliteMetadataStore(str(tmp_path / "m.db"))
+    record = _fully_populated_record()
+
+    assert store.upsert(record) is True
+    assert store.upsert(record) is False
+
+
+def test_target_provenance_survives_the_store_because_run_refuses_without_it(tmp_path):
+    """A field read back as its default is not a cosmetic loss.
+
+    `skifer run` refuses to write to a target whose provenance is not physical,
+    and it reads that provenance from the registry, not from the YAML. A
+    `sink`-provenance record that comes back `unknown` turns every selection
+    into a refusal — the default is the safe direction, which is exactly what
+    makes the loss silent.
+    """
+    store = SqliteMetadataStore(str(tmp_path / "m.db"))
+    store.upsert(_fully_populated_record())
+
+    stored = store.get("gold.orders")
+
+    assert stored.target_provenance == "sink"
+    assert stored.target_is_physical is True

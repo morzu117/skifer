@@ -39,8 +39,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # `sql` carries duckdb and sqlglot. Without it three modules fail to import
+      # and pytest stops at collection — but more to the point, the Spark ↔ DuckDB
+      # equivalence suite is the guarantee the SQL-first work rests on, and a
+      # guarantee no CI exercises is a guarantee nobody checks.
       - name: Install
-        run: pip install -e ".[dev,spark]"
+        run: pip install -e ".[dev,spark,sql]"
 
       - name: Import on the declared minimum
         run: python -c "import skifer; print(skifer.__version__)"

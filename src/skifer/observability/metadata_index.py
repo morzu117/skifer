@@ -45,6 +45,8 @@ def dataset_record_from_definition(
         indexed_at=datetime.now(timezone.utc),
         last_run_id=run_id,
         lineage={},
+        # The caller publishing this run supplied the physical target directly.
+        target_provenance="explicit",
     )
 
 
@@ -59,12 +61,10 @@ def index_schema(
     """Build a deterministic DatasetRecord without opening Spark or writing state."""
     parsed = parse_to_ir(schema_dict)
     projected = OutputProjector().project(parsed)
-    fqn = (
-        target_fqn
-        or projected.target_hint
-        or projected.data_product_id
-        or (parsed.tables[0].name + "_output" if parsed.tables else "unknown")
-    )
+    # Record which of the four sources answered, not only the answer. Two of them
+    # name a physical table and two do not, and nothing downstream can tell them
+    # apart from the string alone.
+    fqn, provenance = _resolve_target(parsed, projected, target_fqn)
 
     graph = LineageTracker.from_schema(schema_dict, target_name=fqn)
     declared = {field.name: field for field in parsed.contract_output}
@@ -98,7 +98,21 @@ def index_schema(
         indexed_at=now or datetime.now(timezone.utc),
         last_run_id=last_run_id,
         lineage=graph.to_dict(),
+        target_provenance=provenance,
     )
+
+
+def _resolve_target(parsed, projected, target_fqn: str | None) -> tuple[str, str]:
+    """Resolve the target FQN and say where it came from."""
+    if target_fqn:
+        return target_fqn, "explicit"
+    if projected.target_hint:
+        return projected.target_hint, "sink"
+    if projected.data_product_id:
+        return projected.data_product_id, "data_product"
+    if parsed.tables:
+        return parsed.tables[0].name + "_output", "derived"
+    return "unknown", "derived"
 
 
 def upsert_index_record(store, record: DatasetRecord) -> bool:

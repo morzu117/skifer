@@ -59,7 +59,7 @@
       "$ref": "#/$defs/SinkDef"
     },
     "materialization": {
-      "description": "Target materialization: batch table (default), streaming_table (Plan 27) or materialized_view (Plan 28). String shorthand or dict form; the allowed keys depend on the type.",
+      "description": "Target materialization: batch table (default), view, incremental, snapshot, streaming_table (Plan 27), or materialized_view (Plan 28). String shorthand or dict form; the allowed keys depend on the type.",
       "$ref": "#/$defs/MaterializationDef"
     },
     "partials": {
@@ -781,16 +781,19 @@
       }
     },
     "MaterializationDef": {
-      "description": "Target materialization: batch table (default), incremental streaming table with checkpoint, or Databricks materialized view. Keys are type-specific \u2014 the loader rejects options that do not apply to the declared type.",
+      "description": "Target materialization: batch table (default), logical view, cumulative incremental table, SCD2 snapshot, incremental streaming table with checkpoint, or Databricks materialized view. Snapshot output uses fixed valid_from and valid_to columns, with NULL valid_to for the current version. Keys are type-specific \u2014 the loader rejects options that do not apply to the declared type.",
       "oneOf": [
         {
           "type": "string",
           "enum": [
+            "incremental",
             "materialized_view",
+            "snapshot",
             "streaming_table",
-            "table"
+            "table",
+            "view"
           ],
-          "description": "Shorthand form \u2014 defaults applied for streaming_table."
+          "description": "Shorthand form \u2014 defaults are applied where the type supports them; incremental and snapshot still require a strategy."
         },
         {
           "type": "object",
@@ -802,10 +805,84 @@
             "type": {
               "type": "string",
               "enum": [
+                "incremental",
                 "materialized_view",
+                "snapshot",
                 "streaming_table",
-                "table"
+                "table",
+                "view"
               ]
+            },
+            "strategy": {
+              "description": "Write strategy: append or merge for incremental; timestamp or check for snapshot.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "append",
+                    "merge"
+                  ],
+                  "description": "incremental only \u2014 append or merge."
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "check",
+                    "timestamp"
+                  ],
+                  "description": "snapshot only \u2014 timestamp or check."
+                }
+              ]
+            },
+            "unique_key": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Required for incremental merge and every snapshot; forbidden for incremental append."
+            },
+            "watermark_column": {
+              "type": "string",
+              "minLength": 1,
+              "description": "incremental append only \u2014 optional source watermark column."
+            },
+            "updated_at": {
+              "type": "string",
+              "minLength": 1,
+              "description": "snapshot timestamp only \u2014 source modification timestamp column."
+            },
+            "check_columns": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "snapshot check only \u2014 columns whose changes create a new SCD2 version."
+            },
+            "on_missing": {
+              "type": "string",
+              "enum": [
+                "close",
+                "ignore"
+              ],
+              "description": "snapshot only \u2014 required policy for current target rows absent from the batch."
+            },
+            "max_closed_ratio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "snapshot with on_missing: close only \u2014 maximum share of current rows this run may close."
+            },
+            "on_late_arrival": {
+              "type": "string",
+              "enum": [
+                "ignore",
+                "refuse"
+              ],
+              "description": "snapshot timestamp only \u2014 policy for rows older than the current version of the same key."
             },
             "trigger": {
               "type": "string",

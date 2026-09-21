@@ -10,6 +10,7 @@ Usage :
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from contextlib import redirect_stdout
 from dataclasses import asdict
 from io import StringIO
@@ -26,6 +27,15 @@ SEMANTIC_EXIT_OK = 0
 SEMANTIC_EXIT_ERROR = 1
 SEMANTIC_EXIT_DRIFT = 2
 SEMANTIC_EXIT_CONFLICT = 3
+
+COMPILE_EXIT_OK = 0
+COMPILE_EXIT_ERROR = 1
+COMPILE_EXIT_REFUSAL = 2
+
+SNAPSHOT_EXIT_OK = 0
+SNAPSHOT_EXIT_ERROR = 1
+SNAPSHOT_EXIT_FINDING = 2
+SNAPSHOT_EXIT_REFUSAL = 3
 
 # Adaptive CLI contract: 0 success; 1 malformed/technical failure; argparse uses
 # 2 for command-line usage; 3 stale source definitions; 4 state/output conflict.
@@ -51,6 +61,10 @@ META_EXIT_OK = 0
 META_EXIT_ERROR = 1
 META_EXIT_USAGE = 2
 META_EXIT_NOT_FOUND = 3
+
+GRAPH_EXIT_OK = 0
+GRAPH_EXIT_ERROR = 1
+GRAPH_EXIT_USAGE = 2
 
 AUDIT_EXIT_OK = 0
 AUDIT_EXIT_ERROR = 1
@@ -78,6 +92,41 @@ def main() -> None:
         nargs="+",
         metavar="PATH",
         help="Schema file path(s) or glob patterns (e.g. schemas/**/*.yaml).",
+    )
+
+    compile_parser = subparsers.add_parser(
+        "compile",
+        help="Print the SQL one pipeline would run, without executing anything.",
+    )
+    compile_parser.add_argument(
+        "pipeline",
+        metavar="PIPELINE",
+        help="Pipeline YAML file path.",
+    )
+    compile_parser.add_argument(
+        "--target",
+        required=True,
+        choices=("databricks", "duckdb", "snowflake", "bigquery"),
+        help="SQL dialect to emit.",
+    )
+    compile_parser.add_argument(
+        "--rules",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help=(
+            "Module whose import registers business rules (e.g. rules.orders). "
+            "Repeat for several. Without it no rule is resolvable and a pipeline "
+            "naming one is refused."
+        ),
+    )
+    compile_parser.add_argument(
+        "--env",
+        default=None,
+        help=(
+            "config.yaml environment used to resolve {{ params }}. Without it, "
+            "placeholders are filled with sentinels and the SQL is not runnable."
+        ),
     )
 
     audit_parser = subparsers.add_parser(
@@ -128,6 +177,17 @@ def main() -> None:
         action="store_true",
         help="Reject undeclared inherited classification before indexing.",
     )
+    index_parser.add_argument(
+        "--rules",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help=(
+            "Module whose import registers business rules (e.g. rules.orders). "
+            "Repeat for several. Without it a rule is unresolvable, so the "
+            "columns it produces carry no lineage and inherit no classification."
+        ),
+    )
 
     lineage_parser = subparsers.add_parser(
         "lineage",
@@ -145,6 +205,56 @@ def main() -> None:
     lineage_parser.add_argument("--direction", choices=["up", "down"], default="down")
     lineage_parser.add_argument("--format", choices=["mermaid", "json"], default="mermaid")
     lineage_parser.add_argument("--db", default=".skifer_metadata.db")
+
+    graph_parser = subparsers.add_parser(
+        "graph",
+        help="Show the inter-pipeline dataset graph from the metadata registry.",
+    )
+    graph_parser.add_argument("--db", default=".skifer_metadata.db")
+    graph_parser.add_argument("--format", choices=["text", "json", "mermaid"], default="text")
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Run indexed pipelines in dependency order.",
+    )
+    run_parser.add_argument(
+        "--select",
+        action="append",
+        default=[],
+        metavar="[+]NAME[+]",
+        help=(
+            "Pipeline to run, by target FQN or YAML path. '+' before it adds what "
+            "it reads, after it what reads it. Repeat to select several; omit to "
+            "select every indexed pipeline."
+        ),
+    )
+    run_parser.add_argument("--db", default=".skifer_metadata.db")
+    run_parser.add_argument("--format", choices=["text", "json"], default="text")
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the execution plan without running anything.",
+    )
+    run_parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="config.yaml used to build the engine (ignored with --dry-run).",
+    )
+    run_parser.add_argument(
+        "--env",
+        default=None,
+        help="config.yaml environment to run in (ignored with --dry-run).",
+    )
+    run_parser.add_argument(
+        "--rules",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help=(
+            "Module whose import registers business rules (e.g. rules.orders). "
+            "Repeat for several."
+        ),
+    )
 
     dictionary_parser = subparsers.add_parser(
         "dictionary",
@@ -401,12 +511,22 @@ def main() -> None:
 
     if args.command == "validate":
         _run_validate(args)
+    elif args.command == "compile":
+        sys.exit(
+            run_compile(
+                args.pipeline, args.target, env=args.env, rules=args.rules
+            )
+        )
     elif args.command == "audit":
         _run_audit(args)
     elif args.command == "index":
         _run_index(args)
     elif args.command == "lineage":
         _run_lineage(args)
+    elif args.command == "graph":
+        _run_graph(args)
+    elif args.command == "run":
+        _run_run(args)
     elif args.command == "dictionary":
         _run_dictionary(args)
     elif args.command == "hub":
@@ -453,6 +573,16 @@ def _run_lineage(args: argparse.Namespace) -> None:
     sys.exit(run_lineage_command(args))
 
 
+def _run_graph(args: argparse.Namespace) -> None:
+    """Render the registry-backed inter-pipeline graph with stable exit codes."""
+    sys.exit(run_graph_command(args))
+
+
+def _run_run(args: argparse.Namespace) -> None:
+    """Run the selection planner with stable exit codes."""
+    sys.exit(run_run_command(args))
+
+
 def _run_dictionary(args: argparse.Namespace) -> None:
     """Render the registry-backed column dictionary with stable exit codes."""
     sys.exit(run_dictionary_command(args))
@@ -466,6 +596,16 @@ def run_index_command(args: argparse.Namespace, *, store=None) -> int:
 
     if args.target_fqn and len(args.paths) > 1:
         print("[index] --target-fqn is only valid with a single path.", file=sys.stderr)
+        return INDEX_EXIT_USAGE
+
+    # The lineage this command stores is built by RuleAnalyzer, which can only
+    # read a rule the process has imported. Without this, every column a
+    # business rule produces is indexed with no provenance and inherits no
+    # classification — silently, because an unresolved rule is skipped.
+    try:
+        import_rule_modules(getattr(args, "rules", None) or [])
+    except ValueError as exc:
+        print(f"[index] {exc}", file=sys.stderr)
         return INDEX_EXIT_USAGE
 
     try:
@@ -544,6 +684,200 @@ def run_lineage_command(args: argparse.Namespace, *, store=None) -> int:
     except Exception as exc:
         print(f"[lineage] Failed to read metadata registry: {exc}", file=sys.stderr)
         return META_EXIT_ERROR
+
+
+def run_graph_command(args: argparse.Namespace, *, store=None) -> int:
+    """Show the inter-pipeline dataset graph from the persisted metadata registry."""
+    from skifer.observability.metadata_store import SqliteMetadataStore
+    from skifer.observability.pipeline_graph import (
+        PipelineGraphCycleError,
+        build_pipeline_graph,
+    )
+
+    if args.format not in {"text", "json", "mermaid"}:
+        print("[graph] Invalid format.", file=sys.stderr)
+        return GRAPH_EXIT_USAGE
+
+    try:
+        registry = store or SqliteMetadataStore(args.db)
+        graph = build_pipeline_graph(registry)
+        if args.format == "json":
+            print(json.dumps(graph.to_dict(), sort_keys=True))
+        elif args.format == "mermaid":
+            print(graph.to_mermaid())
+        else:
+            print(graph.to_text())
+        return GRAPH_EXIT_OK
+    except PipelineGraphCycleError as exc:
+        print(f"[graph] {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
+    except Exception as exc:
+        print(f"[graph] Failed to read metadata registry: {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
+
+
+def run_run_command(args: argparse.Namespace, *, store=None, engine_factory=None) -> int:
+    """Run the selected pipelines in dependency order, or print the plan.
+
+    `--dry-run` is safe on any registry. A real run is not: an indexed target
+    FQN may be a logical product id or a placeholder built from the first input
+    table, so every selected pipeline is checked for a physical target before
+    anything is opened, and the whole selection is refused if one is missing.
+    Refusing the lot rather than running the runnable subset keeps the plan the
+    caller read and the work actually done from diverging.
+    """
+    from skifer.observability.metadata_store import SqliteMetadataStore
+    from skifer.observability.pipeline_graph import (
+        PipelineGraphCycleError,
+        PipelineSelectionError,
+        build_pipeline_graph,
+        run_selection,
+        select_nodes,
+    )
+
+    if args.format not in {"text", "json"}:
+        print("[run] Invalid format.", file=sys.stderr)
+        return GRAPH_EXIT_USAGE
+
+    try:
+        import_rule_modules(getattr(args, "rules", None) or [])
+        registry = store or SqliteMetadataStore(args.db)
+        graph = build_pipeline_graph(registry)
+        selected = select_nodes(graph, args.select)
+    except PipelineSelectionError as exc:
+        print(f"[run] {exc}", file=sys.stderr)
+        return GRAPH_EXIT_USAGE
+    except PipelineGraphCycleError as exc:
+        print(f"[run] {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
+    except Exception as exc:
+        print(f"[run] Failed to read metadata registry: {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
+
+    paths = dict(graph.pipeline_paths)
+    if args.dry_run:
+        _print_plan(selected, paths, as_json=args.format == "json")
+        return GRAPH_EXIT_OK
+
+    records = {record.target_fqn: record for record in registry.list_all()}
+    refusals = _unrunnable_targets(selected, records)
+    if refusals:
+        for line in refusals:
+            print(f"[run] {line}", file=sys.stderr)
+        return GRAPH_EXIT_USAGE
+
+    try:
+        engine = engine_factory() if engine_factory else _engine_for_run(args)
+    except Exception as exc:
+        print(f"[run] Failed to build the engine: {exc}", file=sys.stderr)
+        return GRAPH_EXIT_ERROR
+
+    outcomes = run_selection(
+        graph,
+        selected,
+        lambda node: _run_one_pipeline(engine, records[node]),
+    )
+    _print_outcomes(outcomes, as_json=args.format == "json")
+    failed = any(outcome.state != "succeeded" for outcome in outcomes)
+    return GRAPH_EXIT_ERROR if failed else GRAPH_EXIT_OK
+
+
+def _print_plan(selected, paths: dict, *, as_json: bool) -> None:
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "selected": list(selected),
+                    "plan": [
+                        {"order": index, "node": node, "pipeline_path": paths[node]}
+                        for index, node in enumerate(selected)
+                    ],
+                },
+                sort_keys=True,
+            )
+        )
+        return
+    print(f"Execution plan ({len(selected)} pipeline(s), dry run)")
+    if not selected:
+        print("  (none)")
+    for index, node in enumerate(selected):
+        print(f"  {index + 1}. {node}  [{paths[node]}]")
+
+
+def _print_outcomes(outcomes, *, as_json: bool) -> None:
+    if as_json:
+        print(
+            json.dumps(
+                {"outcomes": [outcome.to_dict() for outcome in outcomes]},
+                sort_keys=True,
+            )
+        )
+        return
+    for outcome in outcomes:
+        suffix = f" — {outcome.detail}" if outcome.detail else ""
+        print(f"  {outcome.state:<9} {outcome.node}{suffix}")
+    counts = Counter(outcome.state for outcome in outcomes)
+    print(
+        f"{counts['succeeded']} succeeded, "
+        f"{counts['failed']} failed, {counts['skipped']} skipped."
+    )
+
+
+def _unrunnable_targets(selected, records: dict) -> list[str]:
+    """Name every selected pipeline whose target is not a physical location.
+
+    An indexed FQN may be a data product id or a placeholder built from the
+    first input table. Splitting either into a schema and a table would write a
+    plausible-looking table nobody asked for, so the run refuses before opening
+    anything — and says which of the two fixes applies.
+    """
+    refusals = []
+    for node in selected:
+        record = records.get(node)
+        if record is None:
+            refusals.append(
+                f"'{node}' is in the graph but not in the registry; re-index the project."
+            )
+        elif not record.target_is_physical:
+            refusals.append(
+                f"'{node}' has no physical target: its FQN comes from "
+                f"{record.target_provenance!r}. Declare a `sink:` with a schema and "
+                "a table, or index it with `--target-fqn`."
+            )
+    return refusals
+
+
+def _engine_for_run(args: argparse.Namespace):
+    """Build the engine a run writes through, refusing a throwaway database."""
+    from skifer.core.context import IN_MEMORY_DATABASE, resolve_adapter_database
+    from skifer.core.core import SkiferEngine
+    from skifer.core.config import ConfigurationManager
+
+    config = ConfigurationManager(config_path=args.config).config
+    if resolve_adapter_database(config, args.env) == IN_MEMORY_DATABASE:
+        raise ValueError(
+            "the adapter would open an in-memory database, destroyed when this "
+            "process exits, so the run would write nothing. Set `database:` on "
+            "the environment in config.yaml."
+        )
+    return SkiferEngine(config_path=args.config, force_env=args.env)
+
+
+def _run_one_pipeline(engine, record) -> None:
+    """Run one indexed pipeline into the physical target its record names."""
+    from skifer.core.dialect import split_fqn
+
+    parts = split_fqn(record.target_fqn)
+    if len(parts) < 2:
+        raise ValueError(
+            f"target '{record.target_fqn}' has no schema part to write into."
+        )
+    engine.run_from_yaml(
+        record.pipeline_path,
+        parts[-2],
+        parts[-1],
+        params=engine.default_params,
+    )
 
 
 def run_dictionary_command(args: argparse.Namespace, *, store=None) -> int:
@@ -1156,6 +1490,193 @@ def run_semantic_sync(pipeline_path: str, *, mode: str) -> int:
     return SEMANTIC_EXIT_OK
 
 
+def _compile_params(yaml_text: str, env: str | None) -> tuple[dict, bool]:
+    """Resolve {{ params }} from one environment, or fall back to sentinels.
+
+    Returns (params, used_sentinels). The flag is reported to the caller rather
+    than guessed later: SQL rendered with sentinels is not runnable, and nothing
+    in the SQL itself says so.
+    """
+    if env is None:
+        sentinels = _sentinel_params(yaml_text)
+        # Only claim substitution when the YAML actually carries placeholders.
+        # Warning on a file that has none states something untrue, and a warning
+        # that cries wolf is the one nobody reads on the file that does.
+        return sentinels, bool(sentinels)
+
+    from skifer.core.config import ConfigurationManager
+
+    config = ConfigurationManager().config
+    environments = config.get("environments") or {}
+    target = str(env).casefold()
+    matched = next(
+        (
+            value
+            for key, value in environments.items()
+            if str(key).casefold() == target and isinstance(value, dict)
+        ),
+        None,
+    )
+    if matched is None:
+        raise ValueError(
+            f"Environment {env!r} is not declared in config.yaml. "
+            f"Declared: {sorted(environments)}."
+        )
+    declared = matched.get("params") or {}
+    if not isinstance(declared, dict):
+        raise ValueError(f"Environment {env!r} declares a non-mapping 'params'.")
+    # Built-ins win on collision, exactly as engine.default_params does.
+    return {**declared, "catalog": matched.get("catalog"), "env": env.upper()}, False
+
+
+def import_rule_modules(module_names) -> None:
+    """Import each module so its ``@register_rule`` decorators run.
+
+    The project's rules live in the project, not in the package, so no CLI
+    command can see them until something imports them. The current directory is
+    put on ``sys.path`` because that is where ``config.yaml`` is discovered from,
+    which is the same project root a reader means by ``rules.orders``.
+
+    An import failure is fatal rather than a warning: continuing would refuse the
+    pipeline for a missing rule and blame the pipeline, not the import.
+    """
+    import importlib
+
+    if not module_names:
+        return
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+    for module_name in module_names:
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:
+            raise ValueError(
+                f"--rules {module_name!r} could not be imported: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+
+def run_compile(pipeline_path: str, target: str, *, env: str | None = None, rules: list[str] | None = None) -> int:
+    """Print one pipeline's SQL for a dialect; execute nothing, connect to nothing.
+
+    SQL goes to stdout alone so the command can be redirected to a file. Every
+    diagnostic goes to stderr, including the sentinel warning.
+
+    Compilation is refused rather than approximated. A rule of kind='sql' needs its
+    tables' columns to know whether it adds or rewrites one, and a file source needs
+    the adapter's reader — both require a live connection, which this command
+    deliberately does not open. Emitting plausible SQL instead would be worse than
+    refusing: plausible SQL gets pasted.
+    """
+    from skifer.core.dialect import DialectError, transpile
+    from skifer.core.ir import parse_to_ir
+    from skifer.core.schema_loader import parse_schema
+    from skifer.core.sql_compiler import SqlCompilationError, compile_select
+
+    try:
+        import_rule_modules(rules or [])
+        yaml_text = _read_text_file(pipeline_path)
+        params, used_sentinels = _compile_params(yaml_text, env)
+        parsed = parse_to_ir(parse_schema(yaml_text, params=params))
+    except Exception as exc:
+        print(f"[compile] Failed to load '{pipeline_path}': {exc}", file=sys.stderr)
+        return COMPILE_EXIT_ERROR
+
+    materialization = parsed.materialization or {}
+    persisted = materialization.get("type") in ("view", "materialized_view")
+    allow_raw_sql = True
+    if env is not None:
+        from skifer.core.config import ConfigurationManager
+
+        environments = ConfigurationManager().config.get("environments") or {}
+        for key, value in environments.items():
+            if str(key).casefold() == str(env).casefold() and isinstance(value, dict):
+                allow_raw_sql = value.get("allow_raw_sql", True)
+
+    try:
+        pivot = compile_select(
+            parsed,
+            allow_raw_sql=allow_raw_sql,
+            persisted_definition=persisted,
+        )
+        sql = transpile(pivot, target=target)
+    except SqlCompilationError as exc:
+        print(
+            f"[compile] Refusing '{pipeline_path}' for target '{target}': {exc}",
+            file=sys.stderr,
+        )
+        # Only add the connection hint when the refusal really is about reading
+        # columns. Appending it to every refusal would explain a file source or an
+        # unimported rule with a cause that has nothing to do with either.
+        if "resolve_columns" in str(exc):
+            print(
+                "[compile] 'skifer compile' opens no connection, so it cannot read "
+                "a table's columns. Declare explicit 'fields' projections on the "
+                "tables concerned, or run the pipeline through an engine.",
+                file=sys.stderr,
+            )
+        return COMPILE_EXIT_REFUSAL
+    except DialectError as exc:
+        print(f"[compile] Refusing '{pipeline_path}': {exc}", file=sys.stderr)
+        return COMPILE_EXIT_REFUSAL
+    except Exception as exc:
+        print(f"[compile] Failed to compile '{pipeline_path}': {exc}", file=sys.stderr)
+        return COMPILE_EXIT_ERROR
+
+    if used_sentinels:
+        print(
+            "[compile] No --env given: '{{ param }}' placeholders were filled with "
+            "sentinel values. This SQL is readable, not runnable.",
+            file=sys.stderr,
+        )
+    print(sql)
+    return COMPILE_EXIT_OK
+
+
+def run_snapshot_check(pipeline_path: str, *, runner=None) -> int:
+    """Return the CI contract exit code for a snapshot preflight check.
+
+    Deliberately not yet exposed as ``skifer snapshot check``. Running the
+    preflight needs the compiled source relation and the existing target, which
+    the SCD2 write path brings (Plan 39.4.5.2). Registering the command now would
+    have shipped one that always returns 3 — the CI code meaning "your pipeline is
+    refused" — when the real cause is that Skifer has not built it yet.
+    """
+    try:
+        schema = _load_pipeline_ir(pipeline_path)
+    except Exception as exc:
+        print(f"[snapshot.check] Failed to inspect pipeline '{pipeline_path}': {exc}")
+        return SNAPSHOT_EXIT_ERROR
+
+    materialization = schema.materialization or {}
+    if materialization.get("type") != "snapshot":
+        print(
+            f"[snapshot.check] Refusing pipeline '{pipeline_path}': "
+            "materialization is not 'snapshot'."
+        )
+        return SNAPSHOT_EXIT_REFUSAL
+
+    if runner is None:
+        print(
+            f"[snapshot.check] Refusing pipeline '{pipeline_path}': no snapshot "
+            "preflight runner was provided. The preflight must run against the "
+            "compiled source and target relation before any SCD2 write."
+        )
+        return SNAPSHOT_EXIT_REFUSAL
+
+    try:
+        report = runner(schema)
+    except Exception as exc:
+        print(f"[snapshot.check] Failed to run preflight for '{pipeline_path}': {exc}")
+        return SNAPSHOT_EXIT_ERROR
+
+    _print_snapshot_report(pipeline_path, report)
+    if report.findings:
+        return SNAPSHOT_EXIT_FINDING
+    return SNAPSHOT_EXIT_OK
+
+
 def run_semantic_validate(pipeline_path: str, model_path: str) -> int:
     """Return the CI contract exit code for semantic model validation."""
     try:
@@ -1227,6 +1748,15 @@ def _sentinel_params(yaml_text: str) -> dict[str, str]:
 
 def _semantic_models_dir() -> str:
     return os.path.abspath("semantic_models")
+
+
+def _print_snapshot_report(pipeline_path: str, report) -> None:
+    print(
+        f"[snapshot.check] Pipeline '{pipeline_path}': "
+        f"{len(report.findings)} finding(s)."
+    )
+    for finding in report.findings:
+        print(finding.render())
 
 
 def _print_sync_report(pipeline_path: str, report) -> None:

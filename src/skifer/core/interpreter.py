@@ -20,7 +20,7 @@ from skifer.core.registry import RuleRegistry
 from skifer.core.sandbox import SandboxResolver
 from skifer.core.rule_analyzer import RuleAnalyzer
 from skifer.core.rule_planner import RulePlanner
-from skifer.core.rule_executor import RuleExecutor
+from skifer.core.rule_executor import RuleExecutor, validate_sql_rule_result
 
 if TYPE_CHECKING:
     from skifer.core.context import ExecutionContext
@@ -183,12 +183,24 @@ class SchemaInterpreter:
             except Exception:
                 pass  # analysis is best-effort; never block execution
 
+        # Plan 39, decision D14: `allow_raw_sql: false` means no hand-written SQL
+        # runs here, whichever layer wrote it. The loader path below already read
+        # the same setting.
+        allow_raw_sql = self._context.env_config().get("allow_raw_sql", True)
+
         if not fuse_rules:
             for rule_name in rules_list:
                 logger.info("   -> [Rule] Applying: %s", rule_name)
                 rule_spec = RuleRegistry.get_rule(rule_name)
-                result = rule_spec.func(df)
-                if rule_spec.kind == "projection":
+                result = rule_spec.func() if rule_spec.kind == "sql" else rule_spec.func(df)
+                if rule_spec.kind in ("projection", "sql"):
+                    if rule_spec.kind == "sql":
+                        result = {
+                            name: self._backend.expr(expression)
+                            for name, expression in validate_sql_rule_result(
+                                rule_spec.name, result, allow_raw_sql=allow_raw_sql
+                            ).items()
+                        }
                     if not isinstance(result, dict):
                         raise TypeError(
                             f"Rule '{rule_name}' is declared as kind='projection' but returned "
@@ -202,7 +214,7 @@ class SchemaInterpreter:
             return df
 
         planner = RulePlanner()
-        executor = RuleExecutor()
+        executor = RuleExecutor(backend=self._backend, allow_raw_sql=allow_raw_sql)
         stages = planner.plan(rules_list)
 
         for stage in stages:
@@ -405,8 +417,20 @@ class SchemaInterpreter:
 
                 is_streaming_table = bool(t.get("streaming"))
                 if t.get("source_type") == "loader":
-                    loader_func = RuleRegistry.get_loader(t["function_name"])
-                    df = loader_func(ctx.config, backend=b, **t.get("arguments", {}))
+                    spec = RuleRegistry.get_loader_spec(t["function_name"])
+                    if spec.kind == "sql":
+                        # One YAML, both engines: the loader returns a relation and
+                        # Spark reads it with the same SQL the compiled path embeds.
+                        from skifer.core.ir import parse_to_ir  # noqa: PLC0415
+                        from skifer.core.sql_compiler import sql_loader_relation  # noqa: PLC0415
+
+                        relation = sql_loader_relation(
+                            parse_to_ir({"tables": [t]}).tables[0],
+                            ctx.env_config().get("allow_raw_sql", True),
+                        )
+                        df = b.sql(f"SELECT * FROM {relation}")
+                    else:
+                        df = spec.func(ctx.config, backend=b, **t.get("arguments", {}))
                 elif "source" in t:
                     src_conf = t["source"]
                     logger.info(

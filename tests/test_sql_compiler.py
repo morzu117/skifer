@@ -14,6 +14,7 @@ from skifer.core.core import SkiferEngine
 from skifer.core.interpreter import SchemaInterpreter
 from skifer.core.ir import parse_to_ir
 from skifer.core.patterns import PipelinePatterns
+from skifer.core.registry import RuleRegistry
 from skifer.core.schema_loader import parse_schema
 from skifer.core.sql_compiler import (
     SqlCompilationError,
@@ -36,6 +37,29 @@ tables:
     alias: ord
 {body}
 """
+
+
+@pytest.fixture
+def register_rule():
+    names = []
+
+    def register(name, result, kind="sql"):
+        if kind == "sql":
+            @RuleRegistry.register_rule(name=name, kind=kind)
+            def rule():
+                return result
+        else:
+            @RuleRegistry.register_rule(name=name, kind=kind)
+            def rule(df):
+                return result
+
+        names.append(name)
+        return rule
+
+    yield register
+
+    for name in names:
+        RuleRegistry._rules.pop(name, None)
 
 
 # ==============================================================================
@@ -70,6 +94,15 @@ class TestTableCompilation:
         sql = _compile(_single_table("keep_all_columns: true\n"))
         assert "WITH `ord` AS (\n  SELECT * FROM `silver`.`orders`\n)" in sql
         assert sql.endswith("SELECT *\nFROM `ord`")
+
+    def test_pipeline_without_sql_rule_is_byte_for_byte_unchanged(self):
+        assert _compile(_single_table("keep_all_columns: true\n")) == (
+            "WITH `ord` AS (\n"
+            "  SELECT * FROM `silver`.`orders`\n"
+            ")\n"
+            "SELECT *\n"
+            "FROM `ord`"
+        )
 
     def test_resolve_table_is_applied(self):
         sql = _compile(
@@ -109,6 +142,131 @@ keep_all_columns: true
       - [amount, amount_eur, [round:2]]
 """))
         assert "SELECT `order_id` AS `order_id`, ROUND(`amount`, 2) AS `amount_eur`" in sql
+
+    def test_drop_duplicates_on_compiles_to_qualify_for_batch_execution(self):
+        sql = _compile(
+            _single_table("""    quality_checks:
+      drop_duplicates_on: [customer_id, order_id]
+keep_all_columns: true
+"""),
+            persisted_definition=False,
+        )
+
+        assert (
+            "QUALIFY ROW_NUMBER() OVER (PARTITION BY `customer_id`, `order_id` "
+            "ORDER BY `customer_id`, `order_id`) = 1" in sql
+        )
+
+    def test_table_dev_limit_overrides_schema_dev_limit_for_batch_execution(self):
+        sql = _compile(
+            _single_table("    dev_limit: 3\nkeep_all_columns: true\ndev_limit: 10\n"),
+            persisted_definition=False,
+        )
+
+        assert "LIMIT 3" in sql
+        assert "LIMIT 10" not in sql
+
+    def test_schema_dev_limit_compiles_for_batch_execution(self):
+        sql = _compile(
+            _single_table("keep_all_columns: true\ndev_limit: 10\n"),
+            persisted_definition=False,
+        )
+
+        assert "LIMIT 10" in sql
+
+
+class TestPartialCompilation:
+    def test_simple_partial_is_compiled_before_table_ctes(self):
+        child = {
+            "tables": [{"name": "silver.orders", "alias": "orders"}],
+            "select_final": [["order_id", "order_id"]],
+        }
+        parsed = parse_to_ir(
+            {
+                "partials": [
+                    {
+                        "alias": "daily_orders",
+                        "resolved_path": "/schemas/daily_orders.yaml",
+                        "schema": child,
+                    }
+                ],
+                "tables": [{"name": "silver.calendar", "alias": "calendar"}],
+                "join": [
+                    {
+                        "table_from": ["daily_orders", "order_id"],
+                        "table_to": ["calendar", "order_id"],
+                        "type": "inner",
+                    }
+                ],
+                "select_final": [["order_id", "order_id"]],
+            }
+        )
+
+        sql = compile_select(parsed)
+
+        assert sql.index("`daily_orders` AS") < sql.index("`calendar` AS")
+        assert "`daily_orders` AS (\n  WITH `orders` AS" in sql
+        assert "FROM `daily_orders`\n  INNER JOIN `calendar` USING (`order_id`)" in sql
+
+    def test_partial_can_contain_another_partial(self):
+        leaf = {
+            "tables": [{"name": "bronze.events", "alias": "events"}],
+            "select_final": [["event_id", "event_id"]],
+        }
+        middle = {
+            "partials": [
+                {
+                    "alias": "leaf_events",
+                    "resolved_path": "/schemas/leaf.yaml",
+                    "schema": leaf,
+                }
+            ],
+            "select_final": [["event_id", "event_id"]],
+        }
+        parsed = parse_to_ir(
+            {
+                "partials": [
+                    {
+                        "alias": "middle_events",
+                        "resolved_path": "/schemas/middle.yaml",
+                        "schema": middle,
+                    }
+                ],
+                "select_final": [["event_id", "event_id"]],
+            }
+        )
+
+        sql = compile_select(parsed)
+
+        assert "`middle_events` AS (\n  WITH `leaf_events` AS (\n  WITH `events` AS" in sql
+        assert sql.endswith("SELECT `event_id` AS `event_id`\nFROM `middle_events`")
+
+    def test_uncompilable_partial_error_names_alias_and_path(self):
+        child = {
+            "tables": [{"name": "silver.orders", "alias": "orders"}],
+            "business_rules": ["enrich_orders"],
+            "keep_all_columns": True,
+        }
+        parsed = parse_to_ir(
+            {
+                "partials": [
+                    {
+                        "alias": "bad_orders",
+                        "resolved_path": "/schemas/bad_orders.yaml",
+                        "schema": child,
+                    }
+                ],
+                "keep_all_columns": True,
+            }
+        )
+
+        with pytest.raises(SqlCompilationError) as exc_info:
+            compile_select(parsed)
+
+        message = str(exc_info.value)
+        assert "partial 'bad_orders'" in message
+        assert "/schemas/bad_orders.yaml" in message
+        assert "business_rules" in message
 
 
 class TestFilterOperators:
@@ -242,12 +400,232 @@ keep_all_columns: true
                                         f"    type: {declared}\n"))
         assert keyword in sql
 
-    def test_cross_join_has_no_on_clause(self):
+    def test_cross_join_with_declared_keys_filters_like_spark(self):
+        """Declared keys must filter, exactly as they do on the DataFrame path.
+
+        The interpreter builds the equality condition and calls
+        ``join(other, cond, "cross")``, which filters. A bare ``CROSS JOIN`` here
+        would return every pair of rows instead — the same YAML yielding a handful
+        of rows on Spark and a cartesian product in SQL.
+        """
         sql = _compile(self._two_tables("  - table_from: [ord, customer_id]\n"
                                         "    table_to: [cust, id]\n"
                                         "    type: cross\n"))
+        assert "INNER JOIN `cust`" in sql
+        assert "`ord`.`customer_id` = `cust`.`id`" in sql
+        assert "CROSS JOIN" not in sql
+
+    def test_cross_join_without_keys_stays_a_cartesian_product(self):
+        sql = _compile(self._two_tables("  - table_from: ord\n"
+                                        "    table_to: cust\n"
+                                        "    type: cross\n"))
         assert "CROSS JOIN `cust`" in sql
         assert " ON " not in sql
+
+
+class TestSqlRuleCompilation:
+    def test_simple_rule_is_projected_between_join_and_final_select(self, register_rule):
+        register_rule("double_amount", {"doubled": "amount * 2"})
+
+        sql = _compile(
+            _single_table("""business_rules:
+  - double_amount
+keep_all_columns: true
+"""),
+            resolve_columns=lambda _fqn: ["amount"],
+        )
+
+        assert "SELECT *, amount * 2 AS `doubled`\n  FROM `ord`" in sql
+        assert "AS `_skifer_rules`" in sql
+        assert sql.endswith(
+            "SELECT *\nFROM (\n  SELECT *, amount * 2 AS `doubled`\n"
+            "  FROM `ord`\n) AS `_skifer_rules`"
+        )
+
+    def test_two_rules_keep_declaration_order(self, register_rule):
+        register_rule("first_sql", {"first_derived": "amount + 1"})
+        register_rule("second_sql", {"second_derived": "amount + 2"})
+
+        sql = _compile(
+            _single_table("""business_rules:
+  - first_sql
+  - second_sql
+keep_all_columns: true
+"""),
+            resolve_columns=lambda _fqn: ["amount"],
+        )
+
+        assert sql.index("amount + 1 AS `first_derived`") < sql.index(
+            "amount + 2 AS `second_derived`"
+        )
+
+    def test_constant_rewrite_proved_by_explicit_projection(self, register_rule):
+        register_rule("close_status", {"status": "'CLOSED'"})
+
+        sql = _compile(_single_table("""    fields:
+      - [status, status]
+business_rules:
+  - close_status
+keep_all_columns: true
+"""))
+
+        assert "SELECT * EXCEPT (`status`), 'CLOSED' AS `status`" in sql
+
+    def test_rewrite_proved_by_column_resolver_receives_table(self, register_rule):
+        register_rule("rewrite_amount", {"amount": "amount * 2"})
+        resolved = []
+
+        def resolve_columns(table):
+            resolved.append(table)
+            return ["amount", "status"]
+
+        sql = _compile(
+            _single_table("business_rules:\n  - rewrite_amount\nkeep_all_columns: true\n"),
+            resolve_table=lambda name: f"catalog.sandbox.{name}",
+            resolve_columns=resolve_columns,
+        )
+
+        assert [table.name for table in resolved] == ["silver.orders"]
+        assert "SELECT * EXCEPT (`amount`), amount * 2 AS `amount`" in sql
+
+    def test_new_column_proved_absent_does_not_use_except(self, register_rule):
+        register_rule("double_amount", {"doubled": "amount * 2"})
+
+        sql = _compile(
+            _single_table("business_rules:\n  - double_amount\nkeep_all_columns: true\n"),
+            resolve_columns=lambda _fqn: ["amount"],
+        )
+
+        assert "SELECT *, amount * 2 AS `doubled`" in sql
+        assert "EXCEPT" not in sql
+
+    def test_unknown_target_presence_is_refused_by_rule_and_column(self, register_rule):
+        register_rule("uncertain_rule", {"derived": "amount * 2"})
+
+        with pytest.raises(SqlCompilationError) as exc_info:
+            _compile(
+                _single_table(
+                    "business_rules:\n  - uncertain_rule\nkeep_all_columns: true\n"
+                )
+            )
+
+        message = str(exc_info.value)
+        assert "uncertain_rule" in message
+        assert "derived" in message
+        assert "'fields'" in message
+        assert "resolve_columns" in message
+
+    def test_column_resolver_is_propagated_to_partials(self, register_rule):
+        register_rule("derive_child", {"derived": "amount * 2"})
+        resolved = []
+        child = {
+            "tables": [{"name": "silver.lines", "alias": "lines"}],
+            "business_rules": ["derive_child"],
+            "select_final": [["derived", "derived"]],
+        }
+        parsed = parse_to_ir(
+            {
+                "partials": [{"alias": "child", "schema": child}],
+                "select_final": [["derived", "derived"]],
+            }
+        )
+
+        sql = compile_select(
+            parsed,
+            resolve_table=lambda name: f"catalog.sandbox.{name}",
+            resolve_columns=lambda table: resolved.append(table) or ["amount"],
+        )
+
+        assert [table.name for table in resolved] == ["silver.lines"]
+        assert "amount * 2 AS `derived`" in sql
+
+    def test_select_final_can_reference_rule_output(self, register_rule):
+        register_rule("double_amount", {"doubled": "amount * 2"})
+
+        sql = _compile(
+            _single_table("""business_rules:
+  - double_amount
+select_final:
+  - [doubled, final_amount]
+"""),
+            resolve_columns=lambda _fqn: ["amount"],
+        )
+
+        assert "SELECT `doubled` AS `final_amount`\nFROM (" in sql
+        assert "amount * 2 AS `doubled`" in sql
+
+    def test_aggregate_group_by_and_having_can_reference_rule_outputs(self, register_rule):
+        register_rule("derive_bucket", {"bucket": "UPPER(country)"})
+
+        sql = _compile(
+            _single_table("""business_rules:
+  - derive_bucket
+aggregate:
+  group_by: [bucket]
+  measures:
+    - [amount, total_amount, sum]
+  having:
+    - "total_amount:greater_than:100"
+"""),
+            resolve_columns=lambda _fqn: ["amount", "country"],
+        )
+
+        assert "UPPER(country) AS `bucket`" in sql
+        assert "GROUP BY `bucket`" in sql
+        assert "HAVING `total_amount` > '100'" in sql
+
+    def test_add_columns_can_reference_rule_output(self, register_rule):
+        register_rule("derive_amount", {"doubled": "amount * 2"})
+
+        sql = _compile(
+            _single_table("""business_rules:
+  - derive_amount
+add_columns:
+  - [doubled, rounded, [round:0]]
+aggregate:
+  group_by: [rounded]
+  measures:
+    - [amount, total_amount, sum]
+"""),
+            resolve_columns=lambda _fqn: ["amount"],
+        )
+
+        assert "SELECT *, ROUND(`doubled`, 0) AS `rounded`" in sql
+        assert "amount * 2 AS `doubled`" in sql
+
+    def test_allow_raw_sql_refuses_a_registered_sql_rule(self, register_rule):
+        """Plan 39, decision D14 — settled 21 September 2026.
+
+        This test pinned the opposite until today, and its predecessor's silence
+        is what kept the contradiction invisible: the flag refused a kind='sql'
+        *loader* while letting a kind='sql' *rule* through, so it announced a
+        control it applied by halves. The decision is that `allow_raw_sql: false`
+        means no hand-written SQL runs in this environment, whichever layer wrote
+        it — the separation this library rests on is declarative sources and
+        registered rules, not SQL typed by hand on either side.
+        """
+        register_rule("trusted_sql", {"doubled": "amount * 2"})
+
+        with pytest.raises(SqlCompilationError, match="allow_raw_sql"):
+            _compile(
+                _single_table("business_rules:\n  - trusted_sql\nkeep_all_columns: true\n"),
+                allow_raw_sql=False,
+                resolve_columns=lambda _fqn: ["amount"],
+            )
+
+    def test_a_registered_sql_rule_still_compiles_when_raw_sql_is_allowed(
+        self, register_rule
+    ):
+        register_rule("trusted_sql_allowed", {"doubled": "amount * 2"})
+
+        sql = _compile(
+            _single_table(
+                "business_rules:\n  - trusted_sql_allowed\nkeep_all_columns: true\n"
+            ),
+            resolve_columns=lambda _fqn: ["amount"],
+        )
+
+        assert "amount * 2 AS `doubled`" in sql
 
 
 class TestAggregateCompilation:
@@ -309,6 +687,29 @@ class TestRejections:
         with pytest.raises(SqlCompilationError, match="business_rules"):
             _compile(_single_table("business_rules:\n  - flag_high_value\nkeep_all_columns: true\n"))
 
+    def test_unknown_rule_is_rejected_by_name(self):
+        with pytest.raises(SqlCompilationError, match="missing_portable_rule"):
+            _compile(
+                _single_table(
+                    "business_rules:\n  - missing_portable_rule\nkeep_all_columns: true\n"
+                )
+            )
+
+    @pytest.mark.parametrize("kind", ["projection", "transform"])
+    def test_python_rule_kinds_keep_current_refusal(self, register_rule, kind):
+        name = f"python_{kind}"
+        register_rule(name, {}, kind=kind)
+
+        with pytest.raises(SqlCompilationError) as exc_info:
+            _compile(
+                _single_table(f"business_rules:\n  - {name}\nkeep_all_columns: true\n")
+            )
+
+        assert str(exc_info.value) == (
+            f"Python business_rules ['{name}'] cannot be compiled to SQL. "
+            "Materialize them upstream in a silver table, then join/aggregate that table here."
+        )
+
     def test_loader_rejected(self):
         with pytest.raises(SqlCompilationError, match="Python loaders"):
             _compile("""
@@ -320,8 +721,8 @@ tables:
 keep_all_columns: true
 """)
 
-    def test_file_source_rejected(self):
-        with pytest.raises(SqlCompilationError, match="file sources"):
+    def test_file_source_without_resolver_keeps_exact_refusal(self):
+        with pytest.raises(SqlCompilationError) as exc_info:
             _compile("""
 tables:
   - name: raw_orders
@@ -331,6 +732,27 @@ tables:
       path: /tmp/orders.csv
 keep_all_columns: true
 """)
+
+        assert str(exc_info.value) == (
+            "table 'r': file sources ('source.type: csv') cannot be compiled to SQL — "
+            "reference a Unity Catalog table instead (ingest in bronze first)."
+        )
+
+    def test_file_source_resolver_supplies_relation_verbatim(self):
+        sql = _compile(
+            """
+tables:
+  - name: raw_orders
+    alias: r
+    source:
+      type: csv
+      path: /tmp/orders.csv
+keep_all_columns: true
+""",
+            resolve_source=lambda table: f"adapter_reader('{table.source_path}')",
+        )
+
+        assert "SELECT * FROM adapter_reader('/tmp/orders.csv')" in sql
 
     def test_dev_limit_rejected(self):
         with pytest.raises(SqlCompilationError, match="dev_limit"):
@@ -362,6 +784,148 @@ keep_all_columns: true
         from skifer.core.ir import ParsedSchema
         with pytest.raises(SqlCompilationError, match="No tables declared"):
             compile_select(ParsedSchema())
+
+
+class TestDuckDBExecution:
+    def test_sql_rule_and_select_final_produce_expected_values(self, register_rule):
+        import duckdb
+
+        from skifer.core.dialect import transpile
+
+        register_rule(
+            "portable_total",
+            {"total": "amount * quantity", "label": "UPPER(name)"},
+        )
+        connection = duckdb.connect()
+        connection.execute(
+            "CREATE TABLE raw_lines (name VARCHAR, amount DOUBLE, quantity INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO raw_lines VALUES (?, ?, ?)",
+            [("alpha", 2.5, 4), ("beta", 3.0, 2)],
+        )
+        parsed = parse_to_ir(
+            {
+                "tables": [{"name": "raw_lines", "alias": "lines"}],
+                "business_rules": ["portable_total"],
+                "select_final": [
+                    ["name", "name"],
+                    ["label", "label"],
+                    ["total", "total"],
+                ],
+            }
+        )
+
+        sql = transpile(
+            compile_select(
+                parsed,
+                resolve_columns=lambda _fqn: ["name", "amount", "quantity"],
+            ),
+            target="duckdb",
+        )
+        rows = connection.execute(sql).fetchall()
+
+        assert rows == [("alpha", "ALPHA", 10.0), ("beta", "BETA", 6.0)]
+
+    def test_explicit_projection_rewrite_has_one_output_column(self, register_rule):
+        import duckdb
+
+        from skifer.core.dialect import transpile
+
+        register_rule("close_status", {"status": "'CLOSED'"})
+        connection = duckdb.connect()
+        connection.execute("CREATE TABLE raw_status (status VARCHAR)")
+        connection.executemany(
+            "INSERT INTO raw_status VALUES (?)", [("OPEN",), ("PENDING",)]
+        )
+        parsed = parse_to_ir(
+            {
+                "tables": [
+                    {
+                        "name": "raw_status",
+                        "alias": "source",
+                        "fields": [["status", "status"]],
+                    }
+                ],
+                "business_rules": ["close_status"],
+                "keep_all_columns": True,
+            }
+        )
+
+        cursor = connection.execute(transpile(compile_select(parsed), target="duckdb"))
+
+        assert [column[0] for column in cursor.description] == ["status"]
+        assert cursor.fetchall() == [("CLOSED",), ("CLOSED",)]
+
+    def test_partial_compiled_sql_returns_expected_rows(self):
+        import duckdb
+
+        from skifer.core.dialect import transpile
+
+        connection = duckdb.connect()
+        connection.execute("CREATE TABLE raw_orders (order_id INTEGER, status VARCHAR)")
+        connection.executemany(
+            "INSERT INTO raw_orders VALUES (?, ?)",
+            [(1, "DONE"), (2, "PENDING"), (3, "DONE")],
+        )
+        child = {
+            "tables": [
+                {
+                    "name": "raw_orders",
+                    "alias": "orders",
+                    "filter": [
+                        {"column": "status", "operator": "equals", "value": "DONE"}
+                    ],
+                }
+            ],
+            "select_final": [["order_id", "order_id"]],
+        }
+        parsed = parse_to_ir(
+            {
+                "partials": [
+                    {
+                        "alias": "done_orders",
+                        "resolved_path": "/schemas/done_orders.yaml",
+                        "schema": child,
+                    }
+                ],
+                "select_final": [["order_id", "order_id"]],
+            }
+        )
+
+        sql = transpile(compile_select(parsed), target="duckdb")
+        rows = connection.execute(sql).fetchall()
+
+        assert sorted(rows) == [(1,), (3,)]
+
+    def test_drop_duplicates_compiled_sql_keeps_one_original_row_per_key(self):
+        import duckdb
+
+        from skifer.core.dialect import transpile
+
+        original_rows = [(1, "first"), (1, "second"), (2, "only")]
+        connection = duckdb.connect()
+        connection.execute("CREATE TABLE raw_events (event_key INTEGER, value VARCHAR)")
+        connection.executemany("INSERT INTO raw_events VALUES (?, ?)", original_rows)
+        parsed = parse_to_ir(
+            {
+                "tables": [
+                    {
+                        "name": "raw_events",
+                        "alias": "events",
+                        "quality_checks": {"drop_duplicates_on": ["event_key"]},
+                    }
+                ],
+                "keep_all_columns": True,
+            }
+        )
+
+        pivot_sql = compile_select(parsed, persisted_definition=False)
+        rows = connection.execute(transpile(pivot_sql, target="duckdb")).fetchall()
+
+        assert len(rows) == 2
+        assert {row[0] for row in rows} == {1, 2}
+        assert all(row in original_rows for row in rows)
 
 
 # ==============================================================================

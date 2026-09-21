@@ -18,7 +18,9 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
+from skifer.core.dialect import split_fqn
 from skifer.observability.monitor import MonitorReport
+from skifer.observability.sql_registry import CHECK_HISTORY, SqlRegistry, TableDefinition
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +166,73 @@ class SqliteHistoryStore:
     def close(self) -> None:
         """Close the underlying SQLite connection."""
         self._conn.close()
+
+
+# ---------------------------------------------------------------------------
+# SqlHistoryStore
+# ---------------------------------------------------------------------------
+
+def _registry_definition(table_fqn: str, definition: TableDefinition) -> tuple[str, TableDefinition]:
+    parts = split_fqn(table_fqn)
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(
+            "SQL registry-backed stores require a two-part table FQN "
+            f"'schema.table'; received {table_fqn!r}."
+        )
+    schema, table = parts
+    if table == definition.name:
+        return schema, definition
+    # Both branches must return the same shape. Returning the definition alone here
+    # raised `cannot unpack non-iterable TableDefinition` at the caller — invisible
+    # while the default name is used, and broken for the one argument that exists
+    # to be changed.
+    return schema, TableDefinition(
+        name=table, columns=definition.columns, key=definition.key
+    )
+
+
+class SqlHistoryStore:
+    """
+    Adapter-backed HistoryStore using the portable SQL registry.
+
+    Args:
+        adapter:   Thin Skifer Adapter implementation.
+        table_fqn: Two-part registry table name. Default:
+                   "_observability.check_history".
+    """
+
+    def __init__(self, adapter, table_fqn: str = "_observability.check_history"):
+        schema, definition = _registry_definition(table_fqn, CHECK_HISTORY)
+        self._registry = SqlRegistry(adapter, schema)
+        self._definition = definition
+
+    def store(self, report: MonitorReport) -> None:
+        """Persist a MonitorReport as a JSON blob."""
+        self._registry.insert(
+            self._definition,
+            {
+                "table_fqn": report.table,
+                "ts": report.timestamp,
+                "report_json": json.dumps(_report_to_dict(report)),
+            },
+        )
+
+    def get_last_n(self, table: str, n: int) -> list[MonitorReport]:
+        """Return the n most recent reports for a given table, newest first."""
+        if n <= 0:
+            return []
+        rows = self._registry.find(
+            self._definition,
+            where={"table_fqn": table},
+            order_by=(("ts", "DESC"),),
+            limit=n,
+        )
+        return [_dict_to_report(json.loads(row["report_json"])) for row in rows]
+
+    def get_latest(self, table: str) -> MonitorReport | None:
+        """Return the most recent report for a given table, or None."""
+        results = self.get_last_n(table, 1)
+        return results[0] if results else None
 
 
 # ---------------------------------------------------------------------------

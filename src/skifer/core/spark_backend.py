@@ -25,6 +25,7 @@ from skifer.core.environment import (
     is_databricks_sdk_available,
 )
 from skifer.core.constants import VALID_SOURCE_TYPES, VALID_STREAMING_SOURCE_TYPES
+from skifer.core.capabilities_matrix import DATABRICKS_CAPABILITIES
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,14 @@ class SparkBackend:
         return self._spark
 
     @property
+    def name(self) -> str:
+        return "databricks"
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return DATABRICKS_CAPABILITIES
+
+    @property
     def is_local(self) -> bool:
         return self._is_local
 
@@ -259,6 +268,10 @@ class SparkBackend:
 
     def sql(self, query: str) -> Any:
         return self._spark.sql(query)
+
+    def fetch(self, query: str) -> list[dict]:
+        rows = self.sql(query).collect()
+        return [row.asDict() if hasattr(row, "asDict") else dict(row) for row in rows]
 
     def _append_certification(self, schema: str, table: str, row: dict, key: str) -> None:
         from skifer.core.sql_compiler import escape_sql_string, quote_ident
@@ -622,8 +635,13 @@ class SparkBackend:
                 "Declare 'materialization: streaming_table' in the schema so the "
                 "engine uses the streaming write path."
             )
+        if mode not in ("overwrite", "append"):
+            raise ValueError(
+                f"[write_table] Unsupported write mode {mode!r}. "
+                "Valid modes: ['overwrite', 'append']."
+            )
         label = fqn.replace("`", "").split(".")[-1]
-        write_dataframe(df, fqn, label, self._is_local, self._spark)
+        write_dataframe(df, fqn, label, self._is_local, self._spark, mode=mode)
 
     def write_staging(self, df: Any, fqn: str) -> None:
         """Write one exact certified-publication staging table.
@@ -798,6 +816,13 @@ class SparkBackend:
                 return
 
             deduped.createOrReplaceTempView(view_name)
+            # Deliberately NOT the explicit-column builder used by the batch merge
+            # (``core/merge_sql.py``). That builder exists because Snowflake and
+            # BigQuery reject ``UPDATE SET *``; streaming is Spark/Databricks only,
+            # and Databricks never traverses sqlglot, so the reason does not apply
+            # here. Using it would cost a ``SELECT … LIMIT 0`` against the target on
+            # **every micro-batch** to read columns Delta already matches by name,
+            # and would change shipped Plan 27 behaviour for no portability gain.
             on_clause = " AND ".join(f"t.`{k}` = s.`{k}`" for k in keys)
             spark.sql(
                 f"MERGE INTO {fqn} AS t USING {view_name} AS s ON {on_clause} "
@@ -1000,6 +1025,9 @@ class SparkBackend:
             return [r["col_name"] for r in rows]
         except Exception:
             return []
+
+    def list_relation_columns(self, relation: str) -> list[str]:
+        return self._spark.sql(f"SELECT * FROM {relation} LIMIT 0").columns
 
     def list_schemas(self, catalog: str | None = None) -> list[str]:
         """List schemas using SHOW SCHEMAS (best-effort)."""

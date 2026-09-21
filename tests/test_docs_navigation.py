@@ -126,3 +126,35 @@ def test_the_built_site_publishes_no_working_artifact(built_site):
         if any(marker in relative for marker in markers)
     )
     assert not leaked, "Working artifacts published on the site: " + ", ".join(leaked)
+
+
+# ---------------------------------------------------------------------------
+# The agent briefs link to plans that must exist
+#
+# `CLAUDE.md` and `AGENTS.md` are read before any work starts, and their Active
+# plans table is the map. A row pointing at a file that is not there sends the
+# reader nowhere: Plan 38 was listed as "finalised, not started" while no file,
+# no branch and no commit existed for it. Nothing failed, because nothing looked.
+# ---------------------------------------------------------------------------
+
+AGENT_BRIEFS = ("CLAUDE.md", "AGENTS.md")
+
+
+@pytest.mark.parametrize("brief", AGENT_BRIEFS)
+def test_every_roadmap_link_in_an_agent_brief_resolves(brief):
+    import re
+
+    path = REPO_ROOT / brief
+    if not path.exists():
+        pytest.skip(f"{brief} is not part of this checkout")
+
+    targets = re.findall(r"\]\((docs/roadmap/[^)\s#]+)\)", path.read_text(encoding="utf-8"))
+    assert targets, f"{brief} lists no roadmap plan; this guard would pass vacuously"
+
+    missing = sorted({target for target in targets if not (REPO_ROOT / target).exists()})
+
+    assert missing == [], (
+        f"{brief} links to plan document(s) that do not exist: {missing}. "
+        "Either write the plan or drop the row — a dead link in the map reads "
+        "as work that exists somewhere else."
+    )

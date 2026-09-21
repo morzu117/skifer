@@ -1,0 +1,30 @@
+# The same two days, kept as history. `strategy: check` compares the listed
+# columns; a change closes the old version and opens a new one, so the table
+# answers "what did this order look like on day 1?" as well as "now".
+#
+# `on_missing` has no default on purpose: what a disappeared row means is a
+# business decision, not a framework one. `close` treats absence as deletion
+# and ends the row's validity; `ignore` treats it as a partial extract and
+# leaves the row open.
+materialization:
+  type: snapshot
+  strategy: check
+  unique_key: [order_id]
+  check_columns: [status, amount]
+  on_missing: ignore
+
+tables:
+  - name: orders_source
+    alias: orders
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/orders_{{ day }}.csv"
+      options:
+        header: "true"
+        inferSchema: "true"
+
+select_final:
+  - [order_id, order_id]
+  - [customer, customer]
+  - [status, status]
+  - [amount, amount]

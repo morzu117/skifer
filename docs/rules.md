@@ -16,6 +16,7 @@ d'exécution.
 | `projection` (**défaut**) | `dict[str, Column]` | Toutes les règles consécutives sont **fusionnées en un seul `select()`**. Tri topologique automatique des dépendances. |
 | `aggregation` | `(list[str], dict[str, Column])` ou `DataFrame` | Règles partageant les mêmes clés `groupBy` fusionnées en un seul `groupBy(...).agg(...)`. |
 | `transform` | `DataFrame` | Exécution séquentielle, contrat hérité `df → df`. Échappatoire pour la logique complexe. |
+| `sql` | `dict[str, str]` | Fragments SQL fusionnés dans le `SELECT` compilé. Le seul kind portable hors Spark (Plan 39). |
 
 ---
 
@@ -115,6 +116,69 @@ def complex_dedup_logic(df):
     w = Window.partitionBy("customer_id").orderBy(F.col("created_at").desc())
     return df.withColumn("rn", F.row_number().over(w)).filter(F.col("rn") == 1).drop("rn")
 ```
+
+---
+
+## `kind="sql"` — la règle portable (Plan 39)
+
+Une règle `kind="sql"` retourne `{nom_colonne: fragment_SQL}`. Le compilateur
+insère ces fragments dans le `SELECT` qu'il produit, puis `sqlglot` le transpile
+vers le dialecte de l'adaptateur. **C'est le seul kind qui tourne hors Spark** :
+une règle `projection`, `aggregation` ou `transform` manipule des objets PySpark,
+que DuckDB, Snowflake ou BigQuery ne savent pas exécuter — elle est donc refusée
+nominativement en mode SQL, jamais ignorée en silence.
+
+```python
+@RuleRegistry.register_rule(kind="sql")
+def order_class():
+    # La règle ne reçoit pas de DataFrame : il n'y en a pas.
+    return {"order_class": "CASE WHEN amount >= 500 THEN 'priority' ELSE 'standard' END"}
+```
+
+La fonction ne prend **aucun argument**. Elle ne voit pas les données, ce qui est
+exactement ce qui la rend portable : elle décrit une expression, pas un calcul.
+
+Un même concept métier peut avoir deux implémentations — une PySpark, une SQL — et
+le YAML choisir laquelle par paramètre. `examples/24_sql_mode_portability/` fait
+tourner un pipeline unique sur les deux moteurs et échoue si les lignes diffèrent.
+
+### Gouvernance
+
+**`allow_raw_sql: false` refuse une règle `kind="sql"`**, comme il refuse déjà un
+loader `kind="sql"`, l'opérateur de filtre `sql` et une opération `expr:`. Le
+drapeau se lit « aucun SQL écrit à la main ne s'exécute dans cet environnement »,
+sans égard à la couche qui l'a écrit. Le refus est posé sur les trois chemins qui
+peuvent exécuter une règle SQL — le compilateur SQL, l'exécuteur fusionné et
+l'interpréteur — et chacun est couvert par son propre test.
+
+> **Jusqu'au 21 septembre 2026, ce n'était vrai qu'à moitié** : le loader était
+> refusé, la règle passait. Le drapeau annonçait donc un contrôle qu'il
+> n'appliquait pas entièrement. C'est la décision D14 du Plan 39.
+
+**Ce que le drapeau ne peut pas couvrir.** Une règle `kind="projection"` est du
+Python quelconque et peut appeler `F.expr("…")` ; aucun drapeau ne voit à
+l'intérieur. Fermer cette porte-là revient à ne pas exécuter de règles Python du
+tout, ce que fait `CAP_PYTHON_RULES` sur tout adaptateur non-Spark. La garantie
+porte sur la surface SQL que le framework déclare, pas sur tout ce qu'un code
+Python pourrait atteindre.
+
+### Loaders `kind="sql"`
+
+Un loader suit la même logique. Un loader Python rend un DataFrame et reste
+Spark-only ; un loader `kind="sql"` rend une **expression de relation** — placée
+exactement là où l'adaptateur place celle d'une source fichier.
+
+```python
+@RuleRegistry.register_loader(kind="sql")
+def recent_orders(days: int):
+    # Rend une relation, pas des données.
+    return f"(SELECT * FROM raw.orders WHERE order_date >= current_date - {days})"
+```
+
+Un loader `kind="sql"` ne peut déclarer ni `backend` ni `config` : ces deux clés
+n'ont de sens que pour un loader qui ouvre lui-même une connexion, ce qu'une
+expression de relation ne fait pas. Les déclarer est une erreur à
+l'enregistrement, pas au run.
 
 ---
 

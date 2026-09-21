@@ -1,0 +1,332 @@
+"""End-to-end execution of one compiled pipeline through an SQL adapter."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from dataclasses import replace
+from typing import Any, Callable
+
+from skifer.core.capabilities_matrix import (
+    CAP_FILE_SOURCES,
+    UnsupportedCapabilityError,
+    assert_supported,
+)
+from skifer.core.dialect import quote_fqn, quote_ident, split_fqn, transpile
+from skifer.core.ir import ParsedSchema, ParsedTable, parse_to_ir
+from skifer.core.merge_sql import (
+    assert_merge_columns_match,
+    build_merge_sql,
+    build_snapshot_apply_sql,
+    build_snapshot_initial_select_sql,
+)
+from skifer.core.snapshot_preflight import (
+    build_snapshot_preflight_report,
+    collect_snapshot_preflight_inputs,
+)
+from skifer.core.sql_compiler import compile_select
+
+
+def _schema_without_dev_limits(schema: dict) -> dict:
+    """Copy a nested schema mapping while removing only execution-time limits."""
+    copied = {key: value for key, value in schema.items() if key != "dev_limit"}
+    copied["tables"] = [
+        {key: value for key, value in table.items() if key != "dev_limit"}
+        for table in schema.get("tables", [])
+    ]
+    copied["partials"] = [
+        {
+            **partial,
+            "schema": _schema_without_dev_limits(partial.get("schema", {})),
+        }
+        for partial in schema.get("partials", [])
+    ]
+    return copied
+
+
+def _without_dev_limits(parsed: ParsedSchema) -> ParsedSchema:
+    """Return an IR copy whose root, table and nested-partial limits are absent."""
+    tables = [replace(table, dev_limit=None) for table in parsed.tables]
+    partials = [
+        replace(partial, schema=_schema_without_dev_limits(partial.schema))
+        for partial in parsed.partials
+    ]
+    return replace(parsed, dev_limit=None, tables=tables, partials=partials)
+
+
+def _target_parts(target_fqn: str) -> tuple[str | None, str, str]:
+    """Split the target FQN into (catalog, schema, table), honouring quoting.
+
+    Stripping the quotes first and splitting on every dot turned a table whose
+    name legitimately contains one into three parts: ```gold`.`my.table``` became
+    catalog ``gold``, schema ``my``, table ``table`` — and DuckDB then refused it
+    for carrying a catalog it never had. ``split_fqn`` is the rule the dialect
+    already applies everywhere else.
+    """
+    parts = [part for part in split_fqn(target_fqn) if part]
+    if len(parts) == 2:
+        return None, parts[0], parts[1]
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    raise ValueError(
+        f"Incremental materialization requires a two- or three-part target FQN, got {target_fqn!r}."
+    )
+
+
+def _append_watermark_bound(
+    select_sql: str,
+    *,
+    target: str,
+    watermark_column: str | None,
+    adapter_name: str,
+) -> str:
+    if not watermark_column:
+        return select_sql
+    alias = quote_ident("_skifer_incremental_src", target=adapter_name)
+    column = quote_ident(watermark_column, target=adapter_name)
+    # The bound is strictly greater than the previous maximum. Using >= would
+    # reinsert every row on the last processed boundary on each run.
+    return (
+        f"SELECT * FROM (\n{select_sql}\n) AS {alias}\n"
+        f"WHERE NOT EXISTS (SELECT 1 FROM {target})\n"
+        f"  OR {alias}.{column} > (SELECT MAX({column}) FROM {target})"
+    )
+
+
+def _compile_pipeline_select(
+    adapter: Any,
+    schema_dict: dict,
+    *,
+    context: Any,
+    resolve_table: Callable[[str], str] | None = None,
+    allow_raw_sql: bool = True,
+) -> tuple[ParsedSchema, str]:
+    """Return validated IR and one adapter-dialect SELECT without executing it."""
+    parsed = parse_to_ir(schema_dict)
+    assert_supported(
+        parsed,
+        adapter_name=adapter.name,
+        supported=adapter.capabilities,
+    )
+    materialization = parsed.materialization or {}
+    is_view = materialization.get("type") == "view"
+    if (context.is_job_execution or context.is_production) and not is_view:
+        parsed = _without_dev_limits(parsed)
+
+    resolve = resolve_table or (lambda name: name)
+
+    def resolve_columns(table: ParsedTable) -> list[str]:
+        if table.source_type and CAP_FILE_SOURCES in adapter.capabilities:
+            relation = adapter.resolve_source(table)
+        else:
+            relation = quote_fqn(resolve(table.name), target=adapter.name)
+        return adapter.list_relation_columns(relation)
+
+    select_sql = compile_select(
+        parsed,
+        resolve_table=resolve_table,
+        allow_raw_sql=allow_raw_sql,
+        resolve_source=(
+            adapter.resolve_source
+            if CAP_FILE_SOURCES in adapter.capabilities
+            else None
+        ),
+        resolve_columns=resolve_columns,
+        persisted_definition=is_view,
+    )
+    return parsed, transpile(select_sql, target=adapter.name)
+
+
+def compile_sql_pipeline_relation(
+    adapter: Any,
+    schema_dict: dict,
+    *,
+    context: Any,
+    resolve_table: Callable[[str], str] | None = None,
+    allow_raw_sql: bool = True,
+) -> Any:
+    """Compile a certified batch pipeline into an adapter-owned relation handle."""
+    parsed, translated = _compile_pipeline_select(
+        adapter,
+        schema_dict,
+        context=context,
+        resolve_table=resolve_table,
+        allow_raw_sql=allow_raw_sql,
+    )
+    materialization = parsed.materialization or {}
+    if materialization.get("type") not in (None, "table"):
+        raise ValueError(
+            "Certified SQL publication requires a complete table materialization."
+        )
+    return adapter.relation(translated)
+
+
+def run_sql_pipeline(
+    adapter: Any,
+    schema_dict: dict,
+    target_fqn: str,
+    *,
+    context: Any,
+    resolve_table: Callable[[str], str] | None = None,
+    allow_raw_sql: bool = True,
+    clock: Callable[[], datetime] | None = None,
+) -> str:
+    """Compile, transpile and materialize one YAML pipeline through SQL DDL."""
+    parsed, translated = _compile_pipeline_select(
+        adapter,
+        schema_dict,
+        context=context,
+        resolve_table=resolve_table,
+        allow_raw_sql=allow_raw_sql,
+    )
+    if parsed.data_product is not None:
+        raise UnsupportedCapabilityError(
+            f"Adapter {adapter.name!r} supports certified_publication for YAML "
+            "'data_product:' only through SkiferEngine.run_process_to_table; direct "
+            "run_sql_pipeline execution would bypass certification."
+        )
+    materialization = parsed.materialization or {}
+    is_view = materialization.get("type") == "view"
+    is_incremental_append = (
+        materialization.get("type") == "incremental"
+        and materialization.get("strategy") == "append"
+    )
+    is_incremental_merge = (
+        materialization.get("type") == "incremental"
+        and materialization.get("strategy") == "merge"
+    )
+    is_snapshot = materialization.get("type") == "snapshot"
+    target = quote_fqn(target_fqn, target=adapter.name)
+    if is_view:
+        statement = f"CREATE OR REPLACE VIEW {target} AS {translated}"
+    elif is_incremental_append:
+        catalog, schema, table = _target_parts(target_fqn)
+        target_exists = adapter.table_exists(catalog, schema, table)
+        if target_exists:
+            bounded = _append_watermark_bound(
+                translated,
+                target=target,
+                watermark_column=materialization.get("watermark_column"),
+                adapter_name=adapter.name,
+            )
+            statement = f"INSERT INTO {target} {bounded}"
+        else:
+            statement = f"CREATE TABLE {target} AS {translated}"
+    elif is_incremental_merge:
+        catalog, schema, table = _target_parts(target_fqn)
+        target_exists = adapter.table_exists(catalog, schema, table)
+        if target_exists:
+            target_columns = adapter.list_relation_columns(target)
+            source_columns = adapter.list_relation_columns(f"(\n{translated}\n)")
+            assert_merge_columns_match(
+                source_columns=source_columns,
+                target_columns=target_columns,
+                unique_key=materialization["unique_key"],
+            )
+            _assert_merge_source_keys_unique(
+                adapter,
+                source_relation=f"(\n{translated}\n)",
+                unique_key=materialization["unique_key"],
+            )
+            statement = build_merge_sql(
+                target_relation=target,
+                source_relation=f"(\n{translated}\n)",
+                unique_key=materialization["unique_key"],
+                target_columns=target_columns,
+                target=adapter.name,
+            )
+        else:
+            statement = f"CREATE TABLE {target} AS {translated}"
+    elif is_snapshot:
+        catalog, schema, table = _target_parts(target_fqn)
+        target_exists = adapter.table_exists(catalog, schema, table)
+        source_relation = f"(\n{translated}\n)"
+        inputs = collect_snapshot_preflight_inputs(
+            adapter,
+            source_relation=source_relation,
+            target_relation=target,
+            materialization=materialization,
+            target_exists=target_exists,
+        )
+        report = build_snapshot_preflight_report(materialization, inputs)
+        if not report.safe_to_apply:
+            rendered = "\n\n".join(finding.render() for finding in report.findings)
+            raise ValueError(rendered)
+
+        run_at = _snapshot_run_at(clock)
+        if target_exists:
+            source_columns = list(inputs.source_columns)
+            statements = build_snapshot_apply_sql(
+                target_relation=target,
+                source_relation=source_relation,
+                source_columns=source_columns,
+                materialization=materialization,
+                target=adapter.name,
+                run_at=run_at,
+            )
+            for current in statements:
+                adapter.execute_sql(current)
+            return ";\n".join(statements)
+        statement = (
+            f"CREATE TABLE {target} AS "
+            + build_snapshot_initial_select_sql(
+                source_relation=source_relation,
+                source_columns=list(inputs.source_columns),
+                materialization=materialization,
+                target=adapter.name,
+                run_at=run_at,
+            )
+        )
+    else:
+        statement = f"CREATE OR REPLACE TABLE {target} AS {translated}"
+    adapter.execute_sql(statement)
+    return statement
+
+
+def _assert_merge_source_keys_unique(
+    adapter: Any,
+    *,
+    source_relation: str,
+    unique_key: list[str],
+) -> None:
+    """Refuse a merge batch where a key carries more than one row.
+
+    Measured, same YAML and same data: Delta refuses with
+    ``DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE`` while DuckDB
+    accepts the statement and keeps one of the rows, arbitrarily. That is a hard
+    divergence in the one feature this plan claims is equivalent, and the silent
+    side is the dangerous one — nothing in the result says a row was dropped.
+
+    The snapshot path already refuses the same batch; only the answer's home was
+    missing here. The check runs solely when the target exists, so a first run
+    still creates the table exactly as Spark's does.
+    """
+    from skifer.core.snapshot_preflight import duplicate_key_count_sql
+
+    rows = adapter.fetch(
+        duplicate_key_count_sql(
+            source_relation,
+            unique_key=list(unique_key),
+            adapter_name=adapter.name,
+        )
+    )
+    count = int(next(iter(rows[0].values())) or 0) if rows else 0
+    if count <= 0:
+        return
+    keys = ", ".join(unique_key)
+    raise ValueError(
+        f"[incremental merge] REFUSED - 'unique_key' [{keys}] is not unique in this "
+        f"batch:\n  {count} keys carry more than one row, so the merge cannot decide "
+        "which one wins.\n  Suggested YAML:\n"
+        f"    quality_checks:\n      drop_duplicates_on: [{keys}]\n"
+        "    # or extend the key so it identifies one row."
+    )
+
+
+def _snapshot_run_at(clock: Callable[[], datetime] | None) -> datetime:
+    now = clock or (lambda: datetime.now(timezone.utc))
+    value = now()
+    if not isinstance(value, datetime):
+        raise TypeError("Snapshot clock must return datetime values.")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Snapshot clock must return timezone-aware datetimes.")
+    return value.astimezone(timezone.utc)

@@ -135,10 +135,22 @@ class TestGenerateJsonSchema:
         shorthand, dict_form = mat["oneOf"]
         assert "streaming_table" in shorthand["enum"]
         assert "materialized_view" in shorthand["enum"]
+        assert "view" in shorthand["enum"]
+        assert "incremental" in shorthand["enum"]
+        assert "snapshot" in shorthand["enum"]
         assert set(dict_form["properties"]) == {
-            "type", "trigger", "checkpoint", "write_mode", "keys",
+            "type", "strategy", "unique_key", "watermark_column", "updated_at",
+            "check_columns", "on_missing", "max_closed_ratio", "on_late_arrival",
+            "trigger", "checkpoint", "write_mode", "keys",
             "schedule", "comment", "cluster_by", "partition_by", "refresh",
         }
+        strategy_shapes = dict_form["properties"]["strategy"]["oneOf"]
+        assert strategy_shapes[0]["enum"] == ["append", "merge"]
+        assert strategy_shapes[1]["enum"] == ["check", "timestamp"]
+        assert dict_form["properties"]["on_missing"]["enum"] == ["close", "ignore"]
+        assert dict_form["properties"]["on_late_arrival"]["enum"] == ["ignore", "refuse"]
+        assert dict_form["properties"]["max_closed_ratio"]["minimum"] == 0
+        assert dict_form["properties"]["max_closed_ratio"]["maximum"] == 1
         assert dict_form["properties"]["write_mode"]["enum"] == ["append", "upsert"]
         assert dict_form["properties"]["refresh"]["enum"] == ["auto", "never"]
 
