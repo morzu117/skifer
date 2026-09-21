@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from skifer.core.constants import DEFAULT_CONTRACT_ENFORCEMENT
 from skifer.observability.checks import CheckResult, DataContract
 from skifer.observability.contracts import ContractExtractor
 from skifer.observability.incidents import IncidentStatus
@@ -114,13 +115,28 @@ class QualityService:
         self._incidents = incident_store
 
     def checks_from_schema(
-        self, ctx: RequestContext, schema_dict: dict
+        self,
+        ctx: RequestContext,
+        schema_dict: dict,
+        contract_enforcement: str = DEFAULT_CONTRACT_ENFORCEMENT,
     ) -> tuple[CheckDefinitionView, ...]:
+        """List the checks a schema would produce at a given enforcement level.
+
+        Unlike :meth:`ContractExtractor.extract`, this argument *does* have a
+        default. The rule it follows is not "never default" but "never let a
+        default weaken a gate": this method enforces nothing, it describes. A
+        short listing misleads nobody into thinking data was checked, whereas a
+        permissive default on the execution path would have been exactly the
+        silent fail-open that plan 39's decision D14 set out to close.
+
+        The caller states the level it wants described; the service has no
+        environment of its own to read one from.
+        """
         require_scope(ctx, SCOPE_CONTRACTS_READ)
         extractor = getattr(self._extractor, "extract", None)
         if extractor is None or not callable(extractor):
             raise ResourceUnavailable("The contract extractor is unavailable.")
-        contracts = extractor(schema_dict)
+        contracts = extractor(schema_dict, contract_enforcement=contract_enforcement)
         if not isinstance(contracts, (list, tuple)) or not all(
             isinstance(contract, DataContract) for contract in contracts
         ):

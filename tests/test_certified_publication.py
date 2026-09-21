@@ -1363,3 +1363,135 @@ def test_lineage_publish_tolerates_a_promoted_result_without_report(monkeypatch)
     assert result is stub_result
     assert _event_types(emitter) == ["START", "COMPLETE"]
     assert "dataQualityAssertions" not in emitter.events[1]["outputs"][0]["facets"]
+
+
+# ---------------------------------------------------------------------------
+# Plan 40 — the contract is checked against what the pipeline actually produced
+# ---------------------------------------------------------------------------
+
+_PLAN40_SCHEMA = {
+    "data_product": {"id": "sales.orders", "version": "1.0.0"},
+    "tables": [{"name": "silver.orders"}],
+    "contract": {
+        "output": {
+            "order_id": {"logical_type": "string", "required": True},
+            "region": {"logical_type": "string"},
+        }
+    },
+}
+
+
+def _plan40_coordinator(backend, store, enforcement):
+    from skifer.observability.monitor import DataMonitor
+
+    return PublicationCoordinator(
+        backend,
+        DataMonitor(backend),
+        store,
+        contract_enforcement=enforcement,
+    )
+
+
+def test_a_rule_inventing_a_column_is_quarantined_and_never_lands():
+    """The point of the whole plan, proved end to end.
+
+    A `kind="projection"` rule is arbitrary Python: it may call `F.expr` and
+    build a column any way it likes, and no static analysis can see inside it.
+    What it cannot do is keep that column out of the table it produces. Here the
+    pipeline emits `bonus_expr`, which the contract never declared — the
+    exhaustive check fails critical, publication quarantines, and the target is
+    left untouched.
+    """
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = _plan40_coordinator(backend, store, "strict")
+
+    produced = FakeDataFrame(
+        [{"order_id": "o1", "region": "EMEA", "bonus_expr": "smuggled"}]
+    )
+    result = coordinator.publish(
+        produced, "gold.orders", _PLAN40_SCHEMA, _definition()
+    )
+
+    assert result.state == "QUARANTINED"
+    assert "gold.orders" not in backend._written
+
+    messages = " ".join(
+        r.message for r in store.get_check_results(result.run.run_id)
+    )
+    assert "bonus_expr" in messages
+
+
+def test_the_same_pipeline_promotes_once_the_column_is_declared():
+    """The guard must accept conforming data, or the test above proves nothing.
+
+    A check that refuses everything would quarantine here too, and the pair is
+    what shows it discriminates.
+    """
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = _plan40_coordinator(backend, store, "strict")
+
+    conforming = FakeDataFrame([{"order_id": "o1", "region": "EMEA"}])
+    result = coordinator.publish(
+        conforming, "gold.orders", _PLAN40_SCHEMA, _definition()
+    )
+
+    assert result.state == "PROMOTED"
+    assert backend._written["gold.orders"] == [{"order_id": "o1", "region": "EMEA"}]
+
+
+def test_under_off_the_same_violation_lands_untouched():
+    """Non-regression: without opt-in, nothing about the old behaviour changes."""
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = _plan40_coordinator(backend, store, "off")
+
+    produced = FakeDataFrame(
+        [{"order_id": "o1", "region": "EMEA", "bonus_expr": "smuggled"}]
+    )
+    result = coordinator.publish(
+        produced, "gold.orders", _PLAN40_SCHEMA, _definition()
+    )
+
+    assert result.state == "PROMOTED"
+    assert "gold.orders" in backend._written
+
+
+def test_under_warn_the_violation_is_reported_but_does_not_block():
+    """The migration step: measure the damage before imposing the gate."""
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = _plan40_coordinator(backend, store, "warn")
+
+    produced = FakeDataFrame(
+        [{"order_id": "o1", "region": "EMEA", "bonus_expr": "smuggled"}]
+    )
+    result = coordinator.publish(
+        produced, "gold.orders", _PLAN40_SCHEMA, _definition()
+    )
+
+    assert result.state == "PROMOTED"
+    failures = [
+        r for r in store.get_check_results(result.run.run_id)
+        if r.status is not CheckStatus.PASS
+    ]
+    assert failures, "warn must still report the violation it refuses to block on"
+    assert all(r.severity == "warning" for r in failures)
+
+
+def test_a_null_in_a_required_field_is_quarantined():
+    """`required: true` was declared everywhere and checked nowhere before Plan 40."""
+    store, backend = SqliteCertificationStore(":memory:"), FakeBackend()
+    coordinator = _plan40_coordinator(backend, store, "strict")
+
+    produced = FakeDataFrame(
+        [{"order_id": "o1", "region": "EMEA"}, {"order_id": None, "region": "APAC"}]
+    )
+    result = coordinator.publish(
+        produced, "gold.orders", _PLAN40_SCHEMA, _definition()
+    )
+
+    assert result.state == "QUARANTINED"
+    assert "gold.orders" not in backend._written
+    nulls = [
+        r for r in store.get_check_results(result.run.run_id)
+        if r.check_type == "NullCheck"
+    ]
+    assert nulls and nulls[0].status is CheckStatus.FAIL

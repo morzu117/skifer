@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `contract_enforcement: strict` now refuses, before any execution, a pipeline it could not
+  actually govern: one without `data_product:` (without staging a contract can only be checked after
+  the write, so "refuse to write" would be aspirational), one without a `contract:` block, one
+  declaring a logical type outside the verifiable set, and one running on an adapter whose physical
+  type names were never measured. None of these is a refusal of bad data — each is a refusal of
+  unverifiability, because a control that lets through what it cannot inspect advertises a coverage
+  it does not have. The refusal lives in `core/patterns.py` beside the existing
+  `classification_propagation: strict` demands, since the schema loader is deliberately
+  environment-blind and the same YAML must stay portable.
+
 - Added the `contract_enforcement` environment setting (`off` | `warn` | `strict`), read from
   `config.yaml` alongside `allow_raw_sql` and `classification_propagation`. `off` is the default and
   keeps existing pipelines byte-identical; `warn` runs the `contract.output` checks at warning

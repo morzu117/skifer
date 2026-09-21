@@ -233,12 +233,40 @@ class FakeBackend:
             r"SELECT MAX\(`([^`]+)`\) AS `([^`]+)` FROM `([^`]+)`\.`([^`]+)`",
             query,
         )
-        if not match:
-            raise NotImplementedError(f"[FakeBackend] Unsupported fetch query: {query}")
-        column, alias, schema, table = match.groups()
-        rows = self._tables.get(f"{schema}.{table}", [])
-        values = [row.get(column) for row in rows if row.get(column) is not None]
-        return [{alias: max(values) if values else None}]
+        if match:
+            column, alias, schema, table = match.groups()
+            rows = self._tables.get(f"{schema}.{table}", [])
+            values = [row.get(column) for row in rows if row.get(column) is not None]
+            return [{alias: max(values) if values else None}]
+
+        # NullCheck — `required: true` on a contract field (Plan 40).
+        match = re.fullmatch(
+            r"SELECT COUNT\(\*\) AS null_count FROM (\S+) WHERE `([^`]+)` IS NULL",
+            query,
+        )
+        if match:
+            fqn, column = match.groups()
+            rows = self._rows_for(fqn)
+            return [{"null_count": sum(1 for row in rows if row.get(column) is None)}]
+
+        # UniqueCheck — `unique: true` on a contract field (Plan 40).
+        match = re.fullmatch(
+            r"SELECT COUNT\(\*\) AS total, COUNT\(DISTINCT (.+?)\) AS distinct_count "
+            r"FROM (\S+)",
+            query,
+        )
+        if match:
+            columns_csv, fqn = match.groups()
+            columns = [c.strip().strip("`") for c in columns_csv.split(",")]
+            rows = self._rows_for(fqn)
+            keys = {tuple(row.get(c) for c in columns) for row in rows}
+            return [{"total": len(rows), "distinct_count": len(keys)}]
+
+        raise NotImplementedError(f"[FakeBackend] Unsupported fetch query: {query}")
+
+    def _rows_for(self, fqn: str) -> list[dict]:
+        """Resolve a possibly-quoted FQN to stored rows, or [] when absent."""
+        return self._tables.get(fqn.replace("`", ""), [])
 
     def check_catalog_access(self, catalog: str) -> bool:
         return True
