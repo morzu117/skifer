@@ -175,6 +175,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a guard that every `docs/roadmap/*_plan.md` link in `CLAUDE.md` and `AGENTS.md` resolves.
+  Those tables are the map an agent reads before starting, and Plan 38 sat in it as "finalised, not
+  started" while no file, no branch and no commit existed for it — nothing failed, because nothing
+  looked. The guard also refuses to pass when a brief lists no plan at all, so it cannot go vacuous
+  the way a link-checker does when the pattern stops matching.
+
 - Added a portability guard pinning Spark and the compiled SQL together on a qualified select
   source. Qualifying a source (`ord.id` rather than `id`) is what lets lineage attribute a joined
   column to the table it really comes from, and `examples/23_openlineage` ships a schema that does

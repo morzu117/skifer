@@ -184,7 +184,7 @@ unique ; chaque tranche = un commit, gate vert, livrable indépendamment) :
 | 39.3.2 | Sources fichier CSV / Parquet / JSON, défauts d'options alignés sur Spark | livrée |
 | 39.3.3 | Colonnes résolues depuis la source : règles `kind="sql"` sur tables fichier | livrée |
 | 39.3.4 | Exemples du dépôt exécutés et comparés sur les deux moteurs | livrée |
-| 39.3.5 | Loaders `kind="sql"` : une expression de relation, portable sur les deux moteurs (décision D8) | — |
+| 39.3.5 | Loaders `kind="sql"` : une expression de relation, portable sur les deux moteurs (décision D8) | livrée |
 
 > **Phase 39.3 rouverte le 18 septembre 2026.** La décision D8 a été prise après la clôture de la phase, et
 > son implémentation appartient topiquement ici — c'est la dernière construction YAML qui force un pipeline à
