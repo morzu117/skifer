@@ -15,11 +15,13 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+from skifer.core.logical_types import UnverifiableLogicalType
 from skifer.core.schema_loader import parse_schema
 from skifer.observability.checks import (
     NullCheck,
     UniqueCheck,
     TypeCheck,
+    LogicalTypeCheck,
     FilterInvariantCheck,
     FreshnessCheck,
     LoadFreshnessCheck,
@@ -371,6 +373,96 @@ class TestTypeCheck:
         TypeCheck(table="t", column="amount_eur", expected_type="double").evaluate(backend, "t")
         SchemaDriftCheck(table="t", expected_columns=["amount_eur"]).evaluate(backend, "t")
         assert backend.queries == []
+
+
+class TestLogicalTypeCheck:
+
+    def test_one_declaration_holds_on_both_engines(self):
+        """`logical_type: string` is satisfied by Spark string and DuckDB VARCHAR.
+
+        This is the point of a logical type: the contract is written once and
+        means the same thing wherever the pipeline runs.
+        """
+        check = LogicalTypeCheck(table="t", column="label", logical_type="string")
+
+        spark = FakeBackend(column_types={"label": "string"})
+        duck = FakeBackend(column_types={"label": "VARCHAR"})
+        duck.name = "duckdb"
+
+        assert check.evaluate(spark, "t").status is CheckStatus.PASS
+        assert check.evaluate(duck, "t").status is CheckStatus.PASS
+
+    def test_a_violated_declaration_fails(self):
+        backend = FakeBackend(column_types={"amount": "string"})
+        result = LogicalTypeCheck(
+            table="t", column="amount", logical_type="double"
+        ).evaluate(backend, "t")
+        assert result.status is CheckStatus.FAIL
+        assert "amount" in result.message
+
+    def test_a_missing_column_fails_rather_than_passing_vacuously(self):
+        backend = FakeBackend(column_types={"other": "string"})
+        result = LogicalTypeCheck(
+            table="t", column="absent", logical_type="string"
+        ).evaluate(backend, "t")
+        assert result.status is CheckStatus.FAIL
+        assert result.actual_value is None
+
+    def test_an_unverifiable_type_raises_instead_of_passing(self):
+        """A type outside the closed set must never read as satisfied.
+
+        The monitor turns this into an ERROR result, which counts as a failure —
+        so a contract that cannot be checked blocks rather than flatters.
+        """
+        backend = FakeBackend(column_types={"order_id": "string"})
+        with pytest.raises(UnverifiableLogicalType):
+            LogicalTypeCheck(
+                table="t", column="order_id", logical_type="identifier"
+            ).evaluate(backend, "t")
+
+    def test_the_monitor_turns_that_refusal_into_a_critical_failure(self):
+        backend = FakeBackend(column_types={"order_id": "string"})
+        monitor = DataMonitor(backend)
+        report = monitor.check_table(
+            "t",
+            [
+                LogicalTypeCheck(
+                    table="t",
+                    severity="critical",
+                    column="order_id",
+                    logical_type="identifier",
+                )
+            ],
+        )
+        assert report.results[0].status is CheckStatus.ERROR
+        assert report.has_critical_failures()
+
+
+def test_logical_type_check_executes_on_real_duckdb():
+    """The declared contract is checked against a real engine's own type names."""
+    duckdb = pytest.importorskip("duckdb")
+    from skifer.core.adapters.duckdb import DuckDBAdapter
+
+    connection = duckdb.connect(database=":memory:")
+    adapter = DuckDBAdapter(connection)
+    try:
+        adapter.execute_sql("CREATE SCHEMA quality")
+        adapter.execute_sql(
+            "CREATE TABLE quality.contract AS SELECT "
+            "CAST('o1' AS VARCHAR) AS order_id, CAST(12.50 AS DECIMAL(10,2)) AS amount"
+        )
+
+        assert LogicalTypeCheck(
+            table="quality.contract", column="order_id", logical_type="string"
+        ).evaluate(adapter, "quality.contract").status is CheckStatus.PASS
+        assert LogicalTypeCheck(
+            table="quality.contract", column="amount", logical_type="decimal"
+        ).evaluate(adapter, "quality.contract").status is CheckStatus.PASS
+        assert LogicalTypeCheck(
+            table="quality.contract", column="amount", logical_type="string"
+        ).evaluate(adapter, "quality.contract").status is CheckStatus.FAIL
+    finally:
+        connection.close()
 
 
 class TestFilterInvariantCheck:

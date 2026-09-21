@@ -14,6 +14,7 @@ from typing import Any, Callable, ClassVar
 
 from skifer.core.dialect import transpile
 from skifer.core.ir import ParsedFilter
+from skifer.core.logical_types import matches, physical_types_for
 from skifer.core.sql_compiler import _SQL_FILTER_DISPATCH, quote_ident
 
 
@@ -231,6 +232,53 @@ class TypeCheck(DataContract):
                 f"Column '{self.column}' has type '{actual_type}', expected '{expected_norm}'."
                 if not passed
                 else f"Column '{self.column}' has expected type '{actual_type}'."
+            ),
+            severity=self.severity,
+        )
+
+
+# ---------------------------------------------------------------------------
+# LogicalTypeCheck  (Plan 40)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LogicalTypeCheck(DataContract):
+    """Checks a column against the logical type declared in ``contract.output``.
+
+    Separate from :class:`TypeCheck`, which serves the ``cast:`` operations of
+    ``select_final`` and compares physical names directly. The two answer
+    different questions — "is this the type the cast produced" versus "is this
+    the type the contract promised" — and a single class carrying both would
+    have to guess which one a caller meant.
+
+    The logical-to-physical mapping is resolved from ``backend.name`` at
+    evaluation time, so one contract holds on every engine: ``string`` is
+    satisfied by Spark's ``string`` and by DuckDB's ``VARCHAR``.
+    """
+
+    column: str = ""
+    logical_type: str = ""
+
+    def evaluate(self, backend, fqn: str) -> CheckResult:
+        # Raises UnverifiableLogicalType for a type outside the closed set. The
+        # monitor turns that into an ERROR result, which counts as a failure —
+        # a contract that cannot be checked must never read as satisfied.
+        accepted = physical_types_for(self.logical_type, backend.name)
+        actual_type = _column_types(backend, fqn).get(self.column)
+        passed = actual_type is not None and matches(actual_type, accepted)
+        expected = " | ".join(accepted)
+        return CheckResult(
+            contract=self,
+            passed=passed,
+            actual_value=actual_type,
+            expected_value=expected,
+            message=(
+                f"Column '{self.column}' is declared '{self.logical_type}' "
+                f"(expected {expected} on {backend.name}) but is "
+                f"{actual_type!r} in the produced table."
+                if not passed
+                else f"Column '{self.column}' matches declared type "
+                f"'{self.logical_type}' ({actual_type})."
             ),
             severity=self.severity,
         )

@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Added `LogicalTypeCheck` and a closed set of verifiable `contract.output` logical types
+  (`string`, `integer`, `long`, `double`, `decimal`, `boolean`, `date`, `timestamp`). A contract
+  declares a logical type while an engine reports a physical one, so checking one against the other
+  needs a mapping — and `logical_type: identifier`, which the YAML spec documents, has no physical
+  equivalent at all. Rather than compare it against something arbitrary or skip it, the set is
+  closed and anything outside it raises: a check that cannot fail reports coverage it does not
+  provide. The physical names were measured on a real Spark 4 session and a real DuckDB, not
+  assumed, and `COVERED_DIALECTS` makes an unmeasured engine raise instead of guessing — Snowflake
+  and BigQuery can be transpiled to but have never been observed here.
+
 - Fixed `TypeCheck` and `SchemaDriftCheck` raising `KeyError` on every adapter but Spark. Both ran
   their own `DESCRIBE` and read the `col_name`/`data_type` keys Spark returns, while DuckDB answers
   `column_name`/`column_type` — so the two checks were broken on the whole SQL-first path. They now
