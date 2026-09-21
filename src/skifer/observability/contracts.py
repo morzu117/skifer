@@ -24,6 +24,7 @@ Mapping rules (Plan 40 — contract.output, gated by contract_enforcement):
 """
 from __future__ import annotations
 
+from skifer.core.constants import CONTRACT_ENFORCEMENT_LEVELS
 from skifer.observability.checks import (
     DataContract,
     NullCheck,
@@ -39,13 +40,6 @@ from skifer.observability.checks import (
     CustomSqlCheck,
 )
 
-
-#: How hard ``contract.output`` is enforced, from an environment's config.
-#:
-#: ``off`` keeps the historical behaviour exactly: the block stays metadata.
-#: ``warn`` runs the checks at warning severity so a team can measure before
-#: imposing. ``strict`` runs them as critical, which quarantines a violation.
-CONTRACT_ENFORCEMENT_LEVELS: tuple[str, ...] = ("off", "warn", "strict")
 
 _ENFORCEMENT_SEVERITY: dict[str, str] = {"warn": "warning", "strict": "critical"}
 

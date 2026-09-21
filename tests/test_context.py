@@ -164,6 +164,8 @@ def test_governance_wiring_accessors_default_when_absent():
 
     assert ctx.alerts_config() == {}
     assert ctx.classification_propagation() == "warn"
+    # Plan 40: an existing project keeps its behaviour until someone opts in.
+    assert ctx.contract_enforcement() == "off"
 
 
 def test_governance_wiring_accessors_return_configured_values():
@@ -177,11 +179,13 @@ def test_governance_wiring_accessors_return_configured_values():
             "catalog": "c",
             "alerts": alerts,
             "classification_propagation": "strict",
+            "contract_enforcement": "strict",
         }
     )
 
     assert ctx.alerts_config() == alerts
     assert ctx.classification_propagation() == "strict"
+    assert ctx.contract_enforcement() == "strict"
 
 
 def test_governance_wiring_accessors_match_environment_case_insensitively():

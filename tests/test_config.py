@@ -307,6 +307,32 @@ def test_config_accepts_classification_propagation(tmp_path, value):
     assert manager.get_value("classification_propagation") == value
 
 
+@pytest.mark.parametrize("value", ["off", "warn", "strict"])
+def test_config_accepts_contract_enforcement(tmp_path, value):
+    manager = ConfigurationManager(
+        config_path=str(_write_local_config(tmp_path, contract_enforcement=value))
+    )
+
+    assert manager.get_value("contract_enforcement") == value
+
+
+@pytest.mark.parametrize("value", ["enforce", "STRICT", "on", None, 1, []])
+def test_config_rejects_invalid_contract_enforcement(tmp_path, value):
+    """A typo must fail at startup, never degrade to the permissive level.
+
+    `enforce` and `on` are the plausible wrong guesses — they are the words used
+    by the neighbouring semantic_certification_policy flag — so getting one of
+    them silently treated as `off` would turn an intended gate into none at all.
+    """
+    config_file = _write_local_config(tmp_path, contract_enforcement=value)
+
+    with pytest.raises(
+        ValueError,
+        match="contract_enforcement.*environment 'local'.*Expected one of",
+    ):
+        ConfigurationManager(config_path=str(config_file))
+
+
 @pytest.mark.parametrize("value", ["off", "WARN", None, 1, []])
 def test_config_rejects_invalid_classification_propagation(tmp_path, value):
     config_file = _write_local_config(

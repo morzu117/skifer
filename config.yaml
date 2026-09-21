@@ -59,3 +59,11 @@ environments:
   PROD:
     catalog: "my_prod_catalog"
     is_production: true
+    # How hard `contract.output` is enforced here (Plan 40).
+    #   off    — default; the block stays metadata, nothing changes.
+    #   warn   — derived checks run at warning severity, so you can measure first.
+    #   strict — derived checks are critical, and a pipeline must declare
+    #            `data_product:` so a violation quarantines instead of landing.
+    # Migrate off → warn → strict; `strict` also refuses a logical_type outside
+    # the verifiable set, because a check that cannot run must not read as passed.
+    # contract_enforcement: strict

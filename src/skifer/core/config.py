@@ -9,6 +9,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from skifer.core.constants import CONTRACT_ENFORCEMENT_LEVELS
+
 
 VALID_TRACING_EXPORTERS = ("none", "otlp", "mlflow", "dual")
 
@@ -331,6 +333,17 @@ class ConfigurationManager:
                                 "Invalid classification_propagation for environment "
                                 f"'{env_name}': {propagation!r}. Expected one of "
                                 f"{sorted(valid_propagation)}."
+                            )
+                    if "contract_enforcement" in env_config:
+                        enforcement = env_config["contract_enforcement"]
+                        if (
+                            not isinstance(enforcement, str)
+                            or enforcement not in CONTRACT_ENFORCEMENT_LEVELS
+                        ):
+                            raise ValueError(
+                                "Invalid contract_enforcement for environment "
+                                f"'{env_name}': {enforcement!r}. Expected one of "
+                                f"{sorted(CONTRACT_ENFORCEMENT_LEVELS)}."
                             )
                     if "alerts" in env_config:
                         alerts = env_config["alerts"]

@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Added the `contract_enforcement` environment setting (`off` | `warn` | `strict`), read from
+  `config.yaml` alongside `allow_raw_sql` and `classification_propagation`. `off` is the default and
+  keeps existing pipelines byte-identical; `warn` runs the `contract.output` checks at warning
+  severity so a team can measure before imposing; `strict` runs them as critical. An invalid value
+  fails when the config loads rather than degrading to the permissive level — `enforce` and `on` are
+  rejected explicitly, since they are the plausible wrong guesses borrowed from the neighbouring
+  `semantic_certification_policy` flag and a silent fallback would turn an intended gate into none.
+
 - `contract.output` now produces checks against the produced table instead of staying metadata.
   Its declarations already fed certification identity, the ODCS export, the contract diff, the
   semantic projection, drafts and the metadata index, but nothing ever compared them to the data: a
