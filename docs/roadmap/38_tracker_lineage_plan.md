@@ -135,6 +135,47 @@ colonne pour laquelle `skifer lineage` répondait et que le dictionnaire listait
 annonce donc un dataset sans colonnes, et l'héritage de classification, qui itère sur
 `record.columns`, n'examine rien. C'est le point 2 de la section suivante, pas celui-ci.
 
+### 6. Une source qualifiée rend le lineage correct et le pipeline inexécutable — **mesuré le 21 septembre 2026**
+
+Le point 1 dit qu'une colonne non qualifiée est attribuée à la table de base, donc parfois à tort.
+Le framework offre déjà le remède : qualifier la source par l'alias. `tracker.py::_resolve_source`
+le documente (« Resolves an alias- or FQN-qualified select/add_columns source »), l'émetteur
+OpenLineage s'en sert, et `examples/23_openlineage` **livre** un schéma qui l'utilise :
+
+```yaml
+select_final:
+  - [ord.id, order_id]
+  - [cust.email, customer_email]
+```
+
+Mesuré sur les deux moteurs, avec la fixture de jointure de `test_sql_spark_equivalence` :
+
+| forme de la source | Spark | SQL compilé (DuckDB) |
+|---|---|---|
+| `left_side.left_value` (alias) | `UNRESOLVED_COLUMN` | `BinderException` |
+| `schema.table.left_value` (FQN) | `UNRESOLVED_COLUMN` | `BinderException` |
+| `table.left_value` (nom court) | `UNRESOLVED_COLUMN` | `BinderException` |
+| `left_value` (nu) | OK | OK |
+
+**Aucune forme qualifiée ne s'exécute.** Le compilateur SQL, lui, cite la chaîne entière comme un
+seul identifiant — `` SELECT `o.amount` `` au lieu de `` `o`.`amount` `` — ce qui n'est correct sous
+aucune lecture.
+
+La contradiction est donc dans le produit, pas dans un module : **la forme qui rend le lineage
+correct rend le pipeline inexécutable, et la forme exécutable donne un lineage faux.** Un lecteur
+qui copie l'exemple 23 écrit un pipeline qui ne tourne pas — l'exemple ne l'exécute pas, il ne
+construit que des événements.
+
+J'ai implémenté un refus au chargement puis je l'ai **reverté** : il supprimait une capacité
+documentée au lieu de réparer l'incohérence. Trois tests l'ont signalé, dont un nommé
+`test_normal_path_join_resolves_alias_to_bare_column`.
+
+**Ce qu'il faut trancher.** Soit l'exécution apprend la forme qualifiée — côté SQL c'est presque
+gratuit, les CTE portent déjà le nom de l'alias, donc `` `o`.`amount` `` résoudrait ; côté Spark il
+faut aliaser les DataFrames, ce qui est du vrai travail, et les faire diverger serait pire que
+l'état actuel. Soit elle est refusée au chargement, et le point 1 reste sans remède : le lineage ne
+peut alors plus désambiguïser une colonne jointe. C'est une décision produit.
+
 ## Ce qu'un plan devra trancher
 
 1. **Comment un doute se représente.** Une arête « probable » et une arête sûre ne peuvent pas
@@ -147,7 +188,11 @@ annonce donc un dataset sans colonnes, et l'héritage de classification, qui it�
 3. **Séparer la condition de jointure du flux.** Soit deux types d'arêtes clairement distincts,
    soit deux graphes.
 4. ~~**Câbler `aggregate:`.**~~ **Livré le 20 septembre 2026** — voir le point 3 ci-dessus.
-5. ~~**Le nom publié d'une colonne de règle.**~~ **Livré le 20 septembre 2026** — voir le
+5. **Si une source qualifiée est exécutable.** Aujourd'hui elle ne l'est sur aucun moteur, alors
+   qu'elle est le seul remède au point 1 et qu'un exemple livré l'emploie. Soit l'exécution
+   l'apprend des deux côtés, soit elle est refusée au chargement et le point 1 reste sans remède.
+   Voir le point 6 ci-dessus.
+6. ~~**Le nom publié d'une colonne de règle.**~~ **Livré le 20 septembre 2026** — voir le
    point 5 ci-dessus. Aucune ambiguïté de conception : la colonne publiée est celle que le
    pipeline écrit, il n'y avait rien à arbitrer.
 
