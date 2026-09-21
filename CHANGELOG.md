@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the test workflow not installing the `sql` extra, which made CI stop at collection on all
+  four Python versions with `ModuleNotFoundError: No module named 'duckdb'`. Three modules import
+  it, and the Spark ↔ DuckDB equivalence suite is the guarantee the SQL-first work rests on, so CI
+  now installs it rather than skipping past it. Those modules also `importorskip` it now, so the
+  documented `pip install -e ".[dev]"` yields a smaller suite instead of a collection error — and
+  because that kindness would otherwise let a trimmed install line keep CI green while the
+  equivalence tests never ran, three guards were added: the workflow must install every extra the
+  suite needs, every `importorskip` target must map to a declared extra, and every such extra must
+  be either run in CI or recorded as knowingly unrun. Measured and recorded that way: 7 tests
+  behind `fastapi` and 1 behind `mcp` do not run in CI today.
+
 - Fixed `keep_all_columns` over a join returning a different schema on each engine. The DataFrame
   path drops the right-hand join key after joining, so a join on `left_id = right_id` yields one
   key column — the same shape the equal-name case gets from `USING`. The compiled SQL emitted `ON`

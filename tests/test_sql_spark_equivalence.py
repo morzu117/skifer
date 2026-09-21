@@ -14,9 +14,14 @@ import math
 from numbers import Number
 from uuid import uuid4
 
-import duckdb
 import pytest
 import yaml
+
+# `duckdb` comes with the optional `[sql]` extra. `pip install -e ".[dev]"` — the
+# command CLAUDE.md documents — does not pull it, and a module-level import then
+# stopped pytest at collection: a contributor got a broken suite rather than a
+# smaller one. The two modules that import helpers from here skip with it.
+duckdb = pytest.importorskip("duckdb")
 from pyspark.sql.types import (
     DoubleType,
     IntegerType,
