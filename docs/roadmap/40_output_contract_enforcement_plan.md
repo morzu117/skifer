@@ -166,14 +166,19 @@ l'exécution sur les colonnes réellement produites, là où la projection stati
 
 ### 40.6 — Exemples et documentation
 
-Deux exemples deviennent rouges, et c'est la preuve que le contrôle n'est pas
-vide :
+**Correction d'une affirmation de ce plan.** J'avais écrit que deux exemples
+deviendraient rouges. C'est faux : aucun exemple ne règle `contract_enforcement`,
+donc tous tournent en `off` et rien ne casse. Les deux incohérences sont bien
+réelles, mais latentes.
 
-- `examples/02_quality_and_contract/gold_orders.yaml` déclare
-  `amount_eur: {logical_type: decimal}` mais applique `cast:double`. Le contrat
-  et le pipeline se contredisent depuis toujours ; personne ne pouvait le voir.
-- `examples/23_openlineage` utilise `logical_type: identifier`, hors de
-  l'ensemble fermé.
+- `examples/02_quality_and_contract/gold_orders.yaml` déclarait
+  `amount_eur: {logical_type: decimal}` en appliquant `cast:double`. Mesuré en
+  forçant `strict` sur une session Spark réelle : `LogicalTypeCheck FAIL`. Le
+  contrat et le pipeline se contredisaient depuis toujours, et personne ne
+  pouvait le voir. Corrigé en `double` — l'exemple passe alors les douze
+  contrôles.
+- `examples/23_openlineage` utilisait `logical_type: identifier`, hors de
+  l'ensemble fermé. Corrigé en `string`.
 
 *Fichiers :* les deux exemples, `docs/yaml_spec.md` (l'exemple `identifier`),
 `docs/observability.md`, `CLAUDE.md` (section Gouvernance), `AGENTS.md`.
@@ -216,6 +221,23 @@ Portes complètes :
 pytest tests/ -x --tb=short && ruff check src/
 mkdocs build --strict
 ```
+
+## Limite connue
+
+Sur la voie SQL-first, un pipeline **sans** `data_product:` n'atteint jamais
+`DataMonitor` — `run_sql_pipeline` sort avant. En `warn`, un tel pipeline n'est
+donc pas mesuré. En `strict` la question ne se pose pas, `data_product:` y étant
+exigé. Écrit ici et dans `docs/observability.md` plutôt que laissé tacite.
+
+## Un défaut voisin, trouvé en mesurant
+
+En forçant `strict` sur `examples/02`, deux `FilterInvariantCheck` remontent en
+`ERROR` à chaque exécution, depuis toujours : ils dérivent des `filter:` de la
+table **source** (`status`, `amount`) mais sont évalués contre la table
+**cible**, où ces colonnes ont été renommées ou écartées — d'où
+`UNRESOLVED_COLUMN`. Ils sont en `warning`, donc personne ne l'a remarqué.
+
+Hors périmètre de ce plan, non corrigé ici, signalé pour ne pas être reperdu.
 
 ## Suite
 

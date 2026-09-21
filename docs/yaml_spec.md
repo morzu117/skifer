@@ -35,7 +35,7 @@ contract:
     access_policy: row_filter:region
   output:
     order_id:
-      logical_type: identifier
+      logical_type: string
       required: true
       unique: true
       classification: internal
@@ -45,6 +45,27 @@ contract:
       classification: pii
       description: Customer contact email
 ```
+
+### Verifying the output contract
+
+By default `contract.output` is metadata: it feeds certification identity, the
+ODCS export, the contract diff and the semantic projection. Set
+`contract_enforcement` on an environment (see `docs/observability.md`) and the
+same declarations become checks against the table the pipeline actually
+produced — `required` a null check, `unique` a uniqueness check, `logical_type`
+a type check, and the declared field set an exhaustiveness check, so a column
+produced but never declared is a violation.
+
+`logical_type` accepts any string, but only these are **verifiable** against a
+produced table:
+
+`string` · `integer` · `long` · `double` · `decimal` · `boolean` · `date` ·
+`timestamp`
+
+Anything else — `identifier`, `currency`, a domain word — stays a human
+annotation and is **refused** under `contract_enforcement: strict`, rather than
+silently skipped. A type with no physical equivalent has no honest verdict, and
+a check that cannot fail advertises a coverage it does not provide.
 
 An owner may still be a legacy string. The structured mapping accepts only
 `team`, `steward`, `domain`, and `contact`; `data_product.domain` remains the

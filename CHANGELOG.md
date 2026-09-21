@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed two example contracts that contradicted their own pipelines.
+  `examples/02_quality_and_contract` declared `amount_eur` as `decimal` while casting it to
+  `double`; forcing `contract_enforcement: strict` on a real Spark session reports
+  `LogicalTypeCheck FAIL`, so the contradiction was real and had simply never been observable.
+  `examples/23_openlineage` and the `docs/core.md` / `docs/yaml_spec.md` samples used
+  `logical_type: identifier`, which has no physical equivalent and is refused under `strict`.
+  All are aligned on the verifiable set.
+
 - `contract_enforcement: strict` now refuses, before any execution, a pipeline it could not
   actually govern: one without `data_product:` (without staging a contract can only be checked after
   the write, so "refuse to write" would be aspirational), one without a `contract:` block, one

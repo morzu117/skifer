@@ -459,9 +459,9 @@ contract:
   security: {level: internal, access_policy: role:sales-analytics}
   grain: [order_id]
   output:
-    order_id: {logical_type: identifier, required: true, unique: true}
+    order_id: {logical_type: string, required: true, unique: true}
     order_date: {logical_type: date}
-    net_revenue: {logical_type: currency, classification: internal}
+    net_revenue: {logical_type: double, classification: internal}
 semantic:
   model_key: orders
   entity: order
