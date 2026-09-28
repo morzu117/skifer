@@ -144,6 +144,8 @@ class DataMonitor:
         fqn: str,
         schema_dict: dict,
         raise_on_critical: bool = False,
+        *,
+        contract_enforcement: str = "off",
     ) -> MonitorReport:
         """
         Shortcut: derive contracts from the YAML schema dict, then run check_table().
@@ -152,11 +154,18 @@ class DataMonitor:
             fqn:              Fully-qualified table name to check.
             schema_dict:      Normalized schema dict (output of parse_schema).
             raise_on_critical: Propagated to check_table().
+            contract_enforcement: How hard `contract.output` is enforced
+                (plan 40). The engine passes the environment's value; the
+                permissive default here serves the many callers that predate
+                the flag, and the refusal itself lives in ContractExtractor,
+                where the argument has no default at all.
 
         Returns:
             MonitorReport.
         """
-        contracts = ContractExtractor().extract(schema_dict)
+        contracts = ContractExtractor().extract(
+            schema_dict, contract_enforcement=contract_enforcement
+        )
         return self.check_table(fqn, contracts, raise_on_critical=raise_on_critical)
 
     def _hydrate_volume_variation_contracts(self, contracts: list[DataContract], fqn: str) -> None:

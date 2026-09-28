@@ -23,7 +23,7 @@ contract:
   grain: [order_id]
   output:
     order_id:
-      logical_type: identifier
+      logical_type: string
       classification: internal
       description: Order identifier
     customer_email:

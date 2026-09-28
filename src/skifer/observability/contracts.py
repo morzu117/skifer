@@ -15,14 +15,22 @@ Mapping rules (Phase 2 — observability: section):
   observability.volume              → VolumeCheck + VolumeVariationCheck
   observability.schema_drift        → SchemaDriftCheck
   observability.custom_checks       → CustomSqlCheck
+
+Mapping rules (Plan 40 — contract.output, gated by contract_enforcement):
+  output[].required                 → NullCheck
+  output[].unique                   → UniqueCheck
+  output[].logical_type             → LogicalTypeCheck
+  the declared field set            → SchemaDriftCheck (exhaustive)
 """
 from __future__ import annotations
 
+from skifer.core.constants import CONTRACT_ENFORCEMENT_LEVELS
 from skifer.observability.checks import (
     DataContract,
     NullCheck,
     UniqueCheck,
     TypeCheck,
+    LogicalTypeCheck,
     FilterInvariantCheck,
     FreshnessCheck,
     LoadFreshnessCheck,
@@ -33,20 +41,34 @@ from skifer.observability.checks import (
 )
 
 
+_ENFORCEMENT_SEVERITY: dict[str, str] = {"warn": "warning", "strict": "critical"}
+
+
 class ContractExtractor:
     """Derives DataContract objects from a normalized schema dict."""
 
-    def extract(self, schema_dict: dict) -> list[DataContract]:
+    def extract(self, schema_dict: dict, *, contract_enforcement: str) -> list[DataContract]:
         """
         Parse a normalized schema dict and return all derived contracts.
 
         Args:
             schema_dict: Output of parse_schema() / load_schema().
+            contract_enforcement: One of :data:`CONTRACT_ENFORCEMENT_LEVELS`.
+                Deliberately **without a default**. This is the lesson of plan 39's
+                decision D14: a default lets a new call site arrive silently
+                permissive, and the one thing a governance control cannot afford is
+                to be skipped by a path nobody remembered to wire.
 
         Returns:
             List of DataContract instances (NullCheck, UniqueCheck,
             FilterInvariantCheck, TypeCheck).
         """
+        if contract_enforcement not in CONTRACT_ENFORCEMENT_LEVELS:
+            allowed = ", ".join(CONTRACT_ENFORCEMENT_LEVELS)
+            raise ValueError(
+                f"Unknown contract_enforcement {contract_enforcement!r}; expected one of: {allowed}."
+            )
+
         contracts: list[DataContract] = []
 
         # --- Derive contracts from each table entry -----------------------
@@ -125,6 +147,62 @@ class ContractExtractor:
                     )
                 )
 
+        contracts.extend(
+            self._extract_contract_output(
+                first_table_fqn, schema_dict, contract_enforcement
+            )
+        )
+
+        return contracts
+
+    def _extract_contract_output(
+        self, fqn: str, schema_dict: dict, contract_enforcement: str
+    ) -> list[DataContract]:
+        """Turn ``contract.output`` declarations into checks against the produced table.
+
+        Before plan 40 this block was metadata only: it fed certification identity,
+        the ODCS export, the contract diff and the semantic projection, but nothing
+        ever compared it to the data. A contract declaring
+        ``order_id: {required: true, unique: true}`` was verified nowhere.
+
+        The `SchemaDriftCheck` below is what makes the contract *exhaustive*, and
+        it is the reason this is the right answer to hand-written SQL hiding inside
+        a Python rule: a rule that invents a column shows up as an added column
+        here, whatever it used to build it. Static analysis cannot see inside
+        arbitrary Python; the produced table has nowhere to hide.
+        """
+        severity = _ENFORCEMENT_SEVERITY.get(contract_enforcement)
+        if severity is None:  # "off" — the historical behaviour, unchanged.
+            return []
+
+        output = (schema_dict.get("contract") or {}).get("output") or {}
+        if not isinstance(output, dict) or not output:
+            return []
+
+        contracts: list[DataContract] = []
+        for name, metadata in output.items():
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("required"):
+                contracts.append(NullCheck(table=fqn, column=name, severity=severity))
+            if metadata.get("unique"):
+                contracts.append(UniqueCheck(table=fqn, columns=[name], severity=severity))
+            logical_type = metadata.get("logical_type")
+            if logical_type:
+                contracts.append(
+                    LogicalTypeCheck(
+                        table=fqn,
+                        column=name,
+                        logical_type=str(logical_type),
+                        severity=severity,
+                    )
+                )
+
+        contracts.append(
+            SchemaDriftCheck(
+                table=fqn, expected_columns=list(output), severity=severity
+            )
+        )
         return contracts
 
     def _extract_observability(

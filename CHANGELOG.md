@@ -10,6 +10,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed two example contracts that contradicted their own pipelines.
+  `examples/02_quality_and_contract` declared `amount_eur` as `decimal` while casting it to
+  `double`; forcing `contract_enforcement: strict` on a real Spark session reports
+  `LogicalTypeCheck FAIL`, so the contradiction was real and had simply never been observable.
+  `examples/23_openlineage` and the `docs/core.md` / `docs/yaml_spec.md` samples used
+  `logical_type: identifier`, which has no physical equivalent and is refused under `strict`.
+  All are aligned on the verifiable set.
+
+- `contract_enforcement: strict` now refuses, before any execution, a pipeline it could not
+  actually govern: one without `data_product:` (without staging a contract can only be checked after
+  the write, so "refuse to write" would be aspirational), one without a `contract:` block, one
+  declaring a logical type outside the verifiable set, and one running on an adapter whose physical
+  type names were never measured. None of these is a refusal of bad data — each is a refusal of
+  unverifiability, because a control that lets through what it cannot inspect advertises a coverage
+  it does not have. The refusal lives in `core/patterns.py` beside the existing
+  `classification_propagation: strict` demands, since the schema loader is deliberately
+  environment-blind and the same YAML must stay portable.
+
+- Added the `contract_enforcement` environment setting (`off` | `warn` | `strict`), read from
+  `config.yaml` alongside `allow_raw_sql` and `classification_propagation`. `off` is the default and
+  keeps existing pipelines byte-identical; `warn` runs the `contract.output` checks at warning
+  severity so a team can measure before imposing; `strict` runs them as critical. An invalid value
+  fails when the config loads rather than degrading to the permissive level — `enforce` and `on` are
+  rejected explicitly, since they are the plausible wrong guesses borrowed from the neighbouring
+  `semantic_certification_policy` flag and a silent fallback would turn an intended gate into none.
+
+- `contract.output` now produces checks against the produced table instead of staying metadata.
+  Its declarations already fed certification identity, the ODCS export, the contract diff, the
+  semantic projection, drafts and the metadata index, but nothing ever compared them to the data: a
+  contract declaring `order_id: {required: true, unique: true}` was verified nowhere. `required`
+  becomes a `NullCheck`, `unique` a `UniqueCheck`, `logical_type` a `LogicalTypeCheck`, and the
+  declared field set a `SchemaDriftCheck` — which makes the contract exhaustive, so a column
+  produced but never declared is a violation. That last one is what static analysis of Python rules
+  could never give: a rule may build a column any way it likes, but it cannot keep it out of the
+  produced table. Gated by the new `contract_enforcement` argument, which has **no default** on
+  `ContractExtractor.extract` so no future call site can arrive silently permissive.
+
+- Added `LogicalTypeCheck` and a closed set of verifiable `contract.output` logical types
+  (`string`, `integer`, `long`, `double`, `decimal`, `boolean`, `date`, `timestamp`). A contract
+  declares a logical type while an engine reports a physical one, so checking one against the other
+  needs a mapping — and `logical_type: identifier`, which the YAML spec documents, has no physical
+  equivalent at all. Rather than compare it against something arbitrary or skip it, the set is
+  closed and anything outside it raises: a check that cannot fail reports coverage it does not
+  provide. The physical names were measured on a real Spark 4 session and a real DuckDB, not
+  assumed, and `COVERED_DIALECTS` makes an unmeasured engine raise instead of guessing — Snowflake
+  and BigQuery can be transpiled to but have never been observed here.
+
+- Fixed `TypeCheck` and `SchemaDriftCheck` raising `KeyError` on every adapter but Spark. Both ran
+  their own `DESCRIBE` and read the `col_name`/`data_type` keys Spark returns, while DuckDB answers
+  `column_name`/`column_type` — so the two checks were broken on the whole SQL-first path. They now
+  read `list_column_types`, which is already on the `Adapter` protocol and implemented by every
+  backend, keeping engine-specific introspection in one place. Types are compared lowercased, so a
+  contract holds identically where DuckDB reports `VARCHAR` and Spark reports `string`. No fake
+  could have caught this — every fake in the suite spoke Spark — so the proof is a test against a
+  real DuckDB database.
+
 - Fixed the test workflow not installing the `sql` extra, which made CI stop at collection on all
   four Python versions with `ModuleNotFoundError: No module named 'duckdb'`. Three modules import
   it, and the Spark ↔ DuckDB equivalence suite is the guarantee the SQL-first work rests on, so CI

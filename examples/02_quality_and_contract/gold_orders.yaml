@@ -16,7 +16,7 @@ contract:
     order_id:     {logical_type: string,  required: true, unique: true}
     customer_id:  {logical_type: string,  required: true}
     region:       {logical_type: string}
-    amount_eur:   {logical_type: decimal, required: true}
+    amount_eur:   {logical_type: double,  required: true}
     order_date:   {logical_type: date}
 
 tables:

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from skifer.core.constants import DEFAULT_CONTRACT_ENFORCEMENT
+
 
 IN_MEMORY_DATABASE = ":memory:"
 
@@ -145,6 +147,18 @@ class ExecutionContext:
     def classification_propagation(self) -> str:
         """Classification propagation mode for the active environment."""
         return self.env_config().get("classification_propagation", "warn")
+
+    def contract_enforcement(self) -> str:
+        """How hard ``contract.output`` is enforced on the active environment.
+
+        Defaults to ``off``, so an existing project keeps its behaviour to the
+        byte until someone opts in. Values are validated when ``config.yaml`` is
+        loaded, which is why this reader does not re-check them: a typo must
+        fail at startup, not silently degrade to the permissive level here.
+        """
+        return self.env_config().get(
+            "contract_enforcement", DEFAULT_CONTRACT_ENFORCEMENT
+        )
 
     def engine_mode(self) -> str:
         """Execution engine selected for the active environment."""

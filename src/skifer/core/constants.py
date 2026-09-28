@@ -22,6 +22,16 @@ VALID_CONTRACT_STATUSES: frozenset[str] = frozenset(
 )
 DEFAULT_CONTRACT_STATUS: str = "active"
 
+#: How hard ``contract.output`` is enforced on an environment (Plan 40).
+#:
+#: ``off`` (the default) keeps the historical behaviour exactly: the block stays
+#: metadata. ``warn`` runs the derived checks at warning severity so a team can
+#: measure before imposing. ``strict`` runs them as critical, which quarantines a
+#: violation — and additionally requires a pipeline to declare ``data_product:``,
+#: since staging is the only way a failed contract leaves the target untouched.
+CONTRACT_ENFORCEMENT_LEVELS: tuple[str, ...] = ("off", "warn", "strict")
+DEFAULT_CONTRACT_ENFORCEMENT: str = "off"
+
 #: Spark file formats supported by the declarative ``source:`` block (Plan 14).
 VALID_SOURCE_TYPES: frozenset[str] = frozenset(
     {"csv", "parquet", "json", "avro", "orc", "delta", "text"}

@@ -20,7 +20,7 @@ select_final:
 """
     )
 
-    contracts = ContractExtractor().extract(schema)
+    contracts = ContractExtractor().extract(schema, contract_enforcement="off")
 
     load_checks = [check for check in contracts if isinstance(check, LoadFreshnessCheck)]
     assert load_checks == [

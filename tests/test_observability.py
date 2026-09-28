@@ -15,11 +15,13 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+from skifer.core.logical_types import UnverifiableLogicalType
 from skifer.core.schema_loader import parse_schema
 from skifer.observability.checks import (
     NullCheck,
     UniqueCheck,
     TypeCheck,
+    LogicalTypeCheck,
     FilterInvariantCheck,
     FreshnessCheck,
     LoadFreshnessCheck,
@@ -66,9 +68,15 @@ class FakeBackend:
     """
     name = "databricks"
 
-    def __init__(self, default_rows: list[dict] | None = None, sql_override=None):
+    def __init__(
+        self,
+        default_rows: list[dict] | None = None,
+        sql_override=None,
+        column_types: dict[str, str] | None = None,
+    ):
         self._default_rows = default_rows or []
         self._sql_override = sql_override
+        self._column_types = dict(column_types or {})
         self.queries: list[str] = []
 
     def sql(self, query: str) -> FakeResult:
@@ -79,6 +87,15 @@ class FakeBackend:
 
     def fetch(self, query: str) -> list[dict]:
         return list(self.sql(query).collect())
+
+    def list_column_types(self, fqn: str) -> dict[str, str]:
+        """Mirror the real backends: introspection never goes through ``sql()``.
+
+        ``DESCRIBE`` answers with a different row shape per engine, which is why
+        checks must not parse it themselves. Returning the mapping directly is
+        what ``SparkBackend`` and ``DuckDBAdapter`` both do.
+        """
+        return dict(self._column_types)
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +111,7 @@ tables:
     quality_checks:
       drop_nulls_in: [amount, customer_id]
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         null_checks = [c for c in contracts if isinstance(c, NullCheck)]
         assert len(null_checks) == 2
         assert {c.column for c in null_checks} == {"amount", "customer_id"}
@@ -107,7 +124,7 @@ tables:
     quality_checks:
       drop_duplicates_on: [order_id]
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         unique = [c for c in contracts if isinstance(c, UniqueCheck)]
         assert len(unique) == 1
         assert unique[0].columns == ["order_id"]
@@ -120,7 +137,7 @@ tables:
     filter:
       - status:in:ACTIVE,PENDING
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         filters = [c for c in contracts if isinstance(c, FilterInvariantCheck)]
         assert len(filters) == 1
         assert filters[0].operator == "in"
@@ -133,7 +150,7 @@ tables:
     filter:
       - customer_id:is_not_null
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         filters = [c for c in contracts if isinstance(c, FilterInvariantCheck)]
         assert len(filters) == 1
         assert filters[0].column == "customer_id"
@@ -146,7 +163,7 @@ tables:
 select_final:
   - [amount, amount_eur, [cast:double]]
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         type_checks = [c for c in contracts if isinstance(c, TypeCheck)]
         assert any(c.column == "amount_eur" and c.expected_type == "double" for c in type_checks)
 
@@ -160,13 +177,13 @@ select_final:
     ops:
       - cast:double
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         type_checks = [c for c in contracts if isinstance(c, TypeCheck)]
         assert any(c.column == "amount_eur" and c.expected_type == "double" for c in type_checks)
 
     def test_extract_no_contracts_for_empty_schema(self):
         schema = parse_schema("tables:\n  - name: silver.orders\n")
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         assert contracts == []
 
     def test_extract_multiple_table_null_checks(self):
@@ -179,12 +196,110 @@ tables:
     quality_checks:
       drop_nulls_in: [email]
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         null_checks = [c for c in contracts if isinstance(c, NullCheck)]
         assert len(null_checks) == 2
         tables = {c.table for c in null_checks}
         assert "silver.orders" in tables
         assert "silver.customers" in tables
+
+
+CONTRACT_YAML = """
+data_product:
+  id: sales.orders
+  version: 1.0.0
+tables:
+  - name: silver.orders
+contract:
+  grain: [order_id]
+  output:
+    order_id: {logical_type: string, required: true, unique: true}
+    amount:   {logical_type: double, required: true}
+    region:   {logical_type: string}
+select_final:
+  - [order_id, order_id]
+  - [amount, amount]
+  - [region, region]
+"""
+
+
+class TestContractOutputEnforcement:
+    """`contract.output` becomes verification rather than metadata (Plan 40)."""
+
+    def _extract(self, level):
+        return ContractExtractor().extract(
+            parse_schema(CONTRACT_YAML), contract_enforcement=level
+        )
+
+    def test_off_derives_nothing_from_contract_output(self):
+        """Non-regression: the default must leave existing pipelines untouched."""
+        contracts = self._extract("off")
+        assert not any(isinstance(c, LogicalTypeCheck) for c in contracts)
+        assert not any(isinstance(c, SchemaDriftCheck) for c in contracts)
+        assert not any(isinstance(c, NullCheck) for c in contracts)
+
+    def test_strict_derives_one_check_per_declaration(self):
+        contracts = self._extract("strict")
+        nulls = {c.column for c in contracts if isinstance(c, NullCheck)}
+        uniques = {tuple(c.columns) for c in contracts if isinstance(c, UniqueCheck)}
+        types = {
+            (c.column, c.logical_type)
+            for c in contracts
+            if isinstance(c, LogicalTypeCheck)
+        }
+        assert nulls == {"order_id", "amount"}
+        assert uniques == {("order_id",)}
+        assert types == {
+            ("order_id", "string"),
+            ("amount", "double"),
+            ("region", "string"),
+        }
+
+    def test_the_contract_is_exhaustive(self):
+        """A column produced but not declared is a violation.
+
+        This is the check that closes the F.expr door: a projection rule can
+        build a column any way it likes, but it cannot keep it out of the
+        produced table.
+        """
+        drift = [c for c in self._extract("strict") if isinstance(c, SchemaDriftCheck)]
+        assert len(drift) == 1
+        assert set(drift[0].expected_columns) == {"order_id", "amount", "region"}
+
+        backend = FakeBackend(
+            column_types={
+                "order_id": "string",
+                "amount": "double",
+                "region": "string",
+                "smuggled": "double",
+            }
+        )
+        result = drift[0].evaluate(backend, "t")
+        assert result.status is CheckStatus.FAIL
+        assert "smuggled" in result.message
+
+    def test_warn_and_strict_differ_only_in_severity(self):
+        """The migration path is off → warn → strict, so warn must never block."""
+        warn = self._extract("warn")
+        strict = self._extract("strict")
+        derived = (NullCheck, UniqueCheck, LogicalTypeCheck, SchemaDriftCheck)
+
+        warn_derived = [c for c in warn if isinstance(c, derived)]
+        strict_derived = [c for c in strict if isinstance(c, derived)]
+        assert len(warn_derived) == len(strict_derived)
+        assert all(c.severity == "warning" for c in warn_derived)
+        assert all(c.severity == "critical" for c in strict_derived)
+
+    def test_an_unknown_enforcement_level_is_refused(self):
+        with pytest.raises(ValueError, match="contract_enforcement"):
+            self._extract("enforce")
+
+    def test_a_schema_without_a_contract_derives_nothing(self):
+        contracts = ContractExtractor().extract(
+            parse_schema("tables:\n  - name: silver.orders\n"),
+            contract_enforcement="strict",
+        )
+        assert contracts == []
 
 
 # ---------------------------------------------------------------------------
@@ -271,35 +386,181 @@ def test_null_and_unique_checks_execute_on_real_duckdb():
         connection.close()
 
 
+def test_type_and_drift_checks_execute_on_real_duckdb():
+    """These two checks used to raise KeyError on every adapter but Spark.
+
+    They ran their own ``DESCRIBE`` and read ``col_name``/``data_type``; DuckDB
+    answers ``column_name``/``column_type``. No fake could show it, because every
+    fake in this file spoke Spark. Only a real engine proves the fix, which is
+    why this test exists next to the one above rather than as another fake.
+    """
+    duckdb = pytest.importorskip("duckdb")
+    from skifer.core.adapters.duckdb import DuckDBAdapter
+
+    connection = duckdb.connect(database=":memory:")
+    adapter = DuckDBAdapter(connection)
+    try:
+        adapter.execute_sql("CREATE SCHEMA quality")
+        adapter.execute_sql(
+            "CREATE TABLE quality.typed AS SELECT "
+            "CAST(1 AS INTEGER) AS id, CAST('x' AS VARCHAR) AS label, "
+            "CAST(1.5 AS DOUBLE) AS amount"
+        )
+
+        # DuckDB reports INTEGER/VARCHAR/DOUBLE in uppercase.
+        assert TypeCheck(
+            table="quality.typed", column="label", expected_type="varchar"
+        ).evaluate(adapter, "quality.typed").status is CheckStatus.PASS
+        assert TypeCheck(
+            table="quality.typed", column="amount", expected_type="varchar"
+        ).evaluate(adapter, "quality.typed").status is CheckStatus.FAIL
+
+        drift = SchemaDriftCheck(
+            table="quality.typed", expected_columns=["id", "label"]
+        ).evaluate(adapter, "quality.typed")
+        assert drift.status is CheckStatus.FAIL
+        assert "amount" in drift.message
+    finally:
+        connection.close()
+
+
 class TestTypeCheck:
 
     def test_type_check_passes(self):
-        def sql_override(query):
-            return [
-                {"col_name": "amount_eur", "data_type": "double"},
-                {"col_name": "id", "data_type": "bigint"},
-            ]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(column_types={"amount_eur": "double", "id": "bigint"})
         check = TypeCheck(table="silver.orders", column="amount_eur", expected_type="double")
         result = check.evaluate(backend, "silver.orders")
         assert result.passed
 
     def test_type_check_fails(self):
-        def sql_override(query):
-            return [
-                {"col_name": "amount_eur", "data_type": "string"},
-            ]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(column_types={"amount_eur": "string"})
         check = TypeCheck(table="silver.orders", column="amount_eur", expected_type="double")
         result = check.evaluate(backend, "silver.orders")
         assert not result.passed
         assert "string" in result.message
 
     def test_type_check_column_not_found(self):
-        backend = FakeBackend(default_rows=[{"col_name": "other_col", "data_type": "string"}])
+        backend = FakeBackend(column_types={"other_col": "string"})
         check = TypeCheck(table="silver.orders", column="missing_col", expected_type="double")
         result = check.evaluate(backend, "silver.orders")
         assert not result.passed
+
+    def test_type_check_reads_an_uppercase_dialect(self):
+        """DuckDB reports VARCHAR where Spark reports string.
+
+        The check compares lowercased, so the same contract holds on both
+        engines. Before the introspection primitive this test could not even be
+        written: the check parsed DESCRIBE rows by Spark's column names.
+        """
+        backend = FakeBackend(column_types={"label": "VARCHAR", "total": "DECIMAL(10,2)"})
+        assert TypeCheck(
+            table="t", column="label", expected_type="varchar"
+        ).evaluate(backend, "t").passed
+        assert TypeCheck(
+            table="t", column="total", expected_type="decimal"
+        ).evaluate(backend, "t").passed
+
+    def test_a_check_never_issues_describe_itself(self):
+        """The row shape of DESCRIBE differs per engine, so no check may parse it.
+
+        Spark answers col_name/data_type, DuckDB column_name/column_type. A check
+        that ran its own DESCRIBE raised KeyError on every adapter but Spark, and
+        no fake could reveal it because every fake spoke Spark.
+        """
+        backend = FakeBackend(column_types={"amount_eur": "double"})
+        TypeCheck(table="t", column="amount_eur", expected_type="double").evaluate(backend, "t")
+        SchemaDriftCheck(table="t", expected_columns=["amount_eur"]).evaluate(backend, "t")
+        assert backend.queries == []
+
+
+class TestLogicalTypeCheck:
+
+    def test_one_declaration_holds_on_both_engines(self):
+        """`logical_type: string` is satisfied by Spark string and DuckDB VARCHAR.
+
+        This is the point of a logical type: the contract is written once and
+        means the same thing wherever the pipeline runs.
+        """
+        check = LogicalTypeCheck(table="t", column="label", logical_type="string")
+
+        spark = FakeBackend(column_types={"label": "string"})
+        duck = FakeBackend(column_types={"label": "VARCHAR"})
+        duck.name = "duckdb"
+
+        assert check.evaluate(spark, "t").status is CheckStatus.PASS
+        assert check.evaluate(duck, "t").status is CheckStatus.PASS
+
+    def test_a_violated_declaration_fails(self):
+        backend = FakeBackend(column_types={"amount": "string"})
+        result = LogicalTypeCheck(
+            table="t", column="amount", logical_type="double"
+        ).evaluate(backend, "t")
+        assert result.status is CheckStatus.FAIL
+        assert "amount" in result.message
+
+    def test_a_missing_column_fails_rather_than_passing_vacuously(self):
+        backend = FakeBackend(column_types={"other": "string"})
+        result = LogicalTypeCheck(
+            table="t", column="absent", logical_type="string"
+        ).evaluate(backend, "t")
+        assert result.status is CheckStatus.FAIL
+        assert result.actual_value is None
+
+    def test_an_unverifiable_type_raises_instead_of_passing(self):
+        """A type outside the closed set must never read as satisfied.
+
+        The monitor turns this into an ERROR result, which counts as a failure —
+        so a contract that cannot be checked blocks rather than flatters.
+        """
+        backend = FakeBackend(column_types={"order_id": "string"})
+        with pytest.raises(UnverifiableLogicalType):
+            LogicalTypeCheck(
+                table="t", column="order_id", logical_type="identifier"
+            ).evaluate(backend, "t")
+
+    def test_the_monitor_turns_that_refusal_into_a_critical_failure(self):
+        backend = FakeBackend(column_types={"order_id": "string"})
+        monitor = DataMonitor(backend)
+        report = monitor.check_table(
+            "t",
+            [
+                LogicalTypeCheck(
+                    table="t",
+                    severity="critical",
+                    column="order_id",
+                    logical_type="identifier",
+                )
+            ],
+        )
+        assert report.results[0].status is CheckStatus.ERROR
+        assert report.has_critical_failures()
+
+
+def test_logical_type_check_executes_on_real_duckdb():
+    """The declared contract is checked against a real engine's own type names."""
+    duckdb = pytest.importorskip("duckdb")
+    from skifer.core.adapters.duckdb import DuckDBAdapter
+
+    connection = duckdb.connect(database=":memory:")
+    adapter = DuckDBAdapter(connection)
+    try:
+        adapter.execute_sql("CREATE SCHEMA quality")
+        adapter.execute_sql(
+            "CREATE TABLE quality.contract AS SELECT "
+            "CAST('o1' AS VARCHAR) AS order_id, CAST(12.50 AS DECIMAL(10,2)) AS amount"
+        )
+
+        assert LogicalTypeCheck(
+            table="quality.contract", column="order_id", logical_type="string"
+        ).evaluate(adapter, "quality.contract").status is CheckStatus.PASS
+        assert LogicalTypeCheck(
+            table="quality.contract", column="amount", logical_type="decimal"
+        ).evaluate(adapter, "quality.contract").status is CheckStatus.PASS
+        assert LogicalTypeCheck(
+            table="quality.contract", column="amount", logical_type="string"
+        ).evaluate(adapter, "quality.contract").status is CheckStatus.FAIL
+    finally:
+        connection.close()
 
 
 class TestFilterInvariantCheck:
@@ -668,33 +929,22 @@ class TestVolumeVariationCheck:
 class TestSchemaDriftCheck:
 
     def test_no_drift_passes(self):
-        def sql_override(query):
-            return [
-                {"col_name": "id", "data_type": "bigint"},
-                {"col_name": "amount", "data_type": "double"},
-            ]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(column_types={"id": "bigint", "amount": "double"})
         check = SchemaDriftCheck(table="t", expected_columns=["id", "amount"])
         result = check.evaluate(backend, "t")
         assert result.passed
 
     def test_added_column_detected(self):
-        def sql_override(query):
-            return [
-                {"col_name": "id", "data_type": "bigint"},
-                {"col_name": "amount", "data_type": "double"},
-                {"col_name": "new_col", "data_type": "string"},
-            ]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(
+            column_types={"id": "bigint", "amount": "double", "new_col": "string"}
+        )
         check = SchemaDriftCheck(table="t", expected_columns=["id", "amount"])
         result = check.evaluate(backend, "t")
         assert not result.passed
         assert "added" in result.message
 
     def test_removed_column_detected(self):
-        def sql_override(query):
-            return [{"col_name": "id", "data_type": "bigint"}]
-        backend = FakeBackend(sql_override=sql_override)
+        backend = FakeBackend(column_types={"id": "bigint"})
         check = SchemaDriftCheck(table="t", expected_columns=["id", "amount"])
         result = check.evaluate(backend, "t")
         assert not result.passed
@@ -734,7 +984,7 @@ observability:
     max_delay: "2h"
     timestamp_column: updated_at
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         freshness = [c for c in contracts if isinstance(c, FreshnessCheck)]
         assert len(freshness) == 1
         assert freshness[0].timestamp_column == "updated_at"
@@ -749,7 +999,7 @@ observability:
     min_rows: 1000
     max_rows: 10000000
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         volume = [c for c in contracts if isinstance(c, VolumeCheck)]
         assert len(volume) == 1
         assert volume[0].min_rows == 1000
@@ -763,7 +1013,7 @@ observability:
     min_rows: 1000
     variation_threshold: 0.3
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         variation = [c for c in contracts if isinstance(c, VolumeVariationCheck)]
         assert len(variation) == 1
         assert variation[0].variation_threshold == 0.3
@@ -779,7 +1029,7 @@ observability:
   schema_drift:
     enabled: true
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         drift = [c for c in contracts if isinstance(c, SchemaDriftCheck)]
         assert len(drift) == 1
         assert set(drift[0].expected_columns) == {"id", "amount"}
@@ -794,7 +1044,7 @@ observability:
       expect: 0
       severity: critical
 """)
-        contracts = ContractExtractor().extract(schema)
+        contracts = ContractExtractor().extract(schema, contract_enforcement="off")
         custom = [c for c in contracts if isinstance(c, CustomSqlCheck)]
         assert len(custom) == 1
         assert custom[0].severity == "critical"

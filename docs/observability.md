@@ -132,10 +132,69 @@ Checks derived from `filter` are `warning` by default — they express a busines
 ```python
 from skifer.observability.contracts import ContractExtractor
 
-contracts = ContractExtractor().extract(schema)
+contracts = ContractExtractor().extract(schema, contract_enforcement="off")
 for c in contracts:
     print(f"[{c.severity}] {type(c).__name__}")
 ```
+
+`contract_enforcement` has **no default** on `extract()`. Three execution paths
+reach it, and a default would let a fourth arrive silently permissive — the
+same reasoning as Plan 39's decision D14.
+
+---
+
+## Verifying the output contract — Plan 40
+
+`contract.output` used to be metadata only: it fed certification identity, the
+ODCS export, the contract diff and the semantic projection, but nothing ever
+compared it to the data. Set `contract_enforcement` on an environment and the
+same declarations become checks against the table the pipeline produced.
+
+```yaml
+environments:
+  prod:
+    contract_enforcement: strict   # off (default) | warn | strict
+```
+
+| Level | Behaviour |
+|---|---|
+| `off` | Default. `contract.output` stays metadata; nothing changes. |
+| `warn` | Derived checks run at `warning` severity — measure before imposing. |
+| `strict` | Derived checks are `critical`; a violation quarantines. |
+
+| Declaration | Check generated |
+|---|---|
+| `required: true` | `NullCheck` |
+| `unique: true` | `UniqueCheck` |
+| `logical_type: X` | `LogicalTypeCheck` |
+| the declared field set | `SchemaDriftCheck` — the contract is **exhaustive** |
+
+That last row is the point. A `kind="projection"` rule is arbitrary Python and
+may call `F.expr`; no static analysis can see inside it. What it cannot do is
+keep the column it invents out of the table it produces, so an undeclared
+column fails the exhaustiveness check whatever built it.
+
+### What `strict` refuses before running
+
+Each refusal is about a pipeline the gate could not check, not about bad data:
+
+1. **no `data_product:`** — without staging, the contract can only be checked
+   after the write. Requiring it routes the pipeline through
+   `PublicationCoordinator`, so a violation quarantines and the target is never
+   touched.
+2. **no `contract:` block** — there is nothing to verify.
+3. **a `logical_type` outside the verifiable set** — see `docs/yaml_spec.md`.
+4. **an adapter whose physical type names were never measured** — currently
+   anything but `databricks` and `duckdb`.
+
+Migrate `off` → `warn` → `strict`.
+
+### Known limit
+
+On the SQL-first path, a pipeline **without** `data_product:` never reaches
+`DataMonitor` at all — `run_sql_pipeline` returns before it. So under `warn`,
+such a pipeline is not measured. Under `strict` the question does not arise,
+since `data_product:` is required there.
 
 ---
 

@@ -285,6 +285,7 @@ def test_run_process_to_table_legacy_schema_keeps_write_and_monitor_flow():
         "`gold_schema`.`fact_orders`",
         schema,
         raise_on_critical=True,
+        contract_enforcement=engine.context.contract_enforcement(),
     )
 
 
@@ -955,3 +956,91 @@ def test_run_process_to_table_engine_double_without_lineage_attributes_still_wor
 
     assert coordinator.call_args.kwargs["lineage_emitter"] is None
     assert coordinator.call_args.kwargs["lineage_context"] is None
+
+
+# ---------------------------------------------------------------------------
+# Plan 40 — contract_enforcement: strict refuses what it cannot govern
+# ---------------------------------------------------------------------------
+
+def _strict_patterns_engine():
+    engine, backend, patterns = _make_patterns_engine()
+    engine.context.contract_enforcement.return_value = "strict"
+    engine.context.adapter_name.return_value = "databricks"
+    engine.context.engine_mode.return_value = "spark"
+    return engine, backend, patterns
+
+
+class TestStrictContractEnforcement:
+    """Each refusal is about a pipeline the gate could not check, not about bad data.
+
+    A control that lets through what it cannot inspect advertises a coverage it
+    does not have — which is worse than no control, because people trust it.
+    """
+
+    def test_a_pipeline_without_data_product_is_refused(self):
+        """Without staging, the contract can only be checked after the write.
+
+        The user asked for "refuse to write". Only the certified path stages the
+        data first, so requiring data_product: is what makes that promise true
+        rather than aspirational.
+        """
+        _, _, patterns = _strict_patterns_engine()
+        schema = {"tables": [{"name": "silver.orders", "alias": "ord"}]}
+
+        with pytest.raises(ValueError, match="data_product"):
+            patterns.run_process_to_table(schema, "gold", "fact_orders")
+
+    def test_a_pipeline_without_a_contract_is_refused(self):
+        _, _, patterns = _strict_patterns_engine()
+        schema = {
+            "data_product": {"id": "sales.orders", "version": "1.0.0"},
+            "tables": [{"name": "silver.orders", "alias": "ord"}],
+        }
+
+        with pytest.raises(ValueError, match="contract"):
+            patterns.run_process_to_table(schema, "gold", "fact_orders")
+
+    def test_an_unverifiable_logical_type_is_refused(self):
+        """`identifier` names the field but promises nothing checkable."""
+        _, _, patterns = _strict_patterns_engine()
+        schema = _certified_schema(
+            contract={"output": {"id": {"logical_type": "identifier"}}}
+        )
+
+        with pytest.raises(ValueError, match="identifier"):
+            patterns.run_process_to_table(schema, "gold", "fact_orders")
+
+    def test_an_unmeasured_adapter_is_refused(self):
+        """Snowflake transpiles, but its physical type names were never observed.
+
+        Running anyway would compare contract types against a vocabulary nobody
+        checked.
+        """
+        engine, _, patterns = _strict_patterns_engine()
+        engine.context.adapter_name.return_value = "snowflake"
+
+        with pytest.raises(ValueError, match="snowflake"):
+            patterns.run_process_to_table(
+                _certified_schema(), "gold", "fact_orders"
+            )
+
+    def test_a_conforming_pipeline_passes_the_gate(self):
+        """The guard must not refuse everything — that would pass every test above."""
+        engine, _, patterns = _strict_patterns_engine()
+        engine.certification_store = MagicMock()
+        engine.monitor = MagicMock()
+
+        from skifer.core.patterns import _assert_contract_is_enforceable
+
+        # No raise.
+        _assert_contract_is_enforceable(engine.context, _certified_schema())
+
+    def test_off_and_warn_refuse_nothing(self):
+        """The migration path must stay open: only strict adds demands."""
+        from skifer.core.patterns import _assert_contract_is_enforceable
+
+        bare = {"tables": [{"name": "silver.orders", "alias": "ord"}]}
+        for level in ("off", "warn"):
+            engine, _, _ = _make_patterns_engine()
+            engine.context.contract_enforcement.return_value = level
+            _assert_contract_is_enforceable(engine.context, bare)

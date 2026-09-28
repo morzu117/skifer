@@ -345,6 +345,26 @@ startup error**, not a warning, and HTTP demands a complete auth configuration. 
 constant with no business data. No secret appears in startup logs or configuration errors, YAML
 parser diagnostics included.
 
+### Governance: raw SQL and the output contract (Plans 39, 40)
+
+`allow_raw_sql: false` on an environment disables `expr:` operations, the `sql` filter operator and
+**`kind="sql"` rules and loaders** (Plan 39, decision D14): the flag reads "no hand-written SQL runs
+here", whichever layer wrote it. It cannot cover `F.expr` inside a `kind="projection"` rule — that is
+arbitrary Python.
+
+`contract_enforcement: off|warn|strict` closes that door from the other side (Plan 40), by checking
+the **output** rather than the input. `contract.output` stops being metadata: `required` →
+`NullCheck`, `unique` → `UniqueCheck`, `logical_type` → `LogicalTypeCheck`, and the declared field
+set → `SchemaDriftCheck`, which makes the contract **exhaustive**. A Python rule may build a column
+any way it likes; it cannot keep it out of the table it produces.
+
+`off` is the default and changes nothing. `strict` refuses before running a pipeline it could not
+govern: no `data_product:` (staging is the only way a failure leaves the target untouched), no
+`contract:`, a `logical_type` outside the verifiable set (`string`, `integer`, `long`, `double`,
+`decimal`, `boolean`, `date`, `timestamp`), or an adapter whose physical type names were never
+measured. Known limit: on the SQL path a pipeline without `data_product:` never reaches the monitor,
+so `warn` does not measure it.
+
 ### RuleRegistry pattern
 ```python
 @RuleRegistry.register_rule()

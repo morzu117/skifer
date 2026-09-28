@@ -65,7 +65,8 @@ class PublicationCoordinator:
     """Stage, validate, persist check results, then promote or quarantine."""
 
     def __init__(self, backend, monitor, store, metadata_store=None, alert_router=None, alert_config=None,
-                 lineage_emitter=None, lineage_context=None):
+                 lineage_emitter=None, lineage_context=None,
+                 contract_enforcement: str = "off"):
         self.backend = backend
         self.monitor = monitor
         self.store = store
@@ -74,6 +75,8 @@ class PublicationCoordinator:
         self.alert_config = alert_config if isinstance(alert_config, dict) else {}
         self.lineage_emitter = lineage_emitter
         self.lineage_context = lineage_context
+        # Plan 40: how hard contract.output is enforced on this environment.
+        self.contract_enforcement = contract_enforcement
         # Plain getattr, not monitor.__dict__: a monitor exposing `tracer` as a
         # property was silently downgraded to NoOpTracer, i.e. tracing quietly
         # off with no way to notice.
@@ -141,7 +144,10 @@ class PublicationCoordinator:
         # No span here: DataMonitor already emits skifer.contract.evaluate,
         # and wrapping the call would report the same boundary twice.
         report = self.monitor.check_from_schema(
-            run.staging_fqn, schema_dict, raise_on_critical=False
+            run.staging_fqn,
+            schema_dict,
+            raise_on_critical=False,
+            contract_enforcement=self.contract_enforcement,
         )
         self.store.append_check_results([
             StoredCheckResult(

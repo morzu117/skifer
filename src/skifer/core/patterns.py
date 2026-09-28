@@ -10,12 +10,74 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+from skifer.core.logical_types import COVERED_DIALECTS, LOGICAL_TYPES, is_verifiable
 from skifer.observability.best_effort import warn_best_effort
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _assert_contract_is_enforceable(context, schema_dict: dict) -> None:
+    """Refuse, under ``contract_enforcement: strict``, what strict cannot govern.
+
+    None of these refusals is about bad data — each one is about a pipeline the
+    gate could not actually check. That distinction is the whole design: a
+    control which quietly lets through what it cannot inspect reports a coverage
+    it does not have, which is worse than no control because people trust it.
+
+    The refusal lives here rather than in the loader because the loader is
+    environment-blind: ``parse_schema`` receives no context, no config and no
+    environment name, by design, so the same YAML stays portable. This is the
+    first seam that knows both the schema and the environment — the same place
+    ``classification_propagation: strict`` makes its own demands.
+    """
+    if context.contract_enforcement() != "strict":
+        return
+
+    if schema_dict.get("data_product") is None:
+        raise ValueError(
+            "contract_enforcement: strict requires the schema to declare 'data_product:'. "
+            "Without it the pipeline writes straight to its target and the contract can "
+            "only be checked after the fact; with it, publication stages the data first, "
+            "so a violation is quarantined and the target is never touched."
+        )
+
+    output = (schema_dict.get("contract") or {}).get("output") or {}
+    if not output:
+        raise ValueError(
+            "contract_enforcement: strict requires the schema to declare a 'contract:' "
+            "block with output fields — that declaration is what is verified against the "
+            "produced table."
+        )
+
+    adapter = context.adapter_name()
+    if adapter not in COVERED_DIALECTS:
+        covered = ", ".join(sorted(COVERED_DIALECTS))
+        raise ValueError(
+            f"contract_enforcement: strict cannot verify contract types on adapter "
+            f"{adapter!r}; its physical type names have never been measured. "
+            f"Measured adapters: {covered}."
+        )
+
+    unverifiable = sorted(
+        {
+            str(metadata["logical_type"])
+            for metadata in output.values()
+            if isinstance(metadata, dict)
+            and metadata.get("logical_type")
+            and not is_verifiable(str(metadata["logical_type"]))
+        }
+    )
+    if unverifiable:
+        allowed = ", ".join(sorted(LOGICAL_TYPES))
+        raise ValueError(
+            f"contract_enforcement: strict refuses logical type(s) "
+            f"{', '.join(repr(t) for t in unverifiable)}: they have no physical "
+            f"equivalent, so a contract declaring them cannot be checked against the "
+            f"produced table. Verifiable logical types: {allowed}."
+        )
 
 
 def _build_alert_router(e):
@@ -108,6 +170,7 @@ class PipelinePatterns:
         run_id: str | None = None,
     ) -> None:
         e = self._engine
+        _assert_contract_is_enforceable(e.context, schema_dict)
         if e.context.engine_mode() == "sql":
             from skifer.core.sql_runner import (
                 compile_sql_pipeline_relation,
@@ -169,6 +232,7 @@ class PipelinePatterns:
                     alert_config=alert_config,
                     lineage_emitter=getattr(e, "lineage_emitter", None),
                     lineage_context=getattr(e, "lineage_context", None),
+                    contract_enforcement=e.context.contract_enforcement(),
                 )
                 result = coordinator.publish(
                     handle,
@@ -275,7 +339,12 @@ class PipelinePatterns:
             )
             if executed and getattr(e, "monitor", None) is not None:
                 logger.info("   -> [Monitor] Running post-create quality checks on '%s'...", fqn)
-                report = e.monitor.check_from_schema(fqn, schema_dict, raise_on_critical=True)
+                report = e.monitor.check_from_schema(
+                    fqn,
+                    schema_dict,
+                    raise_on_critical=True,
+                    contract_enforcement=e.context.contract_enforcement(),
+                )
                 summary = report.summary()
                 logger.info(
                     "   -> [Monitor] %s — %s/%s checks passed.",
@@ -333,6 +402,7 @@ class PipelinePatterns:
                 alert_config=alert_config,
                 lineage_emitter=getattr(e, "lineage_emitter", None),
                 lineage_context=getattr(e, "lineage_context", None),
+                contract_enforcement=e.context.contract_enforcement(),
             )
             # Same identity from the pipeline down to the certification record,
             # so the link survives without exported traces (Plan 29).
@@ -362,7 +432,12 @@ class PipelinePatterns:
             # complete data. interval: triggers block above and never reach this.
             if getattr(e, "monitor", None) is not None and schema_dict and not uses_jdbc_sink:
                 logger.info("   -> [Monitor] Running post-write quality checks on '%s'...", fqn)
-                report = e.monitor.check_from_schema(fqn, schema_dict, raise_on_critical=True)
+                report = e.monitor.check_from_schema(
+                    fqn,
+                    schema_dict,
+                    raise_on_critical=True,
+                    contract_enforcement=e.context.contract_enforcement(),
+                )
                 summary = report.summary()
                 status = summary.get("status", "PASS")
                 logger.info(
