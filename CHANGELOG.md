@@ -8,6 +8,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a guard that every `docs/roadmap/*_plan.md` link in `CLAUDE.md` and `AGENTS.md` resolves.
+  Those tables are the map an agent reads before starting, and Plan 38 sat in it as "finalised, not
+  started" while no file, no branch and no commit existed for it — nothing failed, because nothing
+  looked. The guard also refuses to pass when a brief lists no plan at all, so it cannot go vacuous
+  the way a link-checker does when the pattern stops matching.
+
+- Added a drift guard on metadata persistence. `_record_to_json` serialises with `asdict`, so a
+  field added to `DatasetRecord` is written automatically, while `_record_from_json` names every
+  field by hand and would read the same field back as its default. The guard fails as soon as a
+  field is left at its default in the round-trip fixture, which forces it to be exercised, and the
+  round trip then catches a lossy read.
+
+- Added drift guards on the coupling between `semantic sync`'s contract snapshot and the
+  `ContractDiff` dimensions it checks. The snapshot is what defines the comparable surface, so the
+  two lists have to match in both directions: storing an attribute without checking it makes it
+  silently uncomparable, and checking one without storing it makes every contract that declares it
+  drift on every sync. Measured — adding `grain_changed` to the check without snapshotting the
+  grain reports drift on a contract that did not change. This is why `diff_contracts` gaining new
+  dimensions did not extend `semantic sync`: widening its snapshot is a draft-format change that
+  has to decide what an older draft, which has no such key, should report.
+
+- Added drift guards on contract identity. `canonicalize_contract` builds the hashed payload from
+  a hand-written list of field names, so a field added to `ParsedOutputField`, `ParsedSla`,
+  `ParsedSecurity` or `ParsedSemanticSeed` would silently stay out of the hash — and two
+  materially different contracts would then share one certification identity, which is the single
+  guarantee the hash exists to provide. Every attribute of those four dataclasses must now be
+  declared as either part of the identity or documentation-only, and the tests prove the
+  distinction rather than asserting it: each contractual attribute is flipped and the hash must
+  change, `description` is flipped and the hash must not. This also closed a coverage gap —
+  `name`, `required`, `unique`, `classification` and `entity` were in the payload with no test
+  showing that changing them changed anything.
+
+- Added `--rules` to `skifer index`, which had no way to import the project's business rules.
+  The lineage this command stores is built by `RuleAnalyzer`, which can only read a rule the
+  process imported, and an unresolved rule is skipped silently — so indexing a pipeline with
+  rules produced a record where every rule-made column had no provenance and inherited no
+  classification, indistinguishable from a pipeline that has no rules. `compile` and `run`
+  already had the flag. A module that cannot be imported is a usage error, not a warning:
+  continuing would leave exactly the gap the flag exists to close.
+
+- Documented that an operation containing a comma must be quoted in a YAML flow sequence:
+  `[split:-,0]` is read as two items and silently loses the index. The documented
+  `split:sep,idx` form was itself the trap.
+
+### Fixed
+
+- Fixed `export_odcs_31` silently dropping `contract.security`. The function's own docstring
+  promises it exports "without silently discarding metadata", and it warns for `entity` and for
+  the semantic seed — but the security block left with neither an entry nor a warning, while
+  `import_odcs_31` had been reading a top-level `security` mapping all along. Export now emits
+  that same shape, so the block survives an export/import round trip. A test now holds the whole
+  surface to the promise: for every contract attribute, either the emitted document changes or a
+  warning names it.
+
+- Fixed `export_odcs_31` emitting the same `unique` quality rule twice when a single-column grain
+  names a field that is also marked `unique: true` — the grain path and the field path each
+  appended it. A third party reads `quality` as a list of rules, so the duplicate was a constraint
+  stated twice. The existing test compared the rule *types as a set*, which is why the duplicate
+  was invisible to it; the new one counts.
+
+- Fixed `schema_from_definition` dropping `contract.grain` and `contract.security` when rebuilding
+  a schema from a contract's canonical JSON. Both are in the hashed payload, so two definitions
+  differing only there are correctly two identities — but every comparison built on the rebuild was
+  blind to them. `PublicationCoordinator` reconstructs **both** sides of its breaking-change
+  comparison this way, so a `security.level` downgraded from `restricted` to `public` and a
+  redefined grain produced no alert at all. Slice 35.2a's acceptance criterion — a round trip
+  showing no change — passed precisely because `diff_contracts` was blind in the same place: two
+  gaps that masked each other.
+
+- Fixed `diff_contracts` ignoring attributes that change the contract's identity hash. `unique`,
+  `entity`, `grain` and the whole `security` block were invisible, so a contract could change
+  identity while the governance tooling reported nothing. A grain redefinition is breaking because
+  it changes what one row means. A `security.level` is a free string, so two levels are comparable
+  only when both are known taxonomy levels; an `access_policy` is an expression rather than a rank
+  and can never be compared — anything that cannot be shown safe counts as breaking, which is the
+  rule this module already applied to an SLA. Withdrawing `unique` is reported without being
+  breaking, for the same reason dropping `required` is. A test now fails when any hashed attribute
+  becomes invisible to the diff, with the `semantic:` seed as the one declared exception.
+
+- Fixed a business rule's lineage edge carrying the rule's internal column name instead of the
+  name `select_final` actually publishes. When the two differ, the edge pointed at a column the
+  target does not have, and the column it *does* have was left with no provenance at all — so a
+  classification inherited through the rule reached nothing. Measured end to end: `email`
+  classified `pii` upstream, a rule deriving `email_masked` from it, `select_final` publishing it
+  as `hashed_contact`, and `skifer index --strict` reporting no violation and `hashed_contact`
+  classified `None`. Same family as the `aggregate:` fail-open below. A rule column that
+  `select_final` never mentions is now emitted as no target edge at all: it is computed and then
+  dropped, so advertising it invented a column that `skifer lineage` would answer for and the
+  dictionary would list. `keep_all_columns` and the identity case are unchanged.
+
+- Fixed `aggregate:` producing no column lineage at all, which silently dropped classification.
+  The Plan 28 block had never been wired into `LineageTracker`, so an aggregated Gold table — the
+  most common shape there is — had an empty dictionary, an empty impact analysis, and inherited
+  nothing: a `pii` column folded by `first` reached the target with no classification, and
+  `mode="strict"` could not object, because it rejects undeclared *inferred* elevations and there
+  was no inference to reject. A control cannot catch what it is never shown. A group key now
+  carries a `select` edge marked `group_by`, a measure a `metric` edge marked with its function.
+  `count:*` starts at the source rather than the target, since the rows counted are the source's,
+  and is emitted despite having no source column — dropping the edge would hide the output column
+  from the dictionary, and an absent column reads as "no dependency" rather than "not analysed".
+  A group key produced by `add_columns` is not re-attributed to a source table, because that would
+  name a column the reader cannot find; its own edge already carries the real origin.
+
+- Fixed a column operation missing a required argument raising a bare
+  `IndexError: tuple index out of range`. Every backend indexes `op.args` positionally —
+  `op.args[1]` for `split:` — so `round` with no argument, or `split:x`, surfaced a Python
+  traceback naming neither the column, nor the operation, nor what was expected, on the Spark
+  path as much as the SQL one. `COLUMN_OPS` had declared each operation's arity all along and
+  nothing read it. Only a **minimum** is enforced: `lit:Paris, France` legitimately hands
+  several comma-separated parts to a `single` operation and the backends rejoin them on
+  purpose, so an upper bound would reject valid YAML.
+
 ## [2.2.0] - 2026-09-14
 
 ### Fixed

@@ -9,7 +9,7 @@ import re
 
 from skifer.core.constants import CLASSIFICATION_RANK
 from skifer.core.ir import ParsedSchema
-from skifer.core.ir import ParsedOutputField, ParsedSla
+from skifer.core.ir import ParsedOutputField, ParsedSecurity, ParsedSla
 from skifer.observability.checks import FreshnessCheck
 
 
@@ -43,7 +43,11 @@ class ContractDiff:
     retyped: tuple[tuple[str, str, str], ...] = ()
     required_changed: tuple[tuple[str, bool, bool], ...] = ()
     classification_changed: tuple[tuple[str, str, str], ...] = ()
+    unique_changed: tuple[tuple[str, bool, bool], ...] = ()
+    entity_changed: tuple[tuple[str, str, str], ...] = ()
+    grain_changed: tuple[tuple[str, ...], tuple[str, ...]] | None = None
     sla_changed: bool = False
+    security_changed: bool = False
     breaking: bool = False
 
 
@@ -167,7 +171,34 @@ def schema_from_definition(definition: ContractDefinition) -> ParsedSchema:
         if raw_sla is not None
         else None
     )
-    return ParsedSchema(contract_output=output, contract_sla=sla)
+
+    # `grain` and `security` are in the hashed payload, so two definitions that
+    # differ only there are correctly two identities. Dropping them here made
+    # them invisible to every comparison built on this rebuild — including the
+    # breaking-change alert at publication, which reconstructs both sides this
+    # way and so never saw a downgraded security level or a redefined grain.
+    raw_grain = contract.get("grain", [])
+    if not isinstance(raw_grain, list) or not all(isinstance(k, str) for k in raw_grain):
+        raise ValueError("Contract definition contract.grain must be a list of strings.")
+
+    raw_security = contract.get("security")
+    if raw_security is not None and not isinstance(raw_security, dict):
+        raise ValueError("Contract definition contract.security must be an object or null.")
+    security = (
+        ParsedSecurity(
+            level=raw_security.get("level"),
+            access_policy=raw_security.get("access_policy"),
+        )
+        if raw_security is not None
+        else None
+    )
+
+    return ParsedSchema(
+        contract_output=output,
+        contract_grain=list(raw_grain),
+        contract_sla=sla,
+        contract_security=security,
+    )
 
 
 def diff_contracts(a: ParsedSchema, b: ParsedSchema) -> ContractDiff:
@@ -186,7 +217,10 @@ def diff_contracts(a: ParsedSchema, b: ParsedSchema) -> ContractDiff:
     retyped: list[tuple[str, str, str]] = []
     required_changed: list[tuple[str, bool, bool]] = []
     classification_changed: list[tuple[str, str, str]] = []
+    unique_changed: list[tuple[str, bool, bool]] = []
+    entity_changed: list[tuple[str, str, str]] = []
     required_hardened = False
+    unique_hardened = False
     classification_downgraded = False
 
     for field in a.contract_output:
@@ -205,6 +239,20 @@ def diff_contracts(a: ParsedSchema, b: ParsedSchema) -> ContractDiff:
             required_changed.append((field.name, required_a, required_b))
             required_hardened = required_hardened or (not required_a and required_b)
 
+        # A withdrawn or newly imposed uniqueness guarantee is a contractual
+        # change: consumers use it as a merge or join grain. Tightening it is
+        # what breaks a producer, exactly as for `required`.
+        unique_a = bool(field.unique)
+        unique_b = bool(next_field.unique)
+        if unique_a != unique_b:
+            unique_changed.append((field.name, unique_a, unique_b))
+            unique_hardened = unique_hardened or (not unique_a and unique_b)
+
+        entity_a = field.entity or ""
+        entity_b = next_field.entity or ""
+        if entity_a != entity_b:
+            entity_changed.append((field.name, entity_a, entity_b))
+
         class_a = field.classification or "public"
         class_b = next_field.classification or "public"
         if class_a != class_b:
@@ -214,12 +262,20 @@ def diff_contracts(a: ParsedSchema, b: ParsedSchema) -> ContractDiff:
             )
 
     sla_changed, sla_breaking = _diff_sla_breaking(a, b)
+    security_changed, security_breaking = _diff_security_breaking(a, b)
+    # The grain is what one row means. Changing it changes every row count and
+    # every join downstream, so there is no non-breaking direction to it.
+    grain_a, grain_b = tuple(a.contract_grain), tuple(b.contract_grain)
+    grain_changed = (grain_a, grain_b) if grain_a != grain_b else None
     breaking = bool(
         removed
         or retyped
         or required_hardened
+        or unique_hardened
         or classification_downgraded
+        or grain_changed
         or sla_breaking
+        or security_breaking
     )
     return ContractDiff(
         added=added,
@@ -227,9 +283,44 @@ def diff_contracts(a: ParsedSchema, b: ParsedSchema) -> ContractDiff:
         retyped=tuple(retyped),
         required_changed=tuple(required_changed),
         classification_changed=tuple(classification_changed),
+        unique_changed=tuple(unique_changed),
+        entity_changed=tuple(entity_changed),
+        grain_changed=grain_changed,
         sla_changed=sla_changed,
+        security_changed=security_changed,
         breaking=breaking,
     )
+
+
+def _diff_security_breaking(a: ParsedSchema, b: ParsedSchema) -> tuple[bool, bool]:
+    """Report a security change, and whether it can be shown to be safe.
+
+    `security.level` is a free string — only the block's keys are validated — so
+    two levels are comparable only when both are known taxonomy levels. Anything
+    else, including every `access_policy` edit, cannot be compared: a row filter
+    is an expression, not a rank. Treating what cannot be compared as breaking is
+    the rule this module already applies to an SLA, and the safe direction here:
+    the alternative is a silent relaxation of access.
+    """
+    old = _security_tuple(a)
+    new = _security_tuple(b)
+    if old == new:
+        return False, False
+
+    old_level, old_policy = old
+    new_level, new_policy = new
+    if old_policy != new_policy:
+        return True, True
+    if old_level in CLASSIFICATION_RANK and new_level in CLASSIFICATION_RANK:
+        return True, CLASSIFICATION_RANK[new_level] < CLASSIFICATION_RANK[old_level]
+    return True, True
+
+
+def _security_tuple(schema: ParsedSchema) -> tuple[str | None, str | None]:
+    security = schema.contract_security
+    if security is None:
+        return None, None
+    return security.level, security.access_policy
 
 
 def _diff_sla_breaking(a: ParsedSchema, b: ParsedSchema) -> tuple[bool, bool]:

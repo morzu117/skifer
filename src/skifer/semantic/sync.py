@@ -766,6 +766,14 @@ class SemanticSynchronizer:
         if previous is None:
             return None
         contract_diff = diff_contracts(previous, schema)
+        # These six dimensions mirror `_attach_contract_snapshot` exactly, and
+        # the correspondence is the point rather than an omission. The snapshot
+        # is what defines the comparable surface: an attribute it does not store
+        # comes back absent, so `diff_contracts` would report every contract
+        # that declares one as drifting on every sync. Extending this list means
+        # extending the snapshot first, and deciding what an older draft — which
+        # has no such key — should report. `test_semantic_sync.py` fails if the
+        # two ever stop matching.
         if (
             contract_diff.added
             or contract_diff.removed

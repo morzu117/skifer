@@ -57,7 +57,12 @@ def export_odcs_31(schema: ParsedSchema, definition: ContractDefinition) -> Odcs
     if not schema.contract_grain:
         warnings.append("contract.grain is absent; no primary-key quality rule was exported.")
     elif len(schema.contract_grain) == 1:
-        quality.append({"type": "unique", "field": schema.contract_grain[0]})
+        # A single-column grain implies uniqueness, and so does `unique: true`
+        # on that same field. Appending both puts one constraint twice in a
+        # document a third party reads as a list of rules.
+        grain_rule = {"type": "unique", "field": schema.contract_grain[0]}
+        if grain_rule not in quality:
+            quality.append(grain_rule)
     else:
         warnings.append("Composite contract.grain has no portable ODCS 3.1 quality mapping.")
 
@@ -85,6 +90,18 @@ def export_odcs_31(schema: ParsedSchema, definition: ContractDefinition) -> Odcs
     if product and product.owner_domain:
         custom_properties["skifer.domain"] = product.owner_domain
 
+    # `import_odcs_31` already reads a top-level `security` mapping keyed by
+    # `level` and `accessPolicy`, so the representation was settled; the export
+    # simply never produced one. Until now `contract.security` left through this
+    # function with neither an entry nor a warning, which is the one thing its
+    # docstring promises does not happen.
+    security = {}
+    if schema.contract_security:
+        if schema.contract_security.level:
+            security["level"] = schema.contract_security.level
+        if schema.contract_security.access_policy:
+            security["accessPolicy"] = schema.contract_security.access_policy
+
     sla_properties = []
     if schema.contract_sla:
         if schema.contract_sla.refresh_frequency:
@@ -108,6 +125,7 @@ def export_odcs_31(schema: ParsedSchema, definition: ContractDefinition) -> Odcs
         "description": product.description if product else None,
         "schema": {"properties": fields},
         "quality": quality,
+        "security": security,
         "team": team,
         "roles": [{"role": "reader", "access": "read"}],
         "slaProperties": sla_properties,

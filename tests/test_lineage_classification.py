@@ -102,3 +102,81 @@ def test_strict_mode_raises_on_inferred_elevation():
 
     assert isinstance(caught.value, ValueError)
     assert caught.value.column == "email"
+
+
+def _aggregate_graph(measures: str):
+    """Lineage for a pipeline whose output is produced by `aggregate:`."""
+    from skifer.core.schema_loader import parse_schema
+    from skifer.lineage.tracker import LineageTracker
+
+    schema = parse_schema(
+        f"""
+tables:
+  - name: silver.orders
+    alias: o
+aggregate:
+  group_by: [country]
+  measures:
+{measures}
+"""
+    )
+    return LineageTracker.from_schema(schema, target_name="gold.agg")
+
+
+def test_classification_propagates_through_an_aggregate():
+    """A `pii` column folded by an aggregate must not lose its classification.
+
+    `first` reports the value as-is, so `contacts` is every bit as sensitive as
+    the `email` it came from. Before the tracker learned `aggregate:` this
+    returned `{}`: no edge existed, so nothing was inferred.
+    """
+    graph = _aggregate_graph("    - [email, contacts, first]\n")
+
+    with pytest.warns(ClassificationPropagationWarning):
+        resolved = resolve_field_classifications(
+            graph,
+            "gold.agg",
+            declared={},
+            source_classifications={"email": "pii"},
+            mode="warn",
+        )
+
+    assert resolved["contacts"] == "pii"
+
+
+def test_strict_mode_can_now_object_to_an_aggregated_elevation():
+    """The fail-open this closes: `strict` rejects undeclared *inferred*
+    elevations, so with no edge there was no inference to reject — the strictest
+    setting available could not see the problem. A control cannot catch what it
+    is never shown."""
+    graph = _aggregate_graph("    - [email, contacts, first]\n")
+
+    with pytest.raises(ClassificationViolationError):
+        resolve_field_classifications(
+            graph,
+            "gold.agg",
+            declared={},
+            source_classifications={"email": "pii"},
+            mode="strict",
+        )
+
+
+def test_a_row_count_inherits_nothing_while_staying_visible():
+    """`count:*` reads no column, so it inherits nothing — but its output column
+    must still exist in the graph, or the dictionary would simply omit it."""
+    graph = _aggregate_graph(
+        '    - [email, contacts, first]\n    - ["*", nb_rows, count]\n'
+    )
+
+    with pytest.warns(ClassificationPropagationWarning):
+        resolved = resolve_field_classifications(
+            graph,
+            "gold.agg",
+            declared={},
+            source_classifications={"email": "pii"},
+            mode="warn",
+        )
+
+    assert resolved["contacts"] == "pii"
+    assert "nb_rows" not in resolved
+    assert any(edge.target_column == "nb_rows" for edge in graph.edges)

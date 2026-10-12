@@ -128,6 +128,17 @@ def main() -> None:
         action="store_true",
         help="Reject undeclared inherited classification before indexing.",
     )
+    index_parser.add_argument(
+        "--rules",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help=(
+            "Module whose import registers business rules (e.g. rules.orders). "
+            "Repeat for several. Without it a rule is unresolvable, so the "
+            "columns it produces carry no lineage and inherit no classification."
+        ),
+    )
 
     lineage_parser = subparsers.add_parser(
         "lineage",
@@ -466,6 +477,16 @@ def run_index_command(args: argparse.Namespace, *, store=None) -> int:
 
     if args.target_fqn and len(args.paths) > 1:
         print("[index] --target-fqn is only valid with a single path.", file=sys.stderr)
+        return INDEX_EXIT_USAGE
+
+    # The lineage this command stores is built by RuleAnalyzer, which can only
+    # read a rule the process has imported. Without this, every column a
+    # business rule produces is indexed with no provenance and inherits no
+    # classification — silently, because an unresolved rule is skipped.
+    try:
+        import_rule_modules(getattr(args, "rules", None) or [])
+    except ValueError as exc:
+        print(f"[index] {exc}", file=sys.stderr)
         return INDEX_EXIT_USAGE
 
     try:
@@ -1469,3 +1490,31 @@ def _render_agent_response_rich(console: object, response: object) -> None:
 
     except Exception:
         console.print(str(response))
+
+
+def import_rule_modules(module_names) -> None:
+    """Import each module so its ``@register_rule`` decorators run.
+
+    The project's rules live in the project, not in the package, so no CLI
+    command can see them until something imports them. The current directory is
+    put on ``sys.path`` because that is where ``config.yaml`` is discovered from,
+    which is the same project root a reader means by ``rules.orders``.
+
+    An import failure is fatal rather than a warning: continuing would refuse the
+    pipeline for a missing rule and blame the pipeline, not the import.
+    """
+    import importlib
+
+    if not module_names:
+        return
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+    for module_name in module_names:
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:
+            raise ValueError(
+                f"--rules {module_name!r} could not be imported: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc

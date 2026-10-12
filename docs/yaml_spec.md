@@ -64,8 +64,16 @@ Contract identity uses canonicalization version 2. `sla` and `security` are part
 of the SHA-256 definition hash. Lifecycle workflow metadata—`status`,
 `reviewers`, `effective_from`, and `effective_until`—is intentionally outside
 the hash, as are ownership and descriptions. `diff_contracts(old, new)` marks
-field removals, retypes, required hardening, classification downgrades, and SLA
-relaxation or an uncomparable SLA change as breaking.
+field removals, retypes, required hardening, uniqueness hardening,
+classification downgrades, grain redefinitions, security downgrades, and any SLA
+or security change it cannot compare, as breaking.
+
+Every attribute that changes the definition hash is visible to the diff, with
+one declared exception: the `semantic:` seed, which is a model hint co-authored
+with the pipeline rather than a promise made to a consumer of the table. A test
+fails when that stops being true, because an attribute the hash reacts to and
+the diff cannot see is a contract that changes identity while the tooling
+reports nothing.
 
 ODCS 3.1 documents can be imported to these two YAML blocks:
 
