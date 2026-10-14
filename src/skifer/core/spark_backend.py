@@ -261,10 +261,10 @@ class SparkBackend:
         return self._spark.sql(query)
 
     def _append_certification(self, schema: str, table: str, row: dict, key: str) -> None:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
-        qualified = f"{quote_ident(schema)}.{quote_ident(table)}"
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
+        qualified = f"{quote_fqn(schema)}.{quote_ident(table)}"
         plain = f"{schema}.{table}"
-        self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_ident(schema)}")
+        self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_fqn(schema)}")
         if self._spark.catalog.tableExists(plain):
             escaped = escape_sql_string(row[key])
             if self._spark.sql(f"SELECT 1 FROM {qualified} WHERE {quote_ident(key)} = '{escaped}' LIMIT 1").collect():
@@ -277,14 +277,14 @@ class SparkBackend:
     def get_certification_contract(
         self, schema: str, contract_id: str, version: str
     ) -> dict | None:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
         plain = f"{schema}.contract_definitions"
         if not self._spark.catalog.tableExists(plain):
             return None
         escaped_id = escape_sql_string(contract_id)
         escaped_version = escape_sql_string(version)
         rows = self._spark.sql(
-            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('contract_definitions')} "
+            f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('contract_definitions')} "
             f"WHERE {quote_ident('contract_id')} = '{escaped_id}' "
             f"AND {quote_ident('contract_version')} = '{escaped_version}' LIMIT 2"
         ).collect()
@@ -297,14 +297,14 @@ class SparkBackend:
     def get_certification_contract_by_hash(
         self, schema: str, contract_id: str, definition_hash: str
     ) -> dict | None:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
         plain = f"{schema}.contract_definitions"
         if not self._spark.catalog.tableExists(plain):
             return None
         escaped_id = escape_sql_string(contract_id)
         escaped_hash = escape_sql_string(definition_hash)
         rows = self._spark.sql(
-            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('contract_definitions')} "
+            f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('contract_definitions')} "
             f"WHERE {quote_ident('contract_id')} = '{escaped_id}' "
             f"AND {quote_ident('definition_hash')} = '{escaped_hash}' LIMIT 1"
         ).collect()
@@ -317,61 +317,61 @@ class SparkBackend:
         self._append_certification(schema, "check_results", row, "event_id")
 
     def get_certification_run(self, schema: str, run_id: str) -> dict | None:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
         plain = f"{schema}.materialization_runs"
         if not self._spark.catalog.tableExists(plain):
             return None
         escaped = escape_sql_string(run_id)
         row = self._spark.sql(
-            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('materialization_runs')} "
+            f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('materialization_runs')} "
             f"WHERE {quote_ident('run_id')} = '{escaped}' ORDER BY {quote_ident('occurred_at')} DESC LIMIT 1"
         ).first()
         return row.asDict(recursive=True) if row else None
 
     def get_latest_certification_promotion(self, schema: str, dataset: str) -> dict | None:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
         plain = f"{schema}.materialization_runs"
         if not self._spark.catalog.tableExists(plain):
             return None
         escaped = escape_sql_string(dataset)
         row = self._spark.sql(
-            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('materialization_runs')} "
+            f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('materialization_runs')} "
             f"WHERE {quote_ident('dataset')} = '{escaped}' AND {quote_ident('state')} = 'PROMOTED' "
             f"ORDER BY {quote_ident('occurred_at')} DESC LIMIT 1"
         ).first()
         return row.asDict(recursive=True) if row else None
 
     def list_certification_history(self, schema: str, dataset: str, limit: int = 50) -> list[dict]:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
         plain = f"{schema}.materialization_runs"
         if not self._spark.catalog.tableExists(plain):
             return []
         escaped = escape_sql_string(dataset)
         rows = self._spark.sql(
-            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('materialization_runs')} "
+            f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('materialization_runs')} "
             f"WHERE {quote_ident('dataset')} = '{escaped}' "
             f"ORDER BY {quote_ident('occurred_at')} DESC LIMIT {int(limit)}"
         ).collect()
         return [row.asDict(recursive=True) for row in rows]
 
     def get_certification_check_results(self, schema: str, run_id: str) -> list[dict]:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
         plain = f"{schema}.check_results"
         if not self._spark.catalog.tableExists(plain):
             return []
         escaped = escape_sql_string(run_id)
         rows = self._spark.sql(
-            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('check_results')} "
+            f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('check_results')} "
             f"WHERE {quote_ident('run_id')} = '{escaped}'"
         ).collect()
         return [row.asDict(recursive=True) for row in rows]
 
     def upsert_incident(self, schema: str, row: dict) -> None:
-        from skifer.core.sql_compiler import quote_ident
+        from skifer.core.sql_compiler import quote_fqn, quote_ident
 
         plain = f"{schema}.incidents"
-        qualified = f"{quote_ident(schema)}.{quote_ident('incidents')}"
-        self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_ident(schema)}")
+        qualified = f"{quote_fqn(schema)}.{quote_ident('incidents')}"
+        self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_fqn(schema)}")
         schema_ddl = (
             "id STRING, target_fqn STRING, run_id STRING, check_name STRING, "
             "severity STRING, status STRING, opened_at STRING, assignee STRING, "
@@ -398,7 +398,7 @@ class SparkBackend:
     def get_open_incident(
         self, schema: str, target_fqn: str, check_name: str
     ) -> dict | None:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
 
         plain = f"{schema}.incidents"
         if not self._spark.catalog.tableExists(plain):
@@ -406,7 +406,7 @@ class SparkBackend:
         escaped_target = escape_sql_string(target_fqn)
         escaped_check = escape_sql_string(check_name)
         row = self._spark.sql(
-            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('incidents')} "
+            f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('incidents')} "
             f"WHERE {quote_ident('target_fqn')} = '{escaped_target}' "
             f"AND {quote_ident('check_name')} = '{escaped_check}' "
             f"AND {quote_ident('status')} != 'RESOLVED' "
@@ -415,14 +415,14 @@ class SparkBackend:
         return row.asDict(recursive=True) if row else None
 
     def list_open_incidents(self, schema: str, target_fqn: str) -> list[dict]:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
 
         plain = f"{schema}.incidents"
         if not self._spark.catalog.tableExists(plain):
             return []
         escaped = escape_sql_string(target_fqn)
         rows = self._spark.sql(
-            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('incidents')} "
+            f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('incidents')} "
             f"WHERE {quote_ident('target_fqn')} = '{escaped}' "
             f"AND {quote_ident('status')} != 'RESOLVED' "
             f"ORDER BY {quote_ident('opened_at')} DESC"
@@ -430,14 +430,14 @@ class SparkBackend:
         return [row.asDict(recursive=True) for row in rows]
 
     def get_incident(self, schema: str, incident_id: str) -> dict | None:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
 
         plain = f"{schema}.incidents"
         if not self._spark.catalog.tableExists(plain):
             return None
         escaped = escape_sql_string(incident_id)
         row = self._spark.sql(
-            f"SELECT * FROM {quote_ident(schema)}.{quote_ident('incidents')} "
+            f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('incidents')} "
             f"WHERE {quote_ident('id')} = '{escaped}' LIMIT 1"
         ).first()
         return row.asDict(recursive=True) if row else None
@@ -450,7 +450,7 @@ class SparkBackend:
         target_fqn: str | None = None,
         limit: int = 50,
     ) -> list[dict]:
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
 
         plain = f"{schema}.incidents"
         if not self._spark.catalog.tableExists(plain):
@@ -464,7 +464,7 @@ class SparkBackend:
             clauses.append(
                 f"{quote_ident('target_fqn')} = '{escape_sql_string(target_fqn)}'"
             )
-        query = f"SELECT * FROM {quote_ident(schema)}.{quote_ident('incidents')}"
+        query = f"SELECT * FROM {quote_fqn(schema)}.{quote_ident('incidents')}"
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += f" ORDER BY {quote_ident('opened_at')} DESC LIMIT {int(limit)}"
@@ -473,12 +473,12 @@ class SparkBackend:
 
     def append_semantic_usage_event(self, schema: str, row: dict) -> None:
         """Append one idempotent, value-free adaptive usage event to Delta."""
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
 
         table = "semantic_usage_events"
         plain = f"{schema}.{table}"
-        qualified = f"{quote_ident(schema)}.{quote_ident(table)}"
-        self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_ident(schema)}")
+        qualified = f"{quote_fqn(schema)}.{quote_ident(table)}"
+        self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_fqn(schema)}")
         if self._spark.catalog.tableExists(plain):
             event_id = escape_sql_string(row["event_id"])
             existing = self._spark.sql(
@@ -509,7 +509,7 @@ class SparkBackend:
         limit: int | None = None,
     ) -> list[dict]:
         """Read adaptive events without triggering any aggregate or Spark count."""
-        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
 
         table = "semantic_usage_events"
         plain = f"{schema}.{table}"
@@ -526,7 +526,7 @@ class SparkBackend:
                 clauses.append(
                     f"{quote_ident(column)} {operator} '{escape_sql_string(value)}'"
                 )
-        qualified = f"{quote_ident(schema)}.{quote_ident(table)}"
+        qualified = f"{quote_fqn(schema)}.{quote_ident(table)}"
         query = f"SELECT * FROM {qualified}"
         if clauses:
             query += " WHERE " + " AND ".join(clauses)

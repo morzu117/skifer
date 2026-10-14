@@ -902,7 +902,9 @@ class SkiferEngine:
             history:       Active l'historique conversationnel multi-turn.
             session_title: Titre de la session pour l'export PDF.
             certification_store: Store de certification sémantique. Si None,
-                           un store SQLite local est utilisé.
+                           ``default_certification_store(engine)`` : SQLite en
+                           local, Delta dans le catalogue de l'environnement
+                           sur Databricks.
 
         Returns:
             GenBIAgent configuré et prêt à l'emploi.
@@ -917,13 +919,12 @@ class SkiferEngine:
         from skifer.semantic.semantic import SemanticEngine
         from skifer.semantic.llm_provider import get_llm_provider
         from skifer.agentic.agent import GenBIAgent
-        from skifer.observability.certification_store import SqliteCertificationStore
+        from skifer.observability.certification_store import default_certification_store
 
         if llm_provider is None:
             llm_provider = get_llm_provider()
         if certification_store is None:
-            # Safe when certification is off: policy modes that do not check certification never call the store.
-            certification_store = SqliteCertificationStore()
+            certification_store = default_certification_store(self)
 
         semantic = SemanticEngine(self, models_dir=models_dir, certification_store=certification_store)
         return GenBIAgent(

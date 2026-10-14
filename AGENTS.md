@@ -26,8 +26,8 @@ src/skifer/
   adaptive/     # Usage events -> patterns -> explainable proposals -> human review — Plan 29 feature 8
   capabilities/ # Governed write-back: validator, registry, preconditions, autonomy,
                 #   credentials, idempotent executor, append-only history, harness — Plan 29 feature 9
-  serving/      # SkiferChatModel (mlflow.pyfunc.ChatModel), hub_response_to_text()
-  spark_factory.py   # get_spark_session(): Databricks notebook > Connect v2 > local[*]
+  serving/      # SkiferResponsesAgent (mlflow.pyfunc.ResponsesAgent), log_agent(), hub_response_to_text()
+  spark_factory.py   # get_spark_session(): Databricks notebook > Connect serverless > Connect cluster > local[*]
   utils.py           # safe_columns and helpers
 ```
 Public API exported from `__init__.py`: `SkiferEngine`, `RuleRegistry`, `ConfigurationManager`, `load_schema`, `parse_schema`, `safe_columns`.
@@ -253,9 +253,9 @@ axis — one uncertified source flips it away from "certifié", the date shown i
 and the freshness the stalest, a non-ALLOW decision is stated. The text channel is not an escape hatch
 from redaction.
 
-**Serving**: `choices` unchanged byte-for-byte; evidence added beside it under a versioned `skifer`
-block. MLflow is an optional extra and absent here, so acceptance of that top-level field by
-`mlflow.pyfunc.ChatModel` is **not empirically verified** (noted in the code).
+**Serving**: the answer text goes in the Responses `output`; the evidence goes in
+`custom_outputs["skifer"]`, versioned. Verified through real MLflow by
+`tests/test_serving_mlflow_roundtrip.py` (CI job `serving`).
 
 **Multi-model certification coverage.** The preflight only sees the root model — the join path does not
 exist yet — so the **recheck evaluates every dataset in the compiled plan**. Without it, a multi-model
@@ -366,12 +366,13 @@ In interactive (non-prod, non-job) mode, source tables auto-resolve to `schema_X
 An environment in `config.yaml` may declare an optional `params:` mapping; these merge into `engine.default_params`, so minimal notebooks resolve `{{ key }}` placeholders without hardcoding storage paths. Priority: explicit `run_from_yaml(params=…)` > config environment `params` > built-in `catalog`/`env` (built-ins win on collision). Non-mapping `params:` fails fast. Environment matching is case-insensitive via `ExecutionContext.env_config()`.
 
 ### Databricks Deployment (serving/)
-`SkiferChatModel` (`serving/chat_model.py`) wraps `AgenticHub` as an `mlflow.pyfunc.ChatModel`:
-- **`load_context()`** — called once at pod startup: initialises `SparkSession`, `DatabricksLLMProvider`, and `AgenticHub`.
-- **`predict(messages)`** — extracts last user message, calls `hub.ask()`, returns OpenAI-compatible dict.
-- **Deploy**: `python scripts/deploy_to_databricks.py` logs the model and registers it in UC Model Registry.
-- **LLM provider**: `DatabricksProvider` in `llm_provider.py` — OpenAI-compatible client pointing at `{DATABRICKS_HOST}/serving-endpoints`. Auto-detected when `DATABRICKS_HOST` + `DATABRICKS_TOKEN` are set.
-- **Install**: `pip install -e ".[serving]"` (adds `mlflow>=2.12,<3` and `openai>=1.0`).
+`SkiferResponsesAgent` (`serving/responses_agent.py`) wraps `AgenticHub` as an `mlflow.pyfunc.ResponsesAgent` (Plan 41); the decisions live in the MLflow-free `serving/_agent_core.py`:
+- **`load_context()`** — called once at pod startup: builds `SkiferEngine` (Spark through Databricks Connect serverless), the certification store for the environment, the LLM provider and `AgenticHub`. MLflow also calls it, then `predict()`, while logging, and pickles the instance afterwards: `__getstate__` drops the hub.
+- **`predict(request)`** — takes the last `user` item of `input`, calls `hub.ask()`, returns the text in `output` and the evidence in `custom_outputs["skifer"]`. `custom_inputs` may declare `consumer_id`/`user_id`/`trace_id`; `scopes` are never read.
+- **Deploy**: `log_agent(config, models_dir, llm_endpoint, registered_model_name=…)` (`serving/deploy.py`) logs artifacts, `model_config`, resources and pinned requirements; `scripts/deploy_to_databricks.py` wraps it. Runbook, Genie space and supervisor: `docs/databricks_supervisor.md`.
+- **LLM provider**: `DatabricksProvider` in `llm_provider.py` — OpenAI-compatible client pointing at `{DATABRICKS_HOST}/serving-endpoints`. No default model: `model=` or `DATABRICKS_LLM_MODEL` is required.
+- **Certification store**: `default_certification_store(engine)` — SQLite locally, Delta in `<catalog>._skifer_certification` on Databricks. `uc_certification_tags: true` tags each promoted table in Unity Catalog (best-effort).
+- **Install**: `pip install -e ".[serving]"` (adds `mlflow>=3,<4`, `openai>=1.0` and `databricks-connect`), never together with `[spark]`.
 
 ### Tests
 - LLM calls are always mocked; no live cluster, API key or network is needed.
@@ -526,6 +527,7 @@ import the engine. CLI surfaces: `skifer api serve|openapi`, incident management
 | [OpenLineage emitter (Plan 36)](docs/roadmap/36_openlineage_emitter_plan.md) | merged via PR #3 | Implemented (36.0–36.4) |
 | [Best-effort hardening and parameter injection (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implemented (37.0–37.4) |
 | [Tracker lineage: aggregates, join keys, intermediates (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | `feat/plan38-tracker-lineage` | Plan finalised, not started |
+| [Skifer behind a Genie supervisor (Plan 41)](docs/roadmap/41_genie_supervisor_plan.md) | `feat/plan41-genie-supervisor` | Implemented (41.1–41.8); 41.9 is manual validation on a workspace |
 
 ## Key files
 | File | Purpose |

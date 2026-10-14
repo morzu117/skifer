@@ -15,6 +15,7 @@ from skifer.observability.certification_store import RunEvent, StoredCheckResult
 from skifer.observability.checks import CheckStatus
 from skifer.observability.openlineage import emit_run_event_best_effort
 from skifer.observability.quarantine import quarantine_staging
+from skifer.observability.uc_mirror import mirror_certification
 from skifer.observability.tracing import (
     NoOpTracer,
     TraceContext,
@@ -65,8 +66,11 @@ class PublicationCoordinator:
     """Stage, validate, persist check results, then promote or quarantine."""
 
     def __init__(self, backend, monitor, store, metadata_store=None, alert_router=None, alert_config=None,
-                 lineage_emitter=None, lineage_context=None):
+                 lineage_emitter=None, lineage_context=None, uc_certification_tags=False):
         self.backend = backend
+        # Plan 41.7: project the certification onto the table as Unity Catalog tags, so a
+        # Genie space or a human in Catalog Explorer can tell certified tables apart.
+        self.uc_certification_tags = uc_certification_tags is True
         self.monitor = monitor
         self.store = store
         self.metadata_store = metadata_store
@@ -117,6 +121,7 @@ class PublicationCoordinator:
                 "COMPLETE", run.run_id, lineage_record,
                 check_results=check_results, certification_status="CERTIFIED",
             )
+            self._mirror_certification(result.run.target_fqn, definition)
         else:
             self._emit_lineage(
                 "FAIL", run.run_id, lineage_record,
@@ -241,6 +246,7 @@ class PublicationCoordinator:
             self._resolve_recovered(promoted)
             self._index_resumed_metadata(promoted, definition)
             self._emit_resumed_lineage(promoted, definition)
+            self._mirror_certification(promoted.target_fqn, definition)
             return PublicationResult(run=promoted, report=None, state="PROMOTED")
         attributes = {
             "run_id": run.run_id,
@@ -257,7 +263,27 @@ class PublicationCoordinator:
         self._resolve_recovered(promoted)
         self._index_resumed_metadata(promoted, definition)
         self._emit_resumed_lineage(promoted, definition)
+        self._mirror_certification(promoted.target_fqn, definition)
         return PublicationResult(run=promoted, report=None, state="PROMOTED")
+
+    def _mirror_certification(self, target_fqn, definition) -> None:
+        """Tag the promoted table with its certification; never fails the publication.
+
+        Only on promotion: a quarantine leaves the target table on its previous,
+        still certified version, so its tags are already right.
+        """
+        if not self.uc_certification_tags:
+            return
+        try:
+            certification = self.store.get_certification(target_fqn)
+            sync = mirror_certification(
+                self.backend, target_fqn, certification, owner=definition.owner
+            )
+        except Exception as exc:
+            warn_best_effort(f"[UC tags] failed to tag {target_fqn}: {type(exc).__name__}")
+            return
+        if sync.status != "SYNCED":
+            warn_best_effort(f"[UC tags] could not tag {target_fqn}: {sync.error}")
 
     def _emit_lineage(self, event_type, run_id, record_factory, *, check_results=None,
                       certification_status=None) -> None:

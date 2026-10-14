@@ -38,7 +38,7 @@ from skifer.semantic.access_policy import ConsumerContext, SemanticAccessDenied
 from skifer.semantic.evidence import ExecutionResult, SemanticExecutionError
 from skifer.semantic.llm_provider import llm_span_scope
 from skifer.semantic.semantic import SemanticEngine
-from skifer.serving.chat_model import SkiferChatModel
+from skifer.serving._agent_core import answer as serving_answer
 from tests.fakes.fake_backend import FakeBackend, FakeDataFrame
 
 
@@ -936,15 +936,9 @@ def test_semantic_agent_canaries_never_enter_span_data(tmp_path):
 def test_serving_records_response_serialization_boundary(tmp_path):
     tracer = InMemoryTracer()
     hub, _ = _hub_53(tmp_path, tracer)
-    model = SkiferChatModel()
-    model._hub = hub
+    text, _ = serving_answer(hub, "serve this request", None)
 
-    result = model.predict(
-        context=None,
-        messages=[{"role": "user", "content": "serve this request"}],
-    )
-
-    assert result["choices"][0]["finish_reason"] == "stop"
+    assert isinstance(text, str)
     assert tracer.spans[-1].name == "skifer.response.serialize"
     assert tracer.spans[-1].status == "OK"
 

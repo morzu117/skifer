@@ -50,3 +50,25 @@ jobs:
 
       - name: Test
         run: pytest -q --no-header
+
+  # The serving agent through real MLflow (Plan 41.5). Its own job: databricks-connect,
+  # pulled by [serving], ships its own pyspark and must not share an env with [spark].
+  # SkiferChatModel shipped without this check and could never be saved by MLflow.
+  serving:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev,serving]"
+
+      - name: Test
+        env:
+          MLFLOW_DISABLE_AGENT_HINT: "1"
+        run: pytest -q --no-header tests/test_serving_mlflow_roundtrip.py tests/test_serving_agent_core.py tests/test_tracing_mlflow_real.py

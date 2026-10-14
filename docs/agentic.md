@@ -676,17 +676,20 @@ certified.
 
 ### Serving
 
-`SkiferChatModel.predict()` leaves `choices` byte-for-byte unchanged, so a client
-reading only `choices[0].message.content` is unaffected. The evidence is added beside
-it in a versioned block:
+`SkiferResponsesAgent` serves the hub as an MLflow `ResponsesAgent`, the format
+Databricks agent tooling speaks. The answer text, provenance line included, is the
+assistant message in `output`; the evidence travels in `custom_outputs`, in a
+versioned block:
 
 ```json
-{"choices": [...], "skifer": {"schema_version": "1", "evidence": {...}}}
+{"output": [{"type": "message", "role": "assistant", "content": [...]}],
+ "custom_outputs": {"skifer": {"schema_version": "1", "evidence": {...}}}}
 ```
 
-MLflow is an optional extra and is not installed in the test environment, so
-acceptance of this top-level field by `mlflow.pyfunc.ChatModel` has not been verified
-empirically — see the note in `serving/chat_model.py`.
+A test saves, reloads and calls the agent through real MLflow, and the `serving` CI
+job runs it. Logging, the serving endpoint and the supervisor that routes between
+Skifer and Genie are covered in [Skifer behind a Databricks
+supervisor](databricks_supervisor.md).
 
 ---
 

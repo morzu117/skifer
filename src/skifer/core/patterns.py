@@ -217,6 +217,7 @@ class PipelinePatterns:
                 alert_config=alert_config,
                 lineage_emitter=getattr(e, "lineage_emitter", None),
                 lineage_context=getattr(e, "lineage_context", None),
+                uc_certification_tags=e.context.uc_certification_tags(),
             )
             # Same identity from the pipeline down to the certification record,
             # so the link survives without exported traces (Plan 29).

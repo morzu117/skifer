@@ -80,6 +80,10 @@ class ExecutionContext:
         """Classification propagation mode for the active environment."""
         return self.env_config().get("classification_propagation", "warn")
 
+    def uc_certification_tags(self) -> bool:
+        """Whether certified publication tags promoted tables in Unity Catalog (Plan 41.7)."""
+        return self.env_config().get("uc_certification_tags", False) is True
+
     @property
     def default_params(self) -> dict:
         """

@@ -6,7 +6,8 @@ manually built wheel are needed.
 ## Prerequisites
 
 - A Databricks workspace
-- A running cluster (Databricks Runtime 11.x or higher recommended)
+- A running cluster on Databricks Runtime 13.3 LTS or later: Skifer requires Python 3.10, and
+  earlier runtimes ship Python 3.9
 - Outbound access to PyPI from the cluster
 
 > **Which extra to install** : a Databricks Runtime already ships PySpark and Delta. Install plain
@@ -25,7 +26,7 @@ cluster, with no `%pip install` line in the notebooks themselves.
 3. Open the **Libraries** tab.
 4. Click **Install new**.
 5. Select **PyPI** as the source.
-6. Enter `skifer` as the package name, or `skifer==2.2.0` to pin a version.
+6. Enter `skifer` as the package name, or `skifer==3.0.0` to pin a version.
 7. Click **Install**.
 8. **Restart the cluster** for the library to take effect.
 
@@ -50,7 +51,7 @@ dbutils.library.restartPython()
 To pin a version:
 
 ```python
-%pip install skifer==2.2.0
+%pip install skifer==3.0.0
 dbutils.library.restartPython()
 ```
 
@@ -64,7 +65,7 @@ dbutils.library.restartPython()
 ```python
 import skifer
 
-print(skifer.__version__)   # e.g. 2.2.0
+print(skifer.__version__)   # e.g. 3.0.0
 ```
 
 ---
@@ -84,7 +85,7 @@ time, so version constraints stay consistent:
 | Full semantic layer | `skifer[semantic-full]` |
 | Read-only MCP server | `skifer[mcp]` |
 | Runtime tracing | `skifer[tracing]` |
-| Model Serving deployment | `skifer[serving]` |
+| Model Serving deployment | not on a cluster — see below |
 
 Combine them in one install:
 
@@ -94,6 +95,11 @@ dbutils.library.restartPython()
 ```
 
 The same names work in the cluster **Libraries** tab, in the PyPI package field.
+
+Do not install `skifer[serving]` on a cluster: it adds `databricks-connect`, which must not sit
+next to the runtime's own PySpark. That extra is for the serving endpoint, which `log_agent`
+declares; from a notebook, install `skifer "mlflow>=3,<4" "openai>=1.0"` instead. See
+[Skifer behind a Databricks supervisor](databricks_supervisor.md).
 
 ---
 

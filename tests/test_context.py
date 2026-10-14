@@ -133,3 +133,8 @@ def test_governance_wiring_accessors_match_environment_case_insensitively():
 
     assert ctx.alerts_config() == {"min_severity": "info"}
     assert ctx.classification_propagation() == "strict"
+
+
+def test_uc_certification_tags_defaults_to_false_and_reads_true():
+    assert _ctx(env_block={"catalog": "c"}).uc_certification_tags() is False
+    assert _ctx(env_block={"catalog": "c", "uc_certification_tags": True}).uc_certification_tags() is True

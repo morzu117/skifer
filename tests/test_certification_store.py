@@ -523,3 +523,83 @@ def test_sqlite_history_breaks_identical_timestamp_ties_by_insertion_order():
     store.append_run_event(_run_event("evt-2", "run-2", "PROMOTED", occurred_at))
 
     assert [event.run_id for event in store.list_history("sales.orders")] == ["run-2", "run-1"]
+
+
+# ---------------------------------------------------------------------------
+# default_certification_store — Plan 41.2
+# ---------------------------------------------------------------------------
+
+def _engine(*, is_local, db, backend=None):
+    from types import SimpleNamespace
+    return SimpleNamespace(is_local=is_local, db=db, backend=backend)
+
+
+def test_default_store_is_sqlite_locally(tmp_path, monkeypatch):
+    from skifer.observability.certification_store import (
+        SqliteCertificationStore, default_certification_store,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    store = default_certification_store(_engine(is_local=True, db=None))
+
+    assert isinstance(store, SqliteCertificationStore)
+    store.close()
+
+
+def test_default_store_is_delta_in_the_environment_catalog():
+    from skifer.observability.certification_store import (
+        DeltaCertificationStore, default_certification_store,
+    )
+    backend = object()
+
+    store = default_certification_store(_engine(is_local=False, db="prod_cat", backend=backend))
+
+    assert isinstance(store, DeltaCertificationStore)
+    assert store.backend is backend
+    # Qualified: a bare schema would resolve against the session's current catalog.
+    assert store.schema == "prod_cat._skifer_certification"
+
+
+def test_default_store_without_catalog_stays_sqlite(tmp_path, monkeypatch):
+    from skifer.observability.certification_store import (
+        SqliteCertificationStore, default_certification_store,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    store = default_certification_store(_engine(is_local=False, db=None))
+
+    assert isinstance(store, SqliteCertificationStore)
+    store.close()
+
+
+def test_spark_backend_quotes_a_catalog_qualified_store_schema():
+    from unittest.mock import MagicMock
+    from skifer.core.spark_backend import SparkBackend
+
+    spark = MagicMock()
+    spark.catalog.tableExists.return_value = False
+    backend = SparkBackend(spark=None)
+    backend._spark = spark
+
+    backend.append_certification_contract(
+        "prod_cat._skifer_certification", {"definition_hash": "h"}
+    )
+
+    issued = [c.args[0] for c in spark.sql.call_args_list]
+    assert "CREATE SCHEMA IF NOT EXISTS `prod_cat`.`_skifer_certification`" in issued
+    spark.createDataFrame.return_value.write.format.return_value.mode.return_value \
+        .saveAsTable.assert_called_once_with("prod_cat._skifer_certification.contract_definitions")
+
+
+def test_spark_backend_bare_store_schema_is_unchanged():
+    from unittest.mock import MagicMock
+    from skifer.core.spark_backend import SparkBackend
+
+    spark = MagicMock()
+    spark.catalog.tableExists.return_value = False
+    backend = SparkBackend(spark=None)
+    backend._spark = spark
+
+    backend.append_certification_contract("_skifer_certification", {"definition_hash": "h"})
+
+    assert spark.sql.call_args_list[0].args[0] == "CREATE SCHEMA IF NOT EXISTS `_skifer_certification`"

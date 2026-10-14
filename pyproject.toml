@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skifer"
-version = "2.2.0"
+version = "3.0.0"
 description = "Declarative data engineering framework for Spark and Databricks Lakehouse."
 readme = "README.md"
 license = "MIT"
@@ -74,16 +74,20 @@ databricks = [
 ]
 
 # --- Databricks Model Serving ---
+# ResponsesAgent needs MLflow 3. databricks-connect brings its own pyspark: install this
+# extra WITHOUT [spark] (a serving container has no cluster; Spark comes from Connect serverless).
 serving = [
-    "mlflow>=2.12.0,<3",
+    "mlflow>=3.0,<4",
     "openai>=1.0.0",
+    "databricks-connect>=16.1",
 ]
 
 # --- Export de traces (imports strictement paresseux) ---
 tracing = [
     "opentelemetry-sdk>=1.24.0",
     "opentelemetry-exporter-otlp-proto-http>=1.24.0",
-    "mlflow>=2.12.0,<3",
+    # The exporter uses MLflow 3 APIs (trace_location, search_traces(locations=)).
+    "mlflow>=3.0,<4",
 ]
 
 # --- Model Context Protocol (imports strictement paresseux) ---

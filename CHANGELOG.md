@@ -8,7 +8,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-14
+
 ### Added
+
+- Added the runbook `docs/databricks_supervisor.md` (Plan 41.8): log the agent, serve it with
+  Connect serverless, limit a Genie space to the tables tagged `CERTIFIED`, put both behind an
+  Agent Bricks supervisor with routing descriptions, and the checks to run after each deployment.
+  `scripts/deploy_to_databricks.py` now calls `log_agent` and takes `--llm-endpoint`; it still
+  imported the removed `SkiferChatModel` and pinned PySpark and Delta into the endpoint. Whether the
+  supervisor accepts a custom `ResponsesAgent` endpoint is not verified yet and the page says so.
+
+- Added the `uc_certification_tags` environment option (Plan 41.7, default `false`). When `true`,
+  a certified publication tags the promoted table in Unity Catalog through the existing
+  `mirror_certification` (`certification`, `contract_version`, `definition_hash`,
+  `skifer_owner`), so a Genie space can be limited to certified tables and Catalog Explorer shows
+  the status. Nothing called `mirror_certification` until now. Only promotions are tagged: a
+  quarantine leaves the table on its previous, still certified version. A tagging failure is a
+  warning and never fails the publication. Tags are a snapshot at promotion: an expiry by
+  `semantic_certification_max_age` is enforced by the semantic layer, not reflected in the tag.
+
+- Added `skifer.serving.log_agent()` (Plan 41.6), which logs `SkiferResponsesAgent` with its
+  `config` and `models_dir` artifacts, the LLM endpoint in `model_config` (the deployed endpoint
+  then needs no `DATABRICKS_LLM_MODEL`), the endpoint and an optional SQL warehouse declared as
+  resources, and `skifer[serving]` pinned to the installed version. An unknown installed version
+  is refused rather than pinned as `==unknown`. Run it from a Databricks notebook: MLflow validates
+  an agent by calling it while logging, so the hub is built and asked one question there —
+  measured with MLflow 3.17, for an instance as well as for models-from-code.
+
+- Added `tests/test_serving_mlflow_roundtrip.py` and a `serving` CI job that runs it (Plan 41.5):
+  `SkiferResponsesAgent` is saved, loaded and called through real MLflow, with a hub that does not
+  pickle, like a real one. It checks the Responses output, the evidence in `custom_outputs`, and
+  that `scopes` sent in `custom_inputs` never reach the consumer context. Skipped without MLflow.
+  `SkiferChatModel` shipped without such a test and could never be saved.
+
+- Added `SkiferResponsesAgent` (`skifer.serving`), which serves the AgenticHub on Databricks Model
+  Serving as an MLflow `ResponsesAgent` (Plan 41.4). The answer is a text output item and the
+  evidence travels in `custom_outputs["skifer"]` (`schema_version` "1"), the field the Responses
+  format provides for it. At pod start the hub gets Spark from Connect serverless (41.1), the
+  environment's certification store (41.2) and the Databricks LLM (41.3). The request decisions
+  live in `serving/_agent_core.py`, tested without MLflow. As before, `consumer_id`, `user_id` and
+  `trace_id` are client-declared metadata and `scopes` is never filled from the request.
+
+- Added Databricks Connect serverless to `get_spark_session()` (Plan 41.1). When
+  `DATABRICKS_SERVERLESS_COMPUTE_ID` is set and no notebook session is active, the session comes
+  from `DatabricksSession.builder.serverless()`, ahead of the cluster path. A Model Serving
+  container has neither a cluster nor Java, so this is the only way an endpoint gets Spark. It
+  never falls back to `local[*]`: there, the fallback would replace the real error (missing
+  package, refused credentials) with a JVM one. A failed session raises an error that names
+  `DATABRICKS_SERVERLESS_COMPUTE_ID` and `DATABRICKS_HOST` to check, with the cause.
 
 - Added a guard that every `docs/roadmap/*_plan.md` link in `CLAUDE.md` and `AGENTS.md` resolves.
   Those tables are the map an agent reads before starting, and Plan 38 sat in it as "finalised, not
@@ -54,7 +102,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[split:-,0]` is read as two items and silently loses the index. The documented
   `split:sep,idx` form was itself the trap.
 
+### Changed
+
+- `DatabricksProvider` has no default model any more: `DATABRICKS_LLM_MODEL` (or `model=`) is
+  required, and its absence raises at construction with the variable to set (Plan 41.3). The
+  former default, `databricks-dbrx-instruct`, has been retired from Databricks Foundation Model
+  APIs, so an unconfigured provider started fine and failed at the first question. **Migration:**
+  set `DATABRICKS_LLM_MODEL` to a chat serving endpoint of your workspace.
+
+- `SkiferEngine.get_agent()` without `certification_store=` no longer always opens the local
+  SQLite store (Plan 41.2): an engine given its own session and a catalog now reads the Delta store
+  in `<catalog>._skifer_certification`, even when that session is local. Locality is the engine's
+  own (`local[*]` session it started, or `catalog: null`), not `spark.master`, which a single-node
+  Databricks cluster also reports as `local[*]`. **Migration:** a local project that sets a catalog
+  and publishes to SQLite passes `certification_store=` to `get_agent()`.
+
+### Removed
+
+- Removed `SkiferChatModel` and `serving/chat_model.py` (Plan 41.4), replaced by
+  `SkiferResponsesAgent`. It could not be saved by MLflow: `save_model` calls `predict()` with
+  `ChatMessage` objects, which it read as dicts, and it raised before any request — measured with
+  MLflow 2.22.5 and 3.17.1. No deployment could depend on it. `ChatModel` is also deprecated since
+  MLflow 3.0.
+- The `serving` and `tracing` extras now require `mlflow>=3.0,<4` (was `>=2.12,<3`). `serving`
+  adds `databricks-connect`, which brings its own pyspark: install it without `[spark]`. The
+  tracing exporter already called MLflow 3 APIs (`mlflow.entities.trace_location`,
+  `search_traces(locations=)`) that MLflow 2 does not have.
+
 ### Fixed
+
+- Fixed the Databricks installation page, which recommended Runtime 11.x: those runtimes ship
+  Python 3.9 and Skifer requires 3.10, so the minimum is 13.3 LTS. It also listed
+  `skifer[serving]` among the extras to install on a cluster, where its `databricks-connect` would
+  sit next to the runtime's PySpark; it now points to the notebook install of the runbook.
+
+- Fixed `tests/test_serving_mlflow_roundtrip.py` leaving an `mlflow.db` in the working directory:
+  MLflow 3 defaults to a SQLite tracking store there. The tests now point MLflow at their
+  temporary directory. Added `tests/test_tracing_mlflow_real.py`, run by the `serving` CI job,
+  which builds the MLflow exporter's trace destinations with the real MLflow:
+  `test_tracing_exporters.py` replaces `mlflow.entities.trace_location` with a fake and cannot
+  tell whether the names it uses still exist. They do in MLflow 3.17.
+
+- `SkiferEngine.get_agent()` no longer defaults to a local SQLite certification store on
+  Databricks (Plan 41.2). A store left unset now comes from the new
+  `default_certification_store(engine)`: SQLite locally, `DeltaCertificationStore` qualified with
+  the environment's catalog on Databricks. Previously an agent on Databricks read an empty
+  registry, so `semantic_certification_policy: enforce` refused every table as `MISSING`. The
+  Delta store's schema is now quoted with `quote_fqn`, so `catalog.schema` works; a bare schema
+  produces the same SQL as before. Qualifying matters because Skifer never sets the session's
+  current catalog: a notebook and a Model Serving endpoint could otherwise each resolve
+  `_skifer_certification` in a different catalog and read two registries.
 
 - Fixed `export_odcs_31` silently dropping `contract.security`. The function's own docstring
   promises it exports "without silently discarding metadata", and it warns for `entity` and for

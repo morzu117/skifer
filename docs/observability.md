@@ -55,6 +55,9 @@ loosens what the producer owes.
 Certification persistence is append-only. `SqliteCertificationStore` is the
 local implementation; `DeltaCertificationStore` uses the same event IDs to
 deduplicate retries on Databricks. Neither store rewrites historical runs.
+`default_certification_store(engine)` picks between them: SQLite locally, Delta in
+`<catalog>._skifer_certification` on Databricks, qualified with the environment's
+catalog rather than the session's current one.
 
 Certified publication is opt-in for batch pipelines that declare
 `data_product` plus a valid `contract.output` and whose `SkiferEngine`
