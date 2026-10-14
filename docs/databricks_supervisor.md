@@ -85,6 +85,11 @@ the models use a SQL warehouse). **MLflow calls the agent once while logging**: 
 on the notebook's session and the example question is really asked, so a wrong path, a missing
 model or an unreachable chat endpoint fails here rather than on the endpoint.
 
+The notebook needs neither `DATABRICKS_HOST` nor `DATABRICKS_TOKEN`: without them, the chat
+endpoint is called with the notebook's own credentials. Any chat endpoint of the workspace works;
+the Claude 5.5 endpoints refuse a `temperature` parameter, and the provider drops it after the first
+refusal.
+
 From a laptop, `scripts/deploy_to_databricks.py` does the same through Databricks Connect
 serverless; install `skifer[serving]` there, without `[spark]`:
 
