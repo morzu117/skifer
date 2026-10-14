@@ -277,3 +277,20 @@ def test_build_hub_wires_engine_store_and_databricks_llm():
     assert semantic_kwargs["certification_store"] is store
     assert semantic_kwargs["models_dir"] == "semantic"
     fake_llm.get_llm_provider.assert_called_once_with("databricks")
+
+
+def test_build_hub_uses_the_llm_endpoint_from_model_config():
+    fake_llm = MagicMock()
+    fake_modules = {
+        "skifer.core.config": MagicMock(),
+        "skifer.core.core": MagicMock(),
+        "skifer.observability.certification_store": MagicMock(),
+        "skifer.semantic.llm_provider": fake_llm,
+        "skifer.semantic.semantic": MagicMock(),
+        "skifer.agentic.hub": MagicMock(),
+    }
+
+    with patch.dict(sys.modules, fake_modules):
+        build_hub({}, {"llm_endpoint": "my-chat-endpoint"})
+
+    fake_llm.get_llm_provider.assert_called_once_with("databricks", model="my-chat-endpoint")

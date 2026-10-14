@@ -32,7 +32,9 @@ class SkiferResponsesAgent(ResponsesAgent):
     """ResponsesAgent delegating every request to Skifer's AgenticHub."""
 
     def load_context(self, context) -> None:
-        self._hub = _agent_core.build_hub(getattr(context, "artifacts", None))
+        self._hub = _agent_core.build_hub(
+            getattr(context, "artifacts", None), getattr(context, "model_config", None)
+        )
 
     def __getstate__(self) -> dict:
         # MLflow calls load_context() and predict() on an input example while saving,

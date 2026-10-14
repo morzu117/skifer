@@ -17,12 +17,18 @@ logger = logging.getLogger(__name__)
 EVIDENCE_SCHEMA_VERSION = "1"
 
 
-def build_hub(artifacts: Mapping[str, str] | None) -> Any:
+def build_hub(
+    artifacts: Mapping[str, str] | None,
+    model_config: Mapping[str, Any] | None = None,
+) -> Any:
     """Build the AgenticHub served by the endpoint; called once, at pod start.
 
     No Spark session is passed to the engine: ``get_spark_session()`` picks
     Databricks Connect serverless when ``DATABRICKS_SERVERLESS_COMPUTE_ID`` is set,
     which is the only way a Model Serving container gets Spark.
+
+    ``model_config["llm_endpoint"]``, written by ``log_agent``, names the chat endpoint;
+    without it ``DATABRICKS_LLM_MODEL`` is required.
     """
     from skifer.agentic.hub import AgenticHub
     from skifer.core.config import ConfigurationManager
@@ -41,7 +47,9 @@ def build_hub(artifacts: Mapping[str, str] | None) -> Any:
         models_dir=models_dir,
         certification_store=default_certification_store(engine),
     )
-    hub = AgenticHub(semantic_engine=semantic, llm_provider=get_llm_provider("databricks"))
+    llm_endpoint = (model_config or {}).get("llm_endpoint")
+    llm = get_llm_provider("databricks", **({"model": llm_endpoint} if llm_endpoint else {}))
+    hub = AgenticHub(semantic_engine=semantic, llm_provider=llm)
     logger.info("Skifer serving agent: AgenticHub initialised.")
     return hub
 

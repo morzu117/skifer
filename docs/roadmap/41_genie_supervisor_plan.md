@@ -129,7 +129,14 @@ Chaque point est un commit séparé (`feat(plan41-N): …`), avec ses tests et s
 - **Signature :**
   `log_agent(config_path, models_dir, llm_endpoint, *, registered_model_name=None, warehouse_id=None)`.
 - **Comportement :** `mlflow.pyfunc.log_model(python_model=SkiferResponsesAgent(), artifacts={...},
-  resources=[DatabricksServingEndpoint(llm_endpoint), …], pip_requirements=["skifer[serving]==<version installée>"])`.
+  model_config={"llm_endpoint": …}, resources=[DatabricksServingEndpoint(llm_endpoint), …],
+  pip_requirements=["skifer[serving]==<version installée>"])`. Le nom de l'endpoint LLM passe par
+  `model_config` : `build_hub` le lit, et l'endpoint déployé n'a plus besoin de
+  `DATABRICKS_LLM_MODEL`.
+- **Mesuré pendant le point :** MLflow appelle `load_context` puis `predict` à la journalisation,
+  avec ou sans exemple, en mode instance comme en *models-from-code*. Le hub est donc construit et
+  interrogé au moment du log : `log_agent` s'exécute depuis un notebook Databricks où Spark, les
+  modèles et l'endpoint LLM sont joignables. C'est aussi le premier test de fumée de l'agent.
   Déclarer les ressources permet au serving de fournir l'authentification automatique vers l'endpoint
   LLM. Renvoie le `ModelInfo`. Ne déploie rien : le déploiement reste une étape du runbook (41.8).
 - **Tests :** `mlflow` simulé : artefacts, ressources et version de `pip_requirements`.
