@@ -208,18 +208,32 @@ def test_anthropic_provider_name(monkeypatch):
 # DatabricksProvider
 # ---------------------------------------------------------------------------
 
-def test_databricks_provider_init_from_env(monkeypatch):
-    """DatabricksProvider reads host and token from env vars."""
+def test_databricks_provider_requires_a_model(monkeypatch):
+    """No default model: the former default (DBRX) was retired by Databricks (Plan 41.3)."""
     monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
     monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-test-token")
+    monkeypatch.delenv("DATABRICKS_LLM_MODEL", raising=False)
 
     fake_mod = _make_openai_module()
     monkeypatch.setitem(sys.modules, "openai", fake_mod)
 
     from skifer.semantic.llm_provider import DatabricksProvider
-    provider = DatabricksProvider()
+    with pytest.raises(ValueError, match="DATABRICKS_LLM_MODEL"):
+        DatabricksProvider()
+
+
+def test_databricks_provider_explicit_model_argument(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-test-token")
+    monkeypatch.delenv("DATABRICKS_LLM_MODEL", raising=False)
+
+    fake_mod = _make_openai_module()
+    monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+    from skifer.semantic.llm_provider import DatabricksProvider
+    provider = DatabricksProvider(model="my-chat-endpoint")
     assert provider.provider_name == "databricks"
-    assert provider._model == "databricks-dbrx-instruct"
+    assert provider._model == "my-chat-endpoint"
 
 
 def test_databricks_provider_custom_model(monkeypatch):
@@ -240,6 +254,7 @@ def test_databricks_provider_complete(monkeypatch):
     """DatabricksProvider.complete() passes the correct base_url and model."""
     monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
     monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-test-token")
+    monkeypatch.setenv("DATABRICKS_LLM_MODEL", "my-chat-endpoint")
 
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "lineage"
@@ -301,6 +316,7 @@ def test_get_llm_provider_databricks(monkeypatch):
     """get_llm_provider('databricks') returns a DatabricksProvider instance."""
     monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
     monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-test-token")
+    monkeypatch.setenv("DATABRICKS_LLM_MODEL", "my-chat-endpoint")
 
     fake_mod = _make_openai_module()
     monkeypatch.setitem(sys.modules, "openai", fake_mod)

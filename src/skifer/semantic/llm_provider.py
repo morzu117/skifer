@@ -335,7 +335,7 @@ class DatabricksProvider(LLMProvider):
     Configuration via environment variables:
         DATABRICKS_HOST       — workspace URL (e.g. https://adb-xxx.azuredatabricks.net)
         DATABRICKS_TOKEN      — personal access token or service principal secret
-        DATABRICKS_LLM_MODEL  — serving endpoint name (default: databricks-dbrx-instruct)
+        DATABRICKS_LLM_MODEL  — serving endpoint name (required, no default)
     """
 
     def __init__(
@@ -372,9 +372,15 @@ class DatabricksProvider(LLMProvider):
             api_key=resolved_token,
             base_url=base_url,
         )
-        self._model = model or os.environ.get(
-            "DATABRICKS_LLM_MODEL", "databricks-dbrx-instruct"
-        )
+        # No default model: a hard-coded endpoint name outlives the endpoint. The previous
+        # default, databricks-dbrx-instruct, was retired by Databricks and failed at the
+        # first question instead of at startup.
+        self._model = model or os.environ.get("DATABRICKS_LLM_MODEL", "")
+        if not self._model:
+            raise ValueError(
+                "[DatabricksProvider] DATABRICKS_LLM_MODEL is not set. Set it to the name of a "
+                "chat serving endpoint from your workspace (Serving > Serving endpoints)."
+            )
 
     @property
     def provider_name(self) -> str:

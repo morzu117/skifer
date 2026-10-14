@@ -61,6 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[split:-,0]` is read as two items and silently loses the index. The documented
   `split:sep,idx` form was itself the trap.
 
+### Changed
+
+- `DatabricksProvider` has no default model any more: `DATABRICKS_LLM_MODEL` (or `model=`) is
+  required, and its absence raises at construction with the variable to set (Plan 41.3). The
+  former default, `databricks-dbrx-instruct`, has been retired from Databricks Foundation Model
+  APIs, so an unconfigured provider started fine and failed at the first question. **Migration:**
+  set `DATABRICKS_LLM_MODEL` to a chat serving endpoint of your workspace.
+
 ### Fixed
 
 - `SkiferEngine.get_agent()` no longer defaults to a local SQLite certification store on
