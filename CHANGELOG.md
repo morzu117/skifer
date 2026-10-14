@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `tests/test_serving_mlflow_roundtrip.py` and a `serving` CI job that runs it (Plan 41.5):
+  `SkiferResponsesAgent` is saved, loaded and called through real MLflow, with a hub that does not
+  pickle, like a real one. It checks the Responses output, the evidence in `custom_outputs`, and
+  that `scopes` sent in `custom_inputs` never reach the consumer context. Skipped without MLflow.
+  `SkiferChatModel` shipped without such a test and could never be saved.
+
 - Added `SkiferResponsesAgent` (`skifer.serving`), which serves the AgenticHub on Databricks Model
   Serving as an MLflow `ResponsesAgent` (Plan 41.4). The answer is a text output item and the
   evidence travels in `custom_outputs["skifer"]` (`schema_version` "1"), the field the Responses
