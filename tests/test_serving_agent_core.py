@@ -240,6 +240,15 @@ def test_consumer_context_never_takes_scopes_from_the_request():
     assert "certification_override" not in tuple(consumer.scopes or ())
 
 
+def test_consumer_context_never_takes_its_class_from_the_request():
+    # consumer_class selects the certification policy applied: a client cannot pick it.
+    consumer = consumer_context_from_request(
+        None, {"consumer_id": "c-1", "consumer_class": "dashboard"},
+    )
+
+    assert consumer.consumer_class == "agent_read"
+
+
 # ---------------------------------------------------------------------------
 # build_hub() — wiring, with sys.modules mocking (local imports inside the function)
 # ---------------------------------------------------------------------------

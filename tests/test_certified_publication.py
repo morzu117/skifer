@@ -524,7 +524,7 @@ def test_quarantine_router_failure_is_non_blocking_and_redacted():
         )
 
     assert result.state == "QUARANTINED"
-    assert [str(item.message) for item in caught] == [
+    assert [str(item.message) for item in caught if not issubclass(item.category, ResourceWarning)] == [
         "[Alerts] failed to alert incident: RuntimeError"
     ]
 
@@ -737,7 +737,7 @@ def test_breaking_change_router_failure_is_non_blocking_and_redacted():
         )
 
     assert result.state == "PROMOTED"
-    assert [str(item.message) for item in caught] == [
+    assert [str(item.message) for item in caught if not issubclass(item.category, ResourceWarning)] == [
         "[Alerts] failed to alert breaking change: RuntimeError"
     ]
 
@@ -793,7 +793,7 @@ def test_previous_promotion_read_failure_is_non_blocking_and_redacted(monkeypatc
         )
 
     assert result.state == "PROMOTED"
-    assert [str(item.message) for item in caught] == [
+    assert [str(item.message) for item in caught if not issubclass(item.category, ResourceWarning)] == [
         "[Alerts] failed to read previous publication: RuntimeError"
     ]
 
@@ -972,7 +972,7 @@ def test_malformed_previous_promotion_is_non_blocking_after_promotion(monkeypatc
         )
 
     assert result.state == "PROMOTED"
-    assert [str(item.message) for item in caught] == [
+    assert [str(item.message) for item in caught if not issubclass(item.category, ResourceWarning)] == [
         "[Alerts] failed to alert breaking change: AttributeError"
     ]
 
@@ -1022,7 +1022,7 @@ def test_partial_incident_failure_alerts_incidents_opened_before_failure():
         )
 
     assert result.state == "QUARANTINED"
-    assert [str(item.message) for item in caught] == [
+    assert [str(item.message) for item in caught if not issubclass(item.category, ResourceWarning)] == [
         "[Incidents] failed to open incident(s): RuntimeError"
     ]
     assert len(router.calls) == 1

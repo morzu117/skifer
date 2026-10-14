@@ -11,7 +11,7 @@ from skifer.core.ir import ParsedFilter, _parse_op
 from skifer.core.context import ExecutionContext
 from skifer.core.core import SkiferEngine
 from skifer.core.registry import RuleRegistry
-from skifer.observability.certification_store import SqliteCertificationStore
+from skifer.observability.certification_store import DeltaCertificationStore, SqliteCertificationStore
 from skifer.observability.tracing import NoOpTracer
 
 # Adapters over the live SparkBackend IR path (the legacy string-op module
@@ -191,13 +191,24 @@ def test_get_target_schema(mock_engine, mocker):
     assert mock_engine.get_target_schema("gold") == "gold"
 
 
-def test_get_agent_wires_default_sqlite_certification_store(mock_engine, tmp_path, monkeypatch):
+def test_get_agent_wires_default_sqlite_certification_store_locally(mock_engine, tmp_path, monkeypatch):
+    # mock_engine receives its session and a catalog, which is what a Databricks engine
+    # looks like: only a local engine gets the SQLite store (Plan 41.2).
     monkeypatch.chdir(tmp_path)
+    mock_engine.is_local = True
 
     agent = mock_engine.get_agent(llm_provider=object(), models_dir=str(tmp_path))
 
     assert isinstance(agent.semantic.certification_store, SqliteCertificationStore)
     agent.semantic.certification_store.close()
+
+
+def test_get_agent_wires_delta_certification_store_in_the_engine_catalog(mock_engine, tmp_path):
+    agent = mock_engine.get_agent(llm_provider=object(), models_dir=str(tmp_path))
+
+    store = agent.semantic.certification_store
+    assert isinstance(store, DeltaCertificationStore)
+    assert store.schema == "spark_catalog._skifer_certification"
 
 
 def test_get_agent_uses_explicit_certification_store(mock_engine, tmp_path):

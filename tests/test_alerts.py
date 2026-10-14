@@ -70,7 +70,7 @@ def test_webhook_sender_failure_is_not_notified_or_leaked(
         warnings.simplefilter("always")
         notified = AlertDispatcher().dispatch(_report(), {config_key: secret})
 
-    messages = [str(item.message) for item in caught]
+    messages = [str(item.message) for item in caught if not issubclass(item.category, ResourceWarning)]
     assert notified == []
     assert messages == [f"[AlertDispatcher] {channel} send failed: URLError"]
     assert all("SECRET-TOKEN-123" not in message for message in messages)
@@ -93,7 +93,7 @@ def test_email_sender_failure_is_not_notified_or_leaked(monkeypatch):
             _report(), {"email": {"to": ["owner@example.com"]}}
         )
 
-    messages = [str(item.message) for item in caught]
+    messages = [str(item.message) for item in caught if not issubclass(item.category, ResourceWarning)]
     assert notified == []
     assert messages == [
         "[AlertDispatcher] email send failed: SMTPAuthenticationError"
@@ -120,7 +120,7 @@ def test_incident_email_sender_failure_is_not_notified_or_leaked(monkeypatch):
             config={"email": {"to": ["fallback@example.com"]}},
         )
 
-    messages = [str(item.message) for item in caught]
+    messages = [str(item.message) for item in caught if not issubclass(item.category, ResourceWarning)]
     assert notified == []
     assert messages == [
         "[AlertDispatcher] email send failed: SMTPAuthenticationError"

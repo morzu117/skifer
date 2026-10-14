@@ -614,6 +614,12 @@ def default_certification_store(engine):
     against the session's current catalog, which Skifer never sets, so a pipeline in a
     notebook and an agent behind Model Serving could each read a different registry —
     and in ``enforce`` the agent would refuse every table as ``MISSING``.
+
+    "Locally" is the engine's own notion: a session it started in ``local[*]``, or no
+    catalog. An engine given its session and a catalog gets the Delta store, even when
+    that session is local. ``spark.master`` cannot decide instead: a single-node
+    Databricks cluster reports ``local[*]`` too. A local project that sets a catalog
+    passes its store explicitly.
     """
     catalog = getattr(engine, "db", None)
     if engine.is_local or not catalog:

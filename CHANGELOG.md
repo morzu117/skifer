@@ -55,7 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `DatabricksSession.builder.serverless()`, ahead of the cluster path. A Model Serving
   container has neither a cluster nor Java, so this is the only way an endpoint gets Spark. It
   never falls back to `local[*]`: there, the fallback would replace the real error (missing
-  package, refused credentials) with a JVM one.
+  package, refused credentials) with a JVM one. A failed session raises an error that names
+  `DATABRICKS_SERVERLESS_COMPUTE_ID` and `DATABRICKS_HOST` to check, with the cause.
 
 - Added a guard that every `docs/roadmap/*_plan.md` link in `CLAUDE.md` and `AGENTS.md` resolves.
   Those tables are the map an agent reads before starting, and Plan 38 sat in it as "finalised, not
@@ -108,6 +109,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   former default, `databricks-dbrx-instruct`, has been retired from Databricks Foundation Model
   APIs, so an unconfigured provider started fine and failed at the first question. **Migration:**
   set `DATABRICKS_LLM_MODEL` to a chat serving endpoint of your workspace.
+
+- `SkiferEngine.get_agent()` without `certification_store=` no longer always opens the local
+  SQLite store (Plan 41.2): an engine given its own session and a catalog now reads the Delta store
+  in `<catalog>._skifer_certification`, even when that session is local. Locality is the engine's
+  own (`local[*]` session it started, or `catalog: null`), not `spark.master`, which a single-node
+  Databricks cluster also reports as `local[*]`. **Migration:** a local project that sets a catalog
+  and publishes to SQLite passes `certification_store=` to `get_agent()`.
 
 ### Removed
 

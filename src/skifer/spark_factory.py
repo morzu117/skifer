@@ -56,7 +56,15 @@ def get_spark_session(
                 "DATABRICKS_SERVERLESS_COMPUTE_ID is set but databricks-connect is not "
                 "installed. Install it with: pip install 'skifer[serving]'"
             ) from exc
-        session = DatabricksSession.builder.serverless().getOrCreate()
+        try:
+            session = DatabricksSession.builder.serverless().getOrCreate()
+        except Exception as exc:
+            raise RuntimeError(
+                "Databricks Connect serverless session failed (DATABRICKS_SERVERLESS_COMPUTE_ID "
+                "is set). Check DATABRICKS_HOST and its credentials (token or service "
+                "principal), and that serverless compute is enabled on the workspace. "
+                f"Cause: {type(exc).__name__}: {exc}"
+            ) from exc
         print("   [SparkFactory] Databricks Connect serverless session initialized.")
         return session, "databricks_connect"
 

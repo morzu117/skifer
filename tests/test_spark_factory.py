@@ -97,9 +97,12 @@ def test_serverless_failure_does_not_fall_back_to_local(monkeypatch, no_active_s
     local_builder = MagicMock(name="local builder")
     monkeypatch.setattr(SparkSession, "builder", local_builder)
 
-    with pytest.raises(RuntimeError, match="auth refused"):
+    with pytest.raises(RuntimeError, match="auth refused") as raised:
         get_spark_session()
     local_builder.appName.assert_not_called()
+    # Read at pod start by whoever is on call: it names what to check.
+    assert "DATABRICKS_SERVERLESS_COMPUTE_ID" in str(raised.value)
+    assert "DATABRICKS_HOST" in str(raised.value)
 
 
 def test_active_session_still_wins(monkeypatch, clean_env):

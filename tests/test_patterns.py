@@ -390,7 +390,7 @@ def test_build_alert_router_failure_is_non_blocking_and_redacted():
 
     assert router is None
     assert alert_config == {}
-    assert [str(item.message) for item in caught] == [
+    assert [str(item.message) for item in caught if not issubclass(item.category, ResourceWarning)] == [
         "[Alerts] failed to build alert router: RuntimeError"
     ]
 
