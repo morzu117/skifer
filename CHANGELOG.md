@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-14
+
 ### Added
 
 - Added the runbook `docs/databricks_supervisor.md` (Plan 41.8): log the agent, serve it with
