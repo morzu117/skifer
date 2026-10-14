@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `SkiferResponsesAgent` (`skifer.serving`), which serves the AgenticHub on Databricks Model
+  Serving as an MLflow `ResponsesAgent` (Plan 41.4). The answer is a text output item and the
+  evidence travels in `custom_outputs["skifer"]` (`schema_version` "1"), the field the Responses
+  format provides for it. At pod start the hub gets Spark from Connect serverless (41.1), the
+  environment's certification store (41.2) and the Databricks LLM (41.3). The request decisions
+  live in `serving/_agent_core.py`, tested without MLflow. As before, `consumer_id`, `user_id` and
+  `trace_id` are client-declared metadata and `scopes` is never filled from the request.
+
 - Added Databricks Connect serverless to `get_spark_session()` (Plan 41.1). When
   `DATABRICKS_SERVERLESS_COMPUTE_ID` is set and no notebook session is active, the session comes
   from `DatabricksSession.builder.serverless()`, ahead of the cluster path. A Model Serving
@@ -68,6 +76,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   former default, `databricks-dbrx-instruct`, has been retired from Databricks Foundation Model
   APIs, so an unconfigured provider started fine and failed at the first question. **Migration:**
   set `DATABRICKS_LLM_MODEL` to a chat serving endpoint of your workspace.
+
+### Removed
+
+- Removed `SkiferChatModel` and `serving/chat_model.py` (Plan 41.4), replaced by
+  `SkiferResponsesAgent`. It could not be saved by MLflow: `save_model` calls `predict()` with
+  `ChatMessage` objects, which it read as dicts, and it raised before any request — measured with
+  MLflow 2.22.5 and 3.17.1. No deployment could depend on it. `ChatModel` is also deprecated since
+  MLflow 3.0.
+- The `serving` and `tracing` extras now require `mlflow>=3.0,<4` (was `>=2.12,<3`). `serving`
+  adds `databricks-connect`, which brings its own pyspark: install it without `[spark]`. The
+  tracing exporter already called MLflow 3 APIs (`mlflow.entities.trace_location`,
+  `search_traces(locations=)`) that MLflow 2 does not have.
 
 ### Fixed
 
