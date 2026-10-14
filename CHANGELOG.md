@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `DatabricksProvider` falls back to the Databricks SDK credentials when `DATABRICKS_HOST` or
+  `DATABRICKS_TOKEN` is not set. A notebook sets neither, so `log_agent` failed there on its first
+  call to the chat endpoint, though the runbook runs it from a notebook. The SDK resolves the
+  notebook's credentials or a `~/.databrickscfg` profile, and the authorization header is
+  recomputed on each request, so a short-lived OAuth token is refreshed. Without any credential,
+  the error names the two variables to set. An explicit `DATABRICKS_HOST` is kept.
+- `DatabricksProvider` no longer fails on the Claude 5.5 endpoints, which answer 400 to any
+  `temperature`. On a 400 that names `temperature`, the call is retried once without it and the
+  provider stops sending it. Any other error is raised unchanged.
+- `DatabricksProvider` reads the answer of a reasoning endpoint (`databricks-gpt-oss-*`), whose
+  content is a list of reasoning and text parts: only the text parts are returned.
+
 ## [3.0.0] - 2026-10-14
 
 ### Added

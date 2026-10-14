@@ -324,6 +324,51 @@ class GoogleProvider(LLMProvider):
 # Databricks Foundation Models
 # ---------------------------------------------------------------------------
 
+def _message_text(content: Any) -> str:
+    """Text of a chat message: reasoning endpoints (gpt-oss) return a list of parts."""
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return content
+
+
+def _sdk_authenticated_openai(openai_module: Any, host: str, missing: str) -> Any:
+    """OpenAI client for Databricks serving endpoints, authenticated by the Databricks SDK.
+
+    Used when DATABRICKS_HOST or DATABRICKS_TOKEN is missing. The SDK's unified auth finds
+    the notebook's own credentials, a ``~/.databrickscfg`` profile or a service principal.
+    The Authorization header is recomputed on every request, so short-lived OAuth tokens
+    are refreshed instead of expiring mid-session.
+    """
+    try:
+        from databricks.sdk.core import Config
+
+        config = Config(host=host) if host else Config()
+    except Exception as exc:
+        raise ValueError(
+            f"[DatabricksProvider] {missing} not set, and the Databricks SDK found no "
+            "credentials either. Set DATABRICKS_HOST to your workspace URL and "
+            "DATABRICKS_TOKEN to a personal access token or service principal secret, or run "
+            "where the SDK authenticates (a Databricks notebook, a ~/.databrickscfg profile). "
+            f"Cause: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    import httpx
+
+    class _SdkAuth(httpx.Auth):
+        def auth_flow(self, request):
+            request.headers.update(config.authenticate())
+            yield request
+
+    return openai_module.OpenAI(
+        api_key="databricks-sdk",  # required by the client; the header comes from _SdkAuth
+        base_url=config.host.rstrip("/") + "/serving-endpoints",
+        http_client=httpx.Client(auth=_SdkAuth()),
+    )
+
+
 class DatabricksProvider(LLMProvider):
     """
     LLM provider for Databricks Foundation Models API (OpenAI-compatible).
@@ -336,6 +381,9 @@ class DatabricksProvider(LLMProvider):
         DATABRICKS_HOST       — workspace URL (e.g. https://adb-xxx.azuredatabricks.net)
         DATABRICKS_TOKEN      — personal access token or service principal secret
         DATABRICKS_LLM_MODEL  — serving endpoint name (required, no default)
+
+    Without DATABRICKS_HOST or DATABRICKS_TOKEN, the Databricks SDK's authentication is
+    used instead (a notebook, a ``~/.databrickscfg`` profile, a service principal).
     """
 
     def __init__(
@@ -356,26 +404,24 @@ class DatabricksProvider(LLMProvider):
         resolved_host = host or os.environ.get("DATABRICKS_HOST", "")
         resolved_token = token or os.environ.get("DATABRICKS_TOKEN", "")
 
-        if not resolved_host:
-            raise ValueError(
-                "[DatabricksProvider] DATABRICKS_HOST is not set. "
-                "Set it to your workspace URL (e.g. https://adb-xxx.azuredatabricks.net)."
+        if resolved_host and resolved_token:
+            self._client = _openai.OpenAI(
+                api_key=resolved_token,
+                base_url=resolved_host.rstrip("/") + "/serving-endpoints",
             )
-        if not resolved_token:
-            raise ValueError(
-                "[DatabricksProvider] DATABRICKS_TOKEN is not set. "
-                "Set it to a personal access token or service principal secret."
+        else:
+            # A notebook sets neither variable: the Databricks SDK knows its credentials.
+            missing = " and ".join(
+                name
+                for name, value in (("DATABRICKS_HOST", resolved_host), ("DATABRICKS_TOKEN", resolved_token))
+                if not value
             )
-
-        base_url = resolved_host.rstrip("/") + "/serving-endpoints"
-        self._client = _openai.OpenAI(
-            api_key=resolved_token,
-            base_url=base_url,
-        )
+            self._client = _sdk_authenticated_openai(_openai, resolved_host, missing)
         # No default model: a hard-coded endpoint name outlives the endpoint. The previous
         # default, databricks-dbrx-instruct, was retired by Databricks and failed at the
         # first question instead of at startup.
         self._model = model or os.environ.get("DATABRICKS_LLM_MODEL", "")
+        self._omit_temperature = False
         if not self._model:
             raise ValueError(
                 "[DatabricksProvider] DATABRICKS_LLM_MODEL is not set. Set it to the name of a "
@@ -417,10 +463,23 @@ class DatabricksProvider(LLMProvider):
         }
         if response_format:
             call_kwargs["response_format"] = response_format
+        if self._omit_temperature:
+            call_kwargs.pop("temperature")
         call_kwargs.update(kwargs)
 
-        response = self._client.chat.completions.create(**call_kwargs)
-        return response.choices[0].message.content
+        try:
+            response = self._client.chat.completions.create(**call_kwargs)
+        except Exception as exc:
+            # Recent endpoints (Claude 5.5 on Databricks) refuse sampling parameters with a
+            # 400 naming them. Retry once without temperature, then stop sending it.
+            if getattr(exc, "status_code", None) != 400 or "temperature" not in str(exc):
+                raise
+            if "temperature" not in call_kwargs:
+                raise
+            call_kwargs.pop("temperature")
+            self._omit_temperature = True
+            response = self._client.chat.completions.create(**call_kwargs)
+        return _message_text(response.choices[0].message.content)
 
 
 # ---------------------------------------------------------------------------

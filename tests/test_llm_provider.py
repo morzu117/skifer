@@ -283,6 +283,7 @@ def test_databricks_provider_missing_host_raises(monkeypatch):
     monkeypatch.delenv("DATABRICKS_HOST", raising=False)
     monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-test-token")
 
+    _without_databricks_sdk(monkeypatch)
     fake_mod = _make_openai_module()
     monkeypatch.setitem(sys.modules, "openai", fake_mod)
 
@@ -295,12 +296,159 @@ def test_databricks_provider_missing_token_raises(monkeypatch):
     monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
     monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
 
+    _without_databricks_sdk(monkeypatch)
     fake_mod = _make_openai_module()
     monkeypatch.setitem(sys.modules, "openai", fake_mod)
 
     from skifer.semantic.llm_provider import DatabricksProvider
     with pytest.raises(ValueError, match="DATABRICKS_TOKEN"):
         DatabricksProvider()
+
+
+def _without_databricks_sdk(monkeypatch):
+    # None in sys.modules makes the import raise: the SDK fallback has nothing to use,
+    # whatever ~/.databrickscfg the machine running the tests has.
+    monkeypatch.setitem(sys.modules, "databricks.sdk.core", None)
+
+
+def _install_fake_databricks_sdk(monkeypatch, *, host="https://adb-9.azuredatabricks.net", error=None):
+    """Install a fake databricks.sdk.core whose Config counts authenticate() calls."""
+    calls = []
+
+    class Config:
+        def __init__(self, host=None):
+            if error is not None:
+                raise error
+            self.host = host or default_host
+
+        def authenticate(self):
+            calls.append(len(calls) + 1)
+            return {"Authorization": f"Bearer token-{len(calls)}"}
+
+    default_host = host
+    core = types.ModuleType("databricks.sdk.core")
+    core.Config = Config
+    monkeypatch.setitem(sys.modules, "databricks", types.ModuleType("databricks"))
+    monkeypatch.setitem(sys.modules, "databricks.sdk", types.ModuleType("databricks.sdk"))
+    monkeypatch.setitem(sys.modules, "databricks.sdk.core", core)
+    return calls
+
+
+def test_databricks_provider_falls_back_to_sdk_auth_without_variables(monkeypatch):
+    """A notebook sets neither DATABRICKS_HOST nor DATABRICKS_TOKEN: the SDK authenticates."""
+    httpx = pytest.importorskip("httpx")
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    calls = _install_fake_databricks_sdk(monkeypatch)
+    mock_openai_cls = MagicMock()
+    fake_mod = types.ModuleType("openai")
+    fake_mod.OpenAI = mock_openai_cls
+    monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+    from skifer.semantic.llm_provider import DatabricksProvider
+    DatabricksProvider(model="my-chat-endpoint")
+
+    kwargs = mock_openai_cls.call_args[1]
+    assert kwargs["base_url"] == "https://adb-9.azuredatabricks.net/serving-endpoints"
+    # The header is recomputed per request, so a refreshed OAuth token is picked up.
+    auth = kwargs["http_client"].auth
+    for expected in ("Bearer token-1", "Bearer token-2"):
+        request = httpx.Request("POST", kwargs["base_url"] + "/chat/completions")
+        assert next(auth.auth_flow(request)).headers["Authorization"] == expected
+    assert calls == [1, 2]
+
+
+def test_databricks_provider_sdk_fallback_keeps_an_explicit_host(monkeypatch):
+    pytest.importorskip("httpx")
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net/")
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    _install_fake_databricks_sdk(monkeypatch)
+    mock_openai_cls = MagicMock()
+    fake_mod = types.ModuleType("openai")
+    fake_mod.OpenAI = mock_openai_cls
+    monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+    from skifer.semantic.llm_provider import DatabricksProvider
+    DatabricksProvider(model="my-chat-endpoint")
+
+    assert mock_openai_cls.call_args[1]["base_url"] == "https://adb-123.azuredatabricks.net/serving-endpoints"
+
+
+def test_databricks_provider_sdk_without_credentials_names_what_to_set(monkeypatch):
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    _install_fake_databricks_sdk(monkeypatch, error=ValueError("default auth: cannot configure default credentials"))
+    monkeypatch.setitem(sys.modules, "openai", _make_openai_module())
+
+    from skifer.semantic.llm_provider import DatabricksProvider
+    with pytest.raises(ValueError) as raised:
+        DatabricksProvider(model="my-chat-endpoint")
+
+    message = str(raised.value)
+    assert "DATABRICKS_HOST and DATABRICKS_TOKEN not set" in message
+    assert "cannot configure default credentials" in message
+
+
+class _TemperatureRefused(Exception):
+    status_code = 400
+
+
+def _databricks_provider_with_client(monkeypatch, client):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-test-token")
+    fake_mod = types.ModuleType("openai")
+    fake_mod.OpenAI = MagicMock(return_value=client)
+    monkeypatch.setitem(sys.modules, "openai", fake_mod)
+    from skifer.semantic.llm_provider import DatabricksProvider
+    return DatabricksProvider(model="my-chat-endpoint")
+
+
+def _response(content):
+    response = MagicMock()
+    response.choices[0].message.content = content
+    return response
+
+
+def test_databricks_provider_drops_temperature_an_endpoint_refuses(monkeypatch):
+    """Claude 5.5 on Databricks answers 400 to any temperature: retry without, then stop sending it."""
+    client = MagicMock()
+
+    def create(**kwargs):
+        if "temperature" in kwargs:
+            raise _TemperatureRefused("BAD_REQUEST: Model does not support the temperature parameter.")
+        return _response("OK")
+
+    client.chat.completions.create.side_effect = create
+    provider = _databricks_provider_with_client(monkeypatch, client)
+
+    assert provider.complete("System", "ping") == "OK"
+    assert provider.complete("System", "ping") == "OK"
+
+    sent = [call.kwargs for call in client.chat.completions.create.call_args_list]
+    assert ["temperature" in kwargs for kwargs in sent] == [True, False, False]
+
+
+def test_databricks_provider_keeps_temperature_on_other_errors(monkeypatch):
+    client = MagicMock()
+    client.chat.completions.create.side_effect = _TemperatureRefused("BAD_REQUEST: context too long")
+    provider = _databricks_provider_with_client(monkeypatch, client)
+
+    with pytest.raises(_TemperatureRefused):
+        provider.complete("System", "ping")
+    assert client.chat.completions.create.call_count == 1
+    assert provider._omit_temperature is False
+
+
+def test_databricks_provider_reads_text_parts_of_a_reasoning_answer(monkeypatch):
+    """gpt-oss endpoints return the content as a list of reasoning and text parts."""
+    client = MagicMock()
+    client.chat.completions.create.return_value = _response([
+        {"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking"}]},
+        {"type": "text", "text": "OK"},
+    ])
+    provider = _databricks_provider_with_client(monkeypatch, client)
+
+    assert provider.complete("System", "ping") == "OK"
 
 
 def test_auto_detect_databricks(monkeypatch):
