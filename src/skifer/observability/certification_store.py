@@ -601,3 +601,23 @@ class DeltaCertificationStore:
             self.schema, status=status_value, target_fqn=target_fqn, limit=limit
         )
         return [_incident_from_row(row) for row in rows]
+
+
+DEFAULT_CERTIFICATION_SCHEMA = "_skifer_certification"
+
+
+def default_certification_store(engine):
+    """Return the certification store matching where ``engine`` runs.
+
+    Locally (``catalog: null``) this is the SQLite store. On Databricks it is the Delta
+    store, qualified with the environment's catalog: a bare schema would resolve
+    against the session's current catalog, which Skifer never sets, so a pipeline in a
+    notebook and an agent behind Model Serving could each read a different registry —
+    and in ``enforce`` the agent would refuse every table as ``MISSING``.
+    """
+    catalog = getattr(engine, "db", None)
+    if engine.is_local or not catalog:
+        return SqliteCertificationStore()
+    return DeltaCertificationStore(
+        engine.backend, schema=f"{catalog}.{DEFAULT_CERTIFICATION_SCHEMA}"
+    )

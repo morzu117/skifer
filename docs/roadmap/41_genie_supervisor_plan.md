@@ -76,8 +76,13 @@ Chaque point est un commit séparé (`feat(plan41-N): …`), avec ses tests et s
 - **Comportement :** `catalog` non nul (Databricks) → `DeltaCertificationStore(engine.backend)` ;
   `catalog: null` → `SqliteCertificationStore()`. `get_agent(certification_store=None)` utilise cette
   fonction au lieu de SQLite en dur. Un store passé explicitement gagne toujours.
-- **Tests :** les deux branches, plus le store explicite prioritaire. Backend factice de
-  `tests/fakes/`.
+- **Qualification par le catalogue** (ajouté en cours de point) : le schéma Delta est
+  `<catalog>._skifer_certification`. Skifer ne fixe jamais le catalogue courant de la session ;
+  un schéma nu se résoudrait donc dans le catalogue par défaut, qui peut différer entre un
+  notebook et l'endpoint. `SparkBackend` cite le schéma des stores avec `quote_fqn` au lieu de
+  `quote_ident`, sans changement pour un schéma à une partie.
+- **Tests :** les deux branches, plus le store explicite prioritaire, et le SQL émis pour un schéma
+  qualifié et pour un schéma nu (`SparkBackend` sur une session simulée).
 
 ### 41.3 — Plus de modèle LLM par défaut pour Databricks
 

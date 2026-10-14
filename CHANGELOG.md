@@ -63,6 +63,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `SkiferEngine.get_agent()` no longer defaults to a local SQLite certification store on
+  Databricks (Plan 41.2). A store left unset now comes from the new
+  `default_certification_store(engine)`: SQLite locally, `DeltaCertificationStore` qualified with
+  the environment's catalog on Databricks. Previously an agent on Databricks read an empty
+  registry, so `semantic_certification_policy: enforce` refused every table as `MISSING`. The
+  Delta store's schema is now quoted with `quote_fqn`, so `catalog.schema` works; a bare schema
+  produces the same SQL as before. Qualifying matters because Skifer never sets the session's
+  current catalog: a notebook and a Model Serving endpoint could otherwise each resolve
+  `_skifer_certification` in a different catalog and read two registries.
+
 - Fixed `export_odcs_31` silently dropping `contract.security`. The function's own docstring
   promises it exports "without silently discarding metadata", and it warns for `entity` and for
   the semantic seed — but the security block left with neither an entry nor a warning, while
