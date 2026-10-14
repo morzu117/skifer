@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the runbook `docs/databricks_supervisor.md` (Plan 41.8): log the agent, serve it with
+  Connect serverless, limit a Genie space to the tables tagged `CERTIFIED`, put both behind an
+  Agent Bricks supervisor with routing descriptions, and the checks to run after each deployment.
+  `scripts/deploy_to_databricks.py` now calls `log_agent` and takes `--llm-endpoint`; it still
+  imported the removed `SkiferChatModel` and pinned PySpark and Delta into the endpoint. Whether the
+  supervisor accepts a custom `ResponsesAgent` endpoint is not verified yet and the page says so.
+
 - Added the `uc_certification_tags` environment option (Plan 41.7, default `false`). When `true`,
   a certified publication tags the promoted table in Unity Catalog through the existing
   `mirror_certification` (`certification`, `contract_version`, `definition_hash`,

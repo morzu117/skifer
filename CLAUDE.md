@@ -119,10 +119,12 @@ src/skifer/
     errors.py          # Stable service-error to HTTP mapping
     routes/            # Thin 1:1 adapters; no engine imports
   serving/
-    chat_model.py      # SkiferChatModel — mlflow.pyfunc.ChatModel wrapping AgenticHub
+    responses_agent.py # SkiferResponsesAgent — mlflow.pyfunc.ResponsesAgent wrapping AgenticHub (Plan 41)
+    _agent_core.py     # MLflow-free core: build_hub, question, ConsumerContext, text + evidence
+    deploy.py          # log_agent() — artifacts, model_config, resources, pinned requirements
     _response_serializer.py  # hub_response_to_text() — HubResponse → str (shared CLI + serving)
   cli.py               # `skifer` CLI, including Plan 31 index/lineage/dictionary/incidents/api/audit
-  spark_factory.py     # get_spark_session() — auto-detects: Databricks notebook > Connect v2 > local[*]
+  spark_factory.py     # get_spark_session() — notebook > Connect serverless > Connect cluster > local[*]
   utils.py             # safe_columns and other helpers
   __init__.py          # Public API: SkiferEngine, RuleRegistry, ConfigurationManager,
                        #             load_schema, parse_schema, safe_columns
@@ -137,7 +139,7 @@ pytest tests/test_core.py          # single file
 ruff check src/                    # lint
 pip install -e ".[dev]"            # dev mode
 pip install -e ".[llm-anthropic]"  # with LLM support (also: llm-openai, llm-google, semantic-full)
-pip install -e ".[serving]"        # MLflow + OpenAI SDK for Databricks Model Serving deployment
+pip install -e ".[serving]"        # MLflow 3 + OpenAI SDK + databricks-connect for Model Serving (never with [spark])
 pip install -e ".[api]"            # FastAPI + Uvicorn for the loopback local API
 pip install -e ".[docs]"           # mkdocs + material theme
 mkdocs build --strict              # build the site; must stay warning-free
@@ -171,7 +173,7 @@ A version bump (done by the user) requires all 5 points — they keep `CLAUDE.md
 ### Local mode vs Databricks
 - `catalog: null` in `config.yaml` → skips Unity Catalog, starts `local[*]` PySpark + Delta + Derby.
 - FQN is 2-part (`schema.table`) locally, 3-part (`catalog.schema.table`) on Databricks.
-- Session detection order: active Databricks notebook → Databricks Connect v2 (`.env`) → local PySpark.
+- Session detection order: active Databricks notebook → Databricks Connect serverless (`DATABRICKS_SERVERLESS_COMPUTE_ID`) → Databricks Connect cluster (`.env`) → local PySpark.
 
 ### YAML schema patterns
 ```yaml
@@ -459,9 +461,9 @@ faible l'emportant sur chaque axe — une source non certifiée bascule la ligne
 date affichée est la plus ancienne certification et la fraîcheur la plus périmée, une décision non-ALLOW
 est annoncée. Le canal texte applique la même redaction que le JSON.
 
-**Serving** : `choices` reste inchangé à l'octet près ; la preuve est ajoutée à côté dans un bloc
-versionné `skifer`. mlflow étant un extra optionnel non installé, l'acceptation de ce champ
-top-level par `mlflow.pyfunc.ChatModel` **n'est pas vérifiée empiriquement** (note dans le code).
+**Serving** : le texte va dans `output` (format Responses), la preuve dans
+`custom_outputs["skifer"]`, versionnée. Vérifié à travers MLflow réel par
+`tests/test_serving_mlflow_roundtrip.py` (job CI `serving`).
 
 **Couverture de certification multi-modèle.** Le préflight ne voit que le modèle racine (le chemin de
 jointure n'existe pas encore) ; le **recheck évalue chaque dataset du plan compilé**. Sans cela, une
@@ -831,6 +833,7 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Émetteur OpenLineage (Plan 36)](docs/roadmap/36_openlineage_emitter_plan.md) | mergé via PR #3 | Implémenté (36.0–36.4) — événements `RunEvent` allowlistés, émetteurs NoOp/InMemory/HTTP, émission best-effort à la publication et à l'écriture batch |
 | [Durcissement best-effort et injection de paramètres (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implémenté (37.0–37.4) — chemins best-effort jamais bloquants sous `-W error`, `\` préservé à l'injection, exemples portables Windows |
 | [Lineage du tracker : agrégats, jointures, intermédiaires (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | — | **Pas encore un plan ; un point livré.** Le document ne contenait rien (ni fichier, ni branche, ni commit — lien mort) ; il porte désormais le **comportement mesuré**. Deux fail-open sont **fermés** : `aggregate:` produit maintenant du lineage, et l'arête d'une règle porte le nom publié par `select_final` plutôt que le nom interne de la règle — dans les deux cas, une colonne `pii` ne perd plus sa classification en chemin et `mode="strict"` peut l'attraper. Restent quatre points, qui demandent des décisions de conception : comment représenter un doute, si le tracker peut lire un schéma, comment séparer la condition de jointure du flux, et **si une source qualifiée (`ord.id`) est exécutable** — elle ne l'est aujourd'hui sur aucun moteur alors qu'elle est le seul remède à l'attribution par défaut et qu'`examples/23_openlineage` l'emploie ; un garde-fou épingle les deux moteurs ensemble en attendant. |
+| [Skifer derrière un superviseur Genie (Plan 41)](docs/roadmap/41_genie_supervisor_plan.md) | `feat/plan41-genie-supervisor` | Implémenté (41.1–41.8) — `SkiferResponsesAgent` (MLflow 3), Connect serverless, store de certification par catalogue, tags UC, `log_agent`, runbook `docs/databricks_supervisor.md`. Le 41.9 est une validation manuelle sur le workspace, à faire avec l'utilisateur ; en premier : le superviseur accepte-t-il l'endpoint. |
 
 ## Key files
 

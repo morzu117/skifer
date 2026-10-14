@@ -1,23 +1,26 @@
 """
-deploy_to_databricks.py — Log SkiferChatModel to MLflow and register it
-in the Unity Catalog Model Registry.
+deploy_to_databricks.py — Log SkiferResponsesAgent to MLflow and register it
+in the Unity Catalog Model Registry (Plan 41).
 
 Usage:
-    python scripts/deploy_to_databricks.py
+    python scripts/deploy_to_databricks.py --llm-endpoint my-chat-endpoint \\
+        --registered-name main.agents.skifer
     python scripts/deploy_to_databricks.py --config path/config.yaml \\
         --models-dir semantic/ \\
-        --experiment /skifer/hub \\
-        --registered-name skifer_hub
+        --experiment /skifer/agent \\
+        --llm-endpoint my-chat-endpoint \\
+        --registered-name main.agents.skifer
 
 Prerequisites:
-    - pip install -e ".[serving]"
+    - pip install -e ".[serving]"   (without [spark]: databricks-connect brings pyspark)
     - DATABRICKS_HOST and DATABRICKS_TOKEN set in environment (or .env)
-    - mlflow tracking URI pointing to your Databricks workspace:
-        export MLFLOW_TRACKING_URI=databricks
+    - DATABRICKS_SERVERLESS_COMPUTE_ID=auto, outside a Databricks notebook
 
-After running this script, create a Model Serving endpoint via:
-    - Databricks UI: Machine Learning > Serving > Create endpoint
-    - or REST API: POST /api/2.0/serving-endpoints (see printed instructions)
+MLflow validates the agent by calling it while logging: the hub is built here (Spark
+through Connect serverless, semantic models, LLM endpoint) and asked one question.
+
+After running this script, create the Model Serving endpoint and wire the supervisor:
+see docs/databricks_supervisor.md.
 """
 
 from __future__ import annotations
@@ -62,68 +65,51 @@ def _log_model(
     models_dir: Path,
     experiment: str,
     registered_name: str,
+    llm_endpoint: str,
+    warehouse_id: str | None,
+    example_question: str | None,
 ) -> str:
-    """Log the model to MLflow and return the run_id."""
+    """Log the agent to MLflow and return the run_id."""
     import mlflow
 
-    from skifer.serving.chat_model import _build_mlflow_model
+    from skifer.serving import log_agent
 
     mlflow.set_tracking_uri("databricks")
+    mlflow.set_registry_uri("databricks-uc")
     mlflow.set_experiment(experiment)
 
-    pip_requirements = [
-        "skifer[serving]",
-        "pyspark>=3.3.0",
-        "delta-spark>=2.0.0",
-    ]
-
-    print(f"[deploy] Logging model to experiment '{experiment}' ...")
+    print(f"[deploy] Logging agent to experiment '{experiment}' ...")
     with mlflow.start_run() as run:
-        mlflow.pyfunc.log_model(
-            artifact_path="skifer_hub",
-            python_model=_build_mlflow_model(),
-            artifacts={
-                "config": str(config),
-                "models_dir": str(models_dir),
-            },
-            pip_requirements=pip_requirements,
+        log_agent(
+            str(config),
+            str(models_dir),
+            llm_endpoint,
             registered_model_name=registered_name,
+            warehouse_id=warehouse_id,
+            example_question=example_question,
         )
         run_id = run.info.run_id
 
-    print(f"[deploy] Model logged. Run ID: {run_id}")
+    print(f"[deploy] Agent logged. Run ID: {run_id}")
     print(f"[deploy] Registered as: {registered_name}")
     return run_id
 
 
 def _print_endpoint_instructions(registered_name: str, host: str) -> None:
-    """Print the next steps to create a Model Serving endpoint."""
+    """Print the next steps to create the serving endpoint."""
+    endpoint = registered_name.replace(".", "_")
+    payload = '\'{"input": [{"role": "user", "content": "Quel est le CA par région ?"}]}\''
     print("\n" + "=" * 60)
-    print("NEXT STEP — Create a Model Serving endpoint")
+    print("NEXT STEP — Create the Model Serving endpoint")
     print("=" * 60)
     print()
-    print("Option A — Databricks UI:")
-    print("  Machine Learning > Serving > Create endpoint")
     print(f"  Model: {registered_name} (latest version)")
+    print("  Environment variables:")
+    print("    DATABRICKS_SERVERLESS_COMPUTE_ID = auto")
+    print(f"    DATABRICKS_HOST                  = {host or '<workspace URL>'}")
+    print("    DATABRICKS_TOKEN                 = {{secrets/<scope>/<key>}}")
     print()
-    print("Option B — REST API:")
-    print(f"  POST {host}/api/2.0/serving-endpoints")
-    print("  Body:")
-    print(f"""  {{
-    "name": "{registered_name.replace('.', '_')}",
-    "config": {{
-      "served_models": [{{
-        "model_name": "{registered_name}",
-        "model_version": "1",
-        "workload_size": "Small",
-        "scale_to_zero_enabled": true
-      }}]
-    }}
-  }}""")
-    print()
-    print("Option C — Test the endpoint once created:")
-    endpoint = registered_name.replace(".", "_")
-    payload = '\'{"messages": [{"role": "user", "content": "Where does amount_eur come from?"}]}\''
+    print("Test it once it is ready:")
     print(
         f"  curl -X POST \\\n"
         f"    {host}/serving-endpoints/{endpoint}/invocations \\\n"
@@ -132,22 +118,31 @@ def _print_endpoint_instructions(registered_name: str, host: str) -> None:
         f"    -d {payload}"
     )
     print()
-    print("For Genie Tools integration, register the endpoint URL above as a")
-    print("custom tool in your Genie Space settings.")
+    print("Then wire Genie and this endpoint behind a supervisor:")
+    print("  docs/databricks_supervisor.md")
     print("=" * 60)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Log SkiferChatModel to Databricks MLflow and register it.",
+        description="Log SkiferResponsesAgent to Databricks MLflow and register it.",
     )
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--models-dir", default="semantic", help="Semantic models directory")
-    parser.add_argument("--experiment", default="/skifer/hub", help="MLflow experiment name")
+    parser.add_argument("--experiment", default="/skifer/agent", help="MLflow experiment name")
     parser.add_argument(
         "--registered-name",
-        default="skifer_hub",
-        help="Unity Catalog registered model name (e.g. catalog.schema.model or plain name)",
+        required=True,
+        help="Unity Catalog registered model name (catalog.schema.model)",
+    )
+    parser.add_argument(
+        "--llm-endpoint", required=True, help="Chat serving endpoint the agent calls"
+    )
+    parser.add_argument("--warehouse-id", default=None, help="SQL warehouse to declare")
+    parser.add_argument(
+        "--example-question",
+        default=None,
+        help="Question MLflow asks while logging (MLflow's default otherwise)",
     )
     args = parser.parse_args()
 
@@ -156,7 +151,15 @@ def main() -> None:
     host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
 
     _check_prerequisites(config, models_dir)
-    _log_model(config, models_dir, args.experiment, args.registered_name)
+    _log_model(
+        config,
+        models_dir,
+        args.experiment,
+        args.registered_name,
+        args.llm_endpoint,
+        args.warehouse_id,
+        args.example_question,
+    )
     _print_endpoint_instructions(args.registered_name, host)
 
 

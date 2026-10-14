@@ -51,6 +51,12 @@ of a target for which a prior definition was recorded.
 See [Contract identity and certified publication](observability.md#contract-identity-and-odcs-export)
 for the store, checks, promotion, quarantine, and recovery mechanics.
 
+With `uc_certification_tags: true` on an environment, each promotion also tags the
+target table in Unity Catalog (`certification`, `contract_version`, `definition_hash`,
+`skifer_owner`). The tag is a best-effort snapshot taken at promotion, for catalog
+consumers such as a Genie space; the certification gate keeps reading the store, see
+[Skifer behind a Databricks supervisor](databricks_supervisor.md).
+
 Start that path with `examples/02_quality_and_contract/`: it declares the
 contract, stages and promotes a passing batch, then prints the certification
 record that downstream policy will consume.

@@ -15,7 +15,10 @@ Expected artifacts at log time:
 Expected environment variables at serving time:
     DATABRICKS_SERVERLESS_COMPUTE_ID — "auto", for Spark through Connect serverless
     DATABRICKS_HOST / DATABRICKS_TOKEN — workspace URL and credential
-    DATABRICKS_LLM_MODEL — chat serving endpoint name (required)
+    DATABRICKS_LLM_MODEL — chat serving endpoint name, unless ``log_agent`` wrote
+        it into the model configuration
+
+Logging, serving and the Genie supervisor: docs/databricks_supervisor.md.
 """
 
 from __future__ import annotations
