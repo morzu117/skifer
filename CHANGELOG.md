@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added Databricks Connect serverless to `get_spark_session()` (Plan 41.1). When
+  `DATABRICKS_SERVERLESS_COMPUTE_ID` is set and no notebook session is active, the session comes
+  from `DatabricksSession.builder.serverless()`, ahead of the cluster path. A Model Serving
+  container has neither a cluster nor Java, so this is the only way an endpoint gets Spark. It
+  never falls back to `local[*]`: there, the fallback would replace the real error (missing
+  package, refused credentials) with a JVM one.
+
 - Added a guard that every `docs/roadmap/*_plan.md` link in `CLAUDE.md` and `AGENTS.md` resolves.
   Those tables are the map an agent reads before starting, and Plan 38 sat in it as "finalised, not
   started" while no file, no branch and no commit existed for it — nothing failed, because nothing

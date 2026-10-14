@@ -4,8 +4,9 @@ Auto-detects the execution context and returns an appropriate SparkSession.
 
 Priority:
   1. Active session       — Databricks notebook / cluster
-  2. Databricks Connect   — IDE (PyCharm, VS Code) + remote cluster via env vars
-  3. Local PySpark        — local[*] + Delta Lake + Derby embedded metastore (no install needed)
+  2. Connect serverless   — no cluster (Model Serving, Databricks Apps) via DATABRICKS_SERVERLESS_COMPUTE_ID
+  3. Databricks Connect   — IDE (PyCharm, VS Code) + remote cluster via env vars
+  4. Local PySpark        — local[*] + Delta Lake + Derby embedded metastore (no install needed)
 """
 import os
 import sys
@@ -21,7 +22,7 @@ def get_spark_session(
 
     mode is one of:
       - "databricks_notebook"  — active session detected (running on Databricks)
-      - "databricks_connect"   — Databricks Connect v2 via DATABRICKS_* env vars
+      - "databricks_connect"   — Databricks Connect v2, serverless or cluster, via DATABRICKS_* env vars
       - "local"                — local PySpark with Delta Lake (fallback / local dev)
 
     Args:
@@ -41,7 +42,26 @@ def get_spark_session(
         pass
 
     # ------------------------------------------------------------------
-    # 2. Databricks Connect v2 — IDE + remote cluster
+    # 2. Databricks Connect serverless — no cluster at all
+    #    Requires: DATABRICKS_SERVERLESS_COMPUTE_ID (e.g. "auto") + SDK default auth
+    #    (DATABRICKS_HOST with a token or a service principal). Never falls back to
+    #    local: where this is set (Model Serving, Apps) there is no Java to run local[*],
+    #    and the fallback would hide the real error behind a JVM one.
+    # ------------------------------------------------------------------
+    if os.getenv("DATABRICKS_SERVERLESS_COMPUTE_ID"):
+        try:
+            from databricks.connect import DatabricksSession
+        except ImportError as exc:
+            raise ImportError(
+                "DATABRICKS_SERVERLESS_COMPUTE_ID is set but databricks-connect is not "
+                "installed. Install it with: pip install 'skifer[serving]'"
+            ) from exc
+        session = DatabricksSession.builder.serverless().getOrCreate()
+        print("   [SparkFactory] Databricks Connect serverless session initialized.")
+        return session, "databricks_connect"
+
+    # ------------------------------------------------------------------
+    # 3. Databricks Connect v2 — IDE + remote cluster
     #    Requires: DATABRICKS_HOST, DATABRICKS_TOKEN, DATABRICKS_CLUSTER_ID
     # ------------------------------------------------------------------
     host = os.getenv("DATABRICKS_HOST")
@@ -61,7 +81,7 @@ def get_spark_session(
             print(f"   [SparkFactory] Databricks Connect failed ({e}). Falling back to local.")
 
     # ------------------------------------------------------------------
-    # 3. Local PySpark + Delta Lake
+    # 4. Local PySpark + Delta Lake
     #    Uses Derby as the embedded Hive metastore — no installation required.
     #    Tables written via saveAsTable() are stored under warehouse_dir.
     # ------------------------------------------------------------------
