@@ -76,6 +76,12 @@ class _Agent(SkiferResponsesAgent):
         self._hub = _Hub()
 
 
+@pytest.fixture(autouse=True)
+def tracking_in_tmp(tmp_path, monkeypatch):
+    # MLflow 3 defaults to sqlite:///mlflow.db in the working directory.
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"sqlite:///{tmp_path / 'mlflow.db'}")
+
+
 @pytest.fixture
 def served(tmp_path):
     path = str(tmp_path / "model")

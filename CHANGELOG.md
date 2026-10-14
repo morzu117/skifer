@@ -121,6 +121,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the Databricks installation page, which recommended Runtime 11.x: those runtimes ship
+  Python 3.9 and Skifer requires 3.10, so the minimum is 13.3 LTS. It also listed
+  `skifer[serving]` among the extras to install on a cluster, where its `databricks-connect` would
+  sit next to the runtime's PySpark; it now points to the notebook install of the runbook.
+
+- Fixed `tests/test_serving_mlflow_roundtrip.py` leaving an `mlflow.db` in the working directory:
+  MLflow 3 defaults to a SQLite tracking store there. The tests now point MLflow at their
+  temporary directory. Added `tests/test_tracing_mlflow_real.py`, run by the `serving` CI job,
+  which builds the MLflow exporter's trace destinations with the real MLflow:
+  `test_tracing_exporters.py` replaces `mlflow.entities.trace_location` with a fake and cannot
+  tell whether the names it uses still exist. They do in MLflow 3.17.
+
 - `SkiferEngine.get_agent()` no longer defaults to a local SQLite certification store on
   Databricks (Plan 41.2). A store left unset now comes from the new
   `default_certification_store(engine)`: SQLite locally, `DeltaCertificationStore` qualified with
