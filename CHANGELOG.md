@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-14
+
 ### Fixed
 
 - `DatabricksProvider` falls back to the Databricks SDK credentials when `DATABRICKS_HOST` or
