@@ -1363,3 +1363,72 @@ def test_lineage_publish_tolerates_a_promoted_result_without_report(monkeypatch)
     assert result is stub_result
     assert _event_types(emitter) == ["START", "COMPLETE"]
     assert "dataQualityAssertions" not in emitter.events[1]["outputs"][0]["facets"]
+
+
+# ---------------------------------------------------------------------------
+# Unity Catalog certification tags — Plan 41.7
+# ---------------------------------------------------------------------------
+
+class _TaggingBackend(FakeBackend):
+    def __init__(self, error=None):
+        super().__init__()
+        self.tag_sql = []
+        self.error = error
+
+    def execute_sql(self, sql):
+        if "SET TAGS" in sql:
+            if self.error is not None:
+                raise self.error
+            self.tag_sql.append(sql)
+        return None
+
+
+def test_uc_tags_are_off_by_default():
+    store, backend = SqliteCertificationStore(":memory:"), _TaggingBackend()
+    coordinator = PublicationCoordinator(backend, _Monitor(_pass_result), store)
+
+    result = coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, _definition())
+
+    assert result.state == "PROMOTED"
+    assert backend.tag_sql == []
+
+
+def test_uc_tags_mark_a_promoted_table_certified():
+    store, backend = SqliteCertificationStore(":memory:"), _TaggingBackend()
+    coordinator = PublicationCoordinator(
+        backend, _Monitor(_pass_result), store, uc_certification_tags=True
+    )
+
+    coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, _definition())
+
+    assert len(backend.tag_sql) == 1
+    sql = backend.tag_sql[0]
+    assert sql.startswith("ALTER TABLE `gold`.`orders` SET TAGS")
+    assert "'certification' = 'CERTIFIED'" in sql
+    assert "'contract_version' = '1.0.0'" in sql
+
+
+def test_uc_tags_leave_a_quarantined_publication_alone():
+    store, backend = SqliteCertificationStore(":memory:"), _TaggingBackend()
+    coordinator = PublicationCoordinator(
+        backend, _Monitor(_fail_result), store, uc_certification_tags=True
+    )
+
+    result = coordinator.publish(FakeDataFrame([{"id": None}]), "gold.orders", {}, _definition())
+
+    assert result.state == "QUARANTINED"
+    assert backend.tag_sql == []
+
+
+def test_uc_tag_permission_error_never_fails_the_publication():
+    store = SqliteCertificationStore(":memory:")
+    backend = _TaggingBackend(error=PermissionError("no APPLY TAG"))
+    coordinator = PublicationCoordinator(
+        backend, _Monitor(_pass_result), store, uc_certification_tags=True
+    )
+
+    with pytest.warns(Warning, match="UC tags"):
+        result = coordinator.publish(FakeDataFrame([{"id": 1}]), "gold.orders", {}, _definition())
+
+    assert result.state == "PROMOTED"
+    assert backend._written["gold.orders"] == [{"id": 1}]

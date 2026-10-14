@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the `uc_certification_tags` environment option (Plan 41.7, default `false`). When `true`,
+  a certified publication tags the promoted table in Unity Catalog through the existing
+  `mirror_certification` (`certification`, `contract_version`, `definition_hash`,
+  `skifer_owner`), so a Genie space can be limited to certified tables and Catalog Explorer shows
+  the status. Nothing called `mirror_certification` until now. Only promotions are tagged: a
+  quarantine leaves the table on its previous, still certified version. A tagging failure is a
+  warning and never fails the publication. Tags are a snapshot at promotion: an expiry by
+  `semantic_certification_max_age` is enforced by the semantic layer, not reflected in the tag.
+
 - Added `skifer.serving.log_agent()` (Plan 41.6), which logs `SkiferResponsesAgent` with its
   `config` and `models_dir` artifacts, the LLM endpoint in `model_config` (the deployed endpoint
   then needs no `DATABRICKS_LLM_MODEL`), the endpoint and an optional SQL warehouse declared as

@@ -144,14 +144,19 @@ Chaque point est un commit séparé (`feat(plan41-N): …`), avec ses tests et s
 ### 41.7 — Projeter la certification dans Unity Catalog
 
 - **Fichiers :** `src/skifer/observability/publication.py`, `src/skifer/core/config.py`.
-- **Comportement :** option d'environnement `uc_certification_tags: true` (défaut `false`). Après
-  une promotion **ou** une quarantaine, appeler `mirror_certification` sur la table cible. Le
-  résultat `SYNC_ERROR` est journalisé en WARNING et **n'échoue jamais** la publication
-  (comportement documenté de `uc_mirror.py`).
+- **Comportement :** option d'environnement `uc_certification_tags: true` (défaut `false`, booléen
+  validé au chargement). Après une **promotion**, y compris par `resume`, appeler
+  `mirror_certification` sur la table cible. Pas après une quarantaine : la table cible reste sur sa
+  version précédente, toujours certifiée, et ses tags sont déjà justes (décidé en cours de point).
+  Un échec est journalisé en WARNING et **n'échoue jamais** la publication (comportement
+  documenté de `uc_mirror.py`).
+- **Limite :** les tags sont un instantané pris à la promotion. Une certification qui expire par
+  `semantic_certification_max_age` n'est pas retirée du tag ; seul l'endpoint Skifer l'applique.
 - **Pourquoi :** l'espace Genie peut alors être restreint aux tables taguées
   `certification = CERTIFIED`, et un humain voit la certification dans Catalog Explorer.
-- **Tests :** option absente → aucun appel ; présente → un appel par publication, avec le statut ;
-  erreur de permission → publication réussie et warning.
+- **Tests :** option absente → aucun tag ; présente → un tag `CERTIFIED` par promotion, aucun en
+  quarantaine ; erreur de permission → publication réussie et warning ; valeur non booléenne
+  refusée au chargement de la config.
 
 ### 41.8 — Documentation et runbook
 

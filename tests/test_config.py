@@ -415,3 +415,20 @@ def test_configuration_manager_accepts_absent_global_lineage_config(tmp_path):
     manager = ConfigurationManager(config_path=str(_write_local_config(tmp_path)))
 
     assert manager.current_env_name == "local"
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_config_accepts_uc_certification_tags(tmp_path, value):
+    manager = ConfigurationManager(
+        config_path=str(_write_local_config(tmp_path, uc_certification_tags=value))
+    )
+
+    assert manager.get_value("uc_certification_tags") is value
+
+
+@pytest.mark.parametrize("value", ["true", "yes", 1, None])
+def test_config_rejects_non_boolean_uc_certification_tags(tmp_path, value):
+    config_file = _write_local_config(tmp_path, uc_certification_tags=value)
+
+    with pytest.raises(ValueError, match="uc_certification_tags.*environment 'local'.*true or false"):
+        ConfigurationManager(config_path=str(config_file))

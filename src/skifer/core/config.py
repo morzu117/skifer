@@ -320,6 +320,14 @@ class ConfigurationManager:
                                 f"'{env_name}': {policy!r}. Expected one of "
                                 f"{sorted(valid_policies)}."
                             )
+                    if "uc_certification_tags" in env_config and not isinstance(
+                        env_config["uc_certification_tags"], bool
+                    ):
+                        raise ValueError(
+                            "Invalid uc_certification_tags for environment "
+                            f"'{env_name}': {env_config['uc_certification_tags']!r}. "
+                            "Expected true or false."
+                        )
                     if "classification_propagation" in env_config:
                         propagation = env_config["classification_propagation"]
                         valid_propagation = {"warn", "strict"}
