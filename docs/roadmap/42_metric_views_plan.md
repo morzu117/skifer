@@ -94,7 +94,7 @@ Port du prototype demo_sts, durci :
 - **Tests :** `tests/test_metric_views.py`, dont un test d'égalité entre l'expression de mesure et
   celle que le resolver met dans son SQL, pour chaque type d'agrégat et avec `filters`.
 
-### 42.3 — Publication : `SemanticEngine.publish_metric_views()`
+### 42.3 — Publication : `SemanticEngine.publish_metric_views()` (fait)
 
 - Signature : `publish_metric_views(model_keys=None, *, consumer_context=None, dry_run=False)
   -> MetricViewReport` ; `model_keys=None` publie tout le catalogue (chargement paresseux, modèle par

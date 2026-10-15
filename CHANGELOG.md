@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mono-table ; une métrique `semi_additive` ou un modèle avec des `relationships` est refusé
   (`MetricViewTranslationError`), leur sémantique dépendant de ce qu'une metric view ne respecte pas.
   `QueryResolver._build_metric_expr` est inchangé pour l'appelant (refactor pur).
+- `SemanticEngine.publish_metric_views()` (Plan 42.3) : publie le catalogue (ou une sélection de
+  modèles) en metric views, avec le même gate de certification par modèle que `create_view` (Plan
+  29). Un modèle refusé — décertifié ou non traduisible — n'est pas publié et sa vue existante est
+  supprimée (`DROP VIEW IF EXISTS`), sans bloquer la publication des autres modèles. Nouvelle clé
+  d'environnement `semantic_metric_views_schema` (défaut `semantic`, suffixe sandbox en interactif,
+  comme `semantic_views_schema`). `dry_run=True` n'exécute aucun DDL. `MetricViewReport` ne porte
+  que des clés de modèle et du DDL — aucune valeur de donnée.
 
 ## [3.0.1] - 2026-10-14
 

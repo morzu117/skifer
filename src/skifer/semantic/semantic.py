@@ -731,6 +731,107 @@ class SemanticEngine:
         print(f"✅ [SemanticEngine] Vue créée : {view_fqn}")
         return view_fqn
 
+    def publish_metric_views(
+        self,
+        model_keys: list[str] | None = None,
+        *,
+        consumer_context: ConsumerContext | None = None,
+        dry_run: bool = False,
+    ) -> "MetricViewReport":  # noqa: F821
+        """
+        Publie des modèles sémantiques en metric views Unity Catalog, pour Genie (Plan 42).
+
+        `model_keys=None` publie tout le catalogue. Le gate de certification s'applique
+        modèle par modèle (politique de l'environnement, comme `create_view`) : un modèle
+        refusé n'est pas publié et sa vue existante est supprimée plutôt que laissée en
+        place — sinon Genie continuerait de servir une définition dont la source n'est
+        plus certifiée. Un modèle que la traduction ne sait pas rendre sûrement (Plan 42,
+        décision D4 : relationships, métrique semi_additive, identifiant non sûr) est
+        refusé de la même façon, sans bloquer la publication des autres.
+
+        `dry_run=True` n'exécute aucun DDL : le rapport porte ce qui aurait été exécuté.
+        """
+        from .metric_views import MetricViewReport, MetricViewTranslationError, metric_view_ddl, view_name
+
+        keys = model_keys if model_keys is not None else [m["key"] for m in self.list_models()]
+        catalog_fqn = self.core.db
+        schema = self._resolve_metric_views_schema()
+
+        published: list[str] = []
+        refused: list[dict[str, str]] = []
+        dropped: list[str] = []
+        ddl_statements: list[str] = []
+
+        if keys and not dry_run:
+            self.core._get_backend().execute_sql(
+                f"CREATE SCHEMA IF NOT EXISTS `{catalog_fqn}`.`{schema}`"
+            )
+
+        for key in keys:
+            model = self._get_model(key)
+
+            try:
+                self.enforce_certification_gate(key, model, consumer_context)
+            except SemanticAccessDenied as exc:
+                reason = "; ".join(exc.reasons) if exc.reasons else str(exc.decision)
+                refused.append({"model": key, "reason": f"certification: {reason}"})
+                try:
+                    drop_ddl = (
+                        f"DROP VIEW IF EXISTS `{catalog_fqn}`.`{schema}`.`{view_name(model)}`"
+                    )
+                except MetricViewTranslationError:
+                    continue  # nom de vue non résolvable : rien à supprimer de sûr
+                ddl_statements.append(drop_ddl)
+                if not dry_run:
+                    self.core._get_backend().execute_sql(drop_ddl)
+                dropped.append(key)
+                continue
+
+            try:
+                ddl = metric_view_ddl(model, catalog_fqn, schema)
+            except MetricViewTranslationError as exc:
+                refused.append({"model": key, "reason": str(exc)})
+                continue
+
+            ddl_statements.append(ddl)
+            if not dry_run:
+                self.core._get_backend().execute_sql(ddl)
+            published.append(key)
+
+        return MetricViewReport(
+            published=tuple(published),
+            refused=tuple(refused),
+            dropped=tuple(dropped),
+            ddl=tuple(ddl_statements),
+        )
+
+    def _resolve_metric_views_schema(self) -> str:
+        """
+        Résout le schéma cible des metric views (Plan 42, décision D2).
+        Lit semantic_metric_views_schema depuis config.yaml (+ suffix sandbox si applicable).
+        Fallback sur 'semantic' avec warning.
+        """
+        env = getattr(self.core, "env", "DEV").lower()
+        config = getattr(self.core, "config", {})
+
+        base_schema = (
+            config
+            .get("environments", {})
+            .get(env, {})
+            .get("semantic_metric_views_schema")
+        )
+
+        if not base_schema:
+            print(
+                f"⚠️  [SemanticEngine] 'semantic_metric_views_schema' non configuré pour "
+                f"l'env '{env.upper()}'. Fallback sur 'semantic'. "
+                f"Ajoutez cette clé dans config.yaml pour personnaliser."
+            )
+            base_schema = "semantic"
+
+        suffix = getattr(self.core, "schema_suffix", "")
+        return f"{base_schema}{suffix}"
+
     def enforce_certification_gate(
         self,
         model_key: str,
