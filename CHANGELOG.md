@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `SkiferResponsesAgent.predict()` (Plan 41.4) ne mettait pas de `id` au niveau racine de
+  `ResponsesAgentResponse`. MLflow accepte ce champ comme optionnel (`None`, et le serialiseur
+  l'omet alors de la réponse), mais le schéma strict de l'API Responses d'OpenAI l'exige : un
+  client qui valide contre ce schéma rejette la réponse. Trouvé en validant la réponse en direct
+  de l'endpoint `skifer-agent` sur le workspace (Plan 41.9) contre plusieurs schémas connus.
+  `id=str(uuid4())` au niveau racine, en plus de celui déjà posé sur l'item de sortie.
+
 ## [3.0.2] - 2026-10-15
 
 ### Fixed
