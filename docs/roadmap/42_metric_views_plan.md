@@ -1,11 +1,16 @@
 # Plan 42 — Couche sémantique publiée en metric views, et builder fiable
 
 > **Statut :** décisions D1 à D5 validées le 15 octobre 2026 (recommandations retenues).
-> **42.0 à 42.5 implémentés.** 42.0 vérifié sur `sts_demo_catalog` (R1 et R2 levés : `version: 1.1`
-> accepté avec `comment` par membre, une mesure peut porter le nom de sa colonne source) — mais avec
-> le SQL brut du prototype demo_sts, pas encore `SemanticEngine.publish_metric_views()` lui-même : R3
-> (DDL via Databricks Connect) reste à vérifier en le lançant sur le workspace. Restent 42.6 (demo_sts
-> bascule sur Skifer, hors dépôt) et cette vérification live.
+> **42.0 à 42.5 implémentés, mergés dans `main` (PR #13).** Les trois risques sont levés :
+> R1 et R2 par 42.0 (`version: 1.1` accepté avec `comment` par membre, une mesure peut porter le
+> nom de sa colonne source). **R3 levé le 15 octobre 2026** : `SemanticEngine.publish_metric_views()`
+> lui-même (pas seulement le SQL brut du prototype demo_sts) exécuté avec succès depuis Databricks
+> Connect serverless contre `sts_demo_catalog` — `dry_run=True` puis publication réelle, 2 modèles
+> publiés, 0 refusé, vérifié via `MEASURE()` (mêmes chiffres que les vues manuelles). **Piège
+> constaté** : lancé en mode interactif (notebook/laptop, pas un job), la publication part dans le
+> schéma suffixé sandbox (`semantic_<user>`), pas le schéma nu où pointe l'espace Genie — à lancer
+> comme job en production, ou avec `is_job_execution` vrai, pour que ça atterrisse au bon endroit.
+> Reste 42.6 (demo_sts bascule sur Skifer pour sa propre publication, hors dépôt).
 > Branche : `feat/plan42-metric-views`, partie de `main` (`822ff9e`).
 
 ## Objectif
@@ -68,8 +73,9 @@ warehouse serverless, en SQL généré par le prototype demo_sts. Vérifié avec
   colonne source du même nom.
 - Chiffres plausibles obtenus par région (`orders`) et par segment (`customers`).
 
-R3 (Databricks Connect) n'a pas été testé séparément : le DDL est passé par la Statement Execution
-API du warehouse, pas par Connect. À vérifier au 42.3 si la publication passe par Connect.
+R3 (Databricks Connect) n'a pas été testé séparément ici : le DDL est passé par la Statement
+Execution API du warehouse, pas par Connect. Vérifié depuis Connect séparément, après le merge —
+voir le statut en tête de ce document.
 
 ### 42.1 — Builder et validateur : `sql` d'une métrique sans agrégat (fait)
 
@@ -139,7 +145,7 @@ Le notebook `04_publish_metric_views` appelle `SemanticEngine.publish_metric_vie
 |---|---|---|
 | R1 | Le format `version: 1.1` n'est pas accepté par le runtime utilisé | 42.0 le vérifie ; repli `version: 0.1` sans `comment` par membre (DBR 16.4+). |
 | R2 | Une mesure ne peut pas porter le nom d'une colonne source | 42.0 le vérifie ; sinon la traduction refuse le modèle en nommant le conflit, plutôt que de renommer la mesure (Genie et Skifer nommeraient différemment le même chiffre). |
-| R3 | Le DDL `WITH METRICS` ne passe pas par Databricks Connect | 42.0 l'essaie depuis Connect aussi ; sinon `publish_metric_views` documente le cluster ou le warehouse comme prérequis. |
+| R3 | Le DDL `WITH METRICS` ne passe pas par Databricks Connect | **Levé** — `publish_metric_views()` exécuté avec succès depuis Connect serverless sur `sts_demo_catalog` (15 octobre 2026). |
 | R4 | Le refus du validateur (42.1) casse un modèle existant ailleurs | Un tel modèle échoue déjà à chaque requête ; on parcourt `examples/` et `tests/` avant de livrer. |
 
 ## Vérification
