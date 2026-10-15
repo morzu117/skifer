@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `build_hub` (`serving/_agent_core.py`, Plan 41.4) construisait `SkiferEngine(config_manager=
+  ConfigurationManager(config_path=config_path))` — un kwarg qui n'a jamais existé sur
+  `SkiferEngine.__init__` (qui prend `config_path` directement). `log_agent` échouait donc à
+  chaque appel réel avec `TypeError: unexpected keyword argument 'config_manager'`, masqué en CI
+  car `tests/test_serving_agent_core.py` mocke entièrement `SkiferEngine`. Trouvé en déployant
+  l'agent pour de vrai sur le workspace (41.9). `SkiferEngine(config_path=config_path)` ; le test
+  de câblage vérifie maintenant ce kwarg précis pour empêcher une régression silencieuse.
 - `SemanticValidator._check_metrics` refuse un `sql` de métrique qui commence déjà par un agrégat
   (`SUM(...)`, `COUNT(...)`, `AVG(...)`, `MIN(...)`, `MAX(...)`, insensible à la casse). `sql` est
   l'expression intérieure et `type` applique l'agrégat (`QueryResolver._build_metric_expr`) : un

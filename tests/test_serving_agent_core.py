@@ -267,7 +267,6 @@ def test_build_hub_wires_engine_store_and_databricks_llm():
     fake_semantic_module = MagicMock()
 
     fake_modules = {
-        "skifer.core.config": MagicMock(ConfigurationManager=MagicMock()),
         "skifer.core.core": fake_core,
         "skifer.observability.certification_store": fake_store_module,
         "skifer.semantic.llm_provider": fake_llm,
@@ -281,6 +280,9 @@ def test_build_hub_wires_engine_store_and_databricks_llm():
     assert hub is mock_hub
     # No Spark session is injected: get_spark_session() picks Connect serverless.
     assert "spark" not in fake_core.SkiferEngine.call_args.kwargs
+    # Regression: SkiferEngine takes config_path directly, not a config_manager kwarg
+    # (that construction never existed on SkiferEngine and broke log_agent in production).
+    assert fake_core.SkiferEngine.call_args.kwargs.get("config_path") == "config.yaml"
     fake_store_module.default_certification_store.assert_called_once_with(engine)
     _, semantic_kwargs = fake_semantic_module.SemanticEngine.call_args
     assert semantic_kwargs["certification_store"] is store
@@ -291,7 +293,6 @@ def test_build_hub_wires_engine_store_and_databricks_llm():
 def test_build_hub_uses_the_llm_endpoint_from_model_config():
     fake_llm = MagicMock()
     fake_modules = {
-        "skifer.core.config": MagicMock(),
         "skifer.core.core": MagicMock(),
         "skifer.observability.certification_store": MagicMock(),
         "skifer.semantic.llm_provider": fake_llm,
