@@ -31,7 +31,6 @@ def build_hub(
     without it ``DATABRICKS_LLM_MODEL`` is required.
     """
     from skifer.agentic.hub import AgenticHub
-    from skifer.core.config import ConfigurationManager
     from skifer.core.core import SkiferEngine
     from skifer.observability.certification_store import default_certification_store
     from skifer.semantic.llm_provider import get_llm_provider
@@ -41,7 +40,7 @@ def build_hub(
     config_path = artifacts.get("config", "config.yaml")
     models_dir = artifacts.get("models_dir", "semantic")
 
-    engine = SkiferEngine(config_manager=ConfigurationManager(config_path=config_path))
+    engine = SkiferEngine(config_path=config_path)
     semantic = SemanticEngine(
         engine,
         models_dir=models_dir,
