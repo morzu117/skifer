@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Workflow `Release` (`.github/workflows/release.yml`) et `scripts/release.py` réparé : la montée de version se
+  lance à la demande (`gh workflow run release.yml -f bump=patch|minor|major`, avec `dry_run` possible). Il exige
+  une CI verte sur `main`, met à jour `pyproject.toml`, `uv.lock`, `docs/install_databricks.md` et le
+  `CHANGELOG.md`, pousse le commit `chore(release)` et le tag `vX.Y.Z`, puis déclenche la publication PyPI.
+  `release.py` refusait de tourner depuis le passage à la publication de confiance (il cherchait des secrets
+  `PYPI_API_TOKEN` qui n'existent plus). `CLAUDE.md` décrit la procédure.
+
 ### Fixed
 
 - `SkiferResponsesAgent.predict()` (Plan 41.4) ne mettait pas de `id` au niveau racine de

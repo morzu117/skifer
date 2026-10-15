@@ -169,6 +169,23 @@ A version bump (done by the user) requires all 5 points — they keep `CLAUDE.md
 4. `CLAUDE.md` / `AGENTS.md` updated
 5. mkdocs documentation (`docs/`) updated
 
+### Publier une version (workflow `Release`)
+
+La montée de version est automatisée par `.github/workflows/release.yml` (et `scripts/release.py`).
+**L'utilisateur décide de la version et du moment** : un agent ne lance jamais le workflow de lui-même.
+
+1. Vérifier les 5 points ci-dessus et que la CI de `main` est verte.
+2. Essai à blanc d'abord : `gh workflow run release.yml -f bump=patch -f dry_run=true`
+   (`bump` = `patch` | `minor` | `major`, ou `-f version=X.Y.Z` pour une version explicite).
+3. Puis la vraie release : `gh workflow run release.yml -f bump=patch`.
+
+Le workflow exige un run `Tests` vert sur `HEAD` de `main`, met à jour `pyproject.toml`, `uv.lock`,
+`docs/install_databricks.md` et `CHANGELOG.md` (`[Unreleased]` devient une section datée), pousse le commit
+`chore(release): X.Y.Z` et le tag `vX.Y.Z`, déclenche `publish-pypi.yml` (PyPI prod), `publish-testpypi.yml`
+et `tests.yml`, crée la GitHub Release et attend que la version apparaisse sur PyPI. Si la publication
+échoue après le tag : `gh workflow run publish-pypi.yml --ref vX.Y.Z`. En local, `python3 scripts/release.py
+patch --dry-run` fait les mêmes vérifications sans rien pousser.
+
 ## Key conventions
 
 ### Local mode vs Databricks
