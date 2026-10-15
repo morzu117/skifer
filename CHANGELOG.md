@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `SemanticValidator._check_metrics` refuse un `sql` de métrique qui commence déjà par un agrégat
+  (`SUM(...)`, `COUNT(...)`, `AVG(...)`, `MIN(...)`, `MAX(...)`, insensible à la casse). `sql` est
+  l'expression intérieure et `type` applique l'agrégat (`QueryResolver._build_metric_expr`) : un
+  modèle où les deux se confondent produit `SUM(SUM(...))` et échoue à chaque requête, sans que la
+  validation l'ait signalé. Mesuré sur un modèle généré par `SemanticBuilder` pour demo_sts.
+- `SemanticBuilder._BUILDER_SYSTEM` dit maintenant explicitement que `sql` d'une métrique est non
+  agrégé, et que `key` reprend exactement le modèle demandé plutôt qu'un gabarit
+  `<model_name>.<split_value>` qui produisait des clés comme `sales.customers.customer_id` pour un
+  modèle demandé sous `sales.customers`.
+
 ## [3.0.1] - 2026-10-14
 
 ### Fixed

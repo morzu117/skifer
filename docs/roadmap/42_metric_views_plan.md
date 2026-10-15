@@ -1,6 +1,8 @@
 # Plan 42 — Couche sémantique publiée en metric views, et builder fiable
 
-> **Statut :** plan rédigé le 15 octobre 2026, décisions D1 à D5 à valider.
+> **Statut :** décisions D1 à D5 validées le 15 octobre 2026 (recommandations retenues).
+> 42.0 vérifié sur `sts_demo_catalog` (R1 et R2 levés : `version: 1.1` accepté avec `comment` par
+> membre, une mesure peut porter le nom de sa colonne source). 42.1 implémenté.
 > Branche : `feat/plan42-metric-views`, partie de `main` (`822ff9e`).
 
 ## Objectif
@@ -53,19 +55,20 @@ semantic_models/*.yaml ─▶ metric_views.py (traduction pure) ─▶ CREATE VI
 Chaque point est un commit séparé (`feat(plan42-N): …` ou `fix(plan42-N): …`), avec ses tests et son
 entrée `CHANGELOG.md` sous `## [Unreleased]`. Ne pas toucher à la version dans `pyproject.toml`.
 
-### 42.0 — Validation sur le workspace (manuelle, avec l'utilisateur)
+### 42.0 — Validation sur le workspace (fait)
 
-Créer les deux metric views de demo_sts (`sts_demo_catalog.semantic.orders`, `.customers`) depuis le
-notebook `gold/04_publish_metric_views` ou le warehouse serverless, puis interroger chacune avec
-`MEASURE()`. Vérifie :
+Les deux metric views créées sur `sts_demo_catalog.semantic` (`orders`, `customers`) via le
+warehouse serverless, en SQL généré par le prototype demo_sts. Vérifié avec `MEASURE()` :
 
-- **R1** que le YAML `version: 1.1` (avec `comment` par membre) est accepté ;
-- **R2** qu'une mesure peut porter le nom d'une colonne source (`total_revenue: SUM(total_revenue)`
-  dans `customers`).
+- **R1 levé** — `version: 1.1` avec un `comment` par dimension et par mesure est accepté.
+- **R2 levé** — `customers.total_revenue` (`SUM(total_revenue)`) coexiste sans conflit avec la
+  colonne source du même nom.
+- Chiffres plausibles obtenus par région (`orders`) et par segment (`customers`).
 
-Le format de 42.2 suit ce qui est accepté. Aucun code Skifer avant ce point.
+R3 (Databricks Connect) n'a pas été testé séparément : le DDL est passé par la Statement Execution
+API du warehouse, pas par Connect. À vérifier au 42.3 si la publication passe par Connect.
 
-### 42.1 — Builder et validateur : `sql` d'une métrique sans agrégat
+### 42.1 — Builder et validateur : `sql` d'une métrique sans agrégat (fait)
 
 - `semantic/validator.py` : `_check_metrics` refuse un `sql` qui commence par une fonction d'agrégat
   (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, insensible à la casse et aux espaces), avec un message qui dit

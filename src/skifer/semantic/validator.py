@@ -67,6 +67,13 @@ _VALID_DIM_TYPES = {"string", "date", "timestamp", "datetime", "integer", "float
 # un nom proposé par un LLM peut injecter du SQL arbitraire dans la requête émise.
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Le "sql" d'une métrique est l'expression intérieure ; "type" applique l'agrégat
+# (QueryResolver._build_metric_expr). Un "sql" qui commence déjà par un agrégat
+# produit SUM(SUM(...)) à l'exécution — refusé ici plutôt que découvert à la requête.
+_AGGREGATE_PREFIX = re.compile(
+    r"^\s*(sum|count|count_distinct|avg|min|max)\s*\(", re.IGNORECASE
+)
+
 
 class SemanticValidator:
     """
@@ -289,8 +296,16 @@ class SemanticValidator:
             else:
                 seen_names.add(name)
 
-            if not met.get("sql"):
+            sql = met.get("sql")
+            if not sql:
                 result.add_error(f"Métrique '{name or i}' : 'sql' manquant")
+            elif isinstance(sql, str) and _AGGREGATE_PREFIX.match(sql):
+                result.add_error(
+                    f"Métrique '{name or i}' : 'sql' ({sql!r}) contient déjà un agrégat — "
+                    "'sql' doit être l'expression non agrégée (ex: 'revenue'), 'type' "
+                    "applique l'agrégat (SUM/COUNT/AVG/MIN/MAX). Un 'sql' déjà agrégé "
+                    "produit SUM(SUM(...)) à l'exécution."
+                )
 
             agg_type = met.get("type", "").lower()
             if not agg_type:
