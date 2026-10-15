@@ -54,6 +54,7 @@ class SkiferResponsesAgent(ResponsesAgent):
         )
         text, custom_outputs = _agent_core.answer(self._hub, question, consumer)
         return ResponsesAgentResponse(
+            id=str(uuid4()),
             output=[self.create_text_output_item(text=text, id=str(uuid4()))],
             custom_outputs=custom_outputs,
         )

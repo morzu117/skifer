@@ -94,6 +94,16 @@ def test_agent_saves_although_its_hub_does_not_pickle(served):
     assert served is not None
 
 
+def test_predict_sets_a_top_level_response_id(served):
+    # The OpenAI Responses API schema treats "id" as required at the top level, even
+    # though mlflow's own ResponsesAgentResponse leaves it optional (default None,
+    # which the serializer then omits entirely) — strict clients validating against
+    # that schema reject a response missing it.
+    out = served.predict(REQUEST)
+
+    assert isinstance(out["id"], str) and out["id"]
+
+
 def test_predict_returns_text_and_evidence_in_custom_outputs(served):
     out = served.predict(REQUEST)
 
