@@ -1,6 +1,16 @@
 # Plan 41 — Skifer derrière un superviseur Genie
 
 > **Statut :** plan rédigé et décisions D1 à D3 validées le 14 octobre 2026 (recommandations retenues).
+> 41.1 à 41.8 implémentés et mergés (`feat/plan41-genie-supervisor`, PR #9). **41.9 vérifié en live
+> le 15 octobre 2026** sur `sts_demo_catalog` : agent enregistré (Databricks Connect serverless),
+> endpoint `skifer-agent` servi, une question KPI répond avec `custom_outputs.skifer.evidence`
+> complet. R1 est **partiellement confirmé négatif** : le superviseur n'accepte pas un endpoint
+> `ResponsesAgent` personnalisé directement (`serving_endpoint` n'a pas de champ de spec dans le
+> SDK/CLI malgré son nom dans l'énumération `tool_type`) ; contournement par une fonction SQL UC
+> appelant `ai_query` en `tool_type: uc_function`, qui marche et route correctement (testé : question
+> KPI → Skifer, question d'exploration → Genie). Un vrai bug trouvé au passage et corrigé en 3.0.2 :
+> `build_hub` construisait `SkiferEngine` avec un kwarg qui n'a jamais existé — voir
+> `docs/databricks_supervisor.md` section 5 pour la méthode qui marche.
 > Branche : `feat/plan41-genie-supervisor`, partie de `main` (`82ddb3b`).
 
 ## Objectif
@@ -173,14 +183,30 @@ Chaque point est un commit séparé (`feat(plan41-N): …`), avec ses tests et s
      inventée est refusée, une table non certifiée est refusée en `enforce`.
 - **Garde-fou :** `mkdocs build --strict` sans warning.
 
-### 41.9 — Validation manuelle sur le workspace (hors CI)
+### 41.9 — Validation manuelle sur le workspace (hors CI) — fait
 
-À faire par l'utilisateur ou avec lui, pas par un agent seul : il faut le workspace.
+Vérifié le 15 octobre 2026 sur `sts_demo_catalog` (profil `julhoubaps`) :
 
-- l'endpoint démarre (session Connect serverless, store Delta, LLM configuré) ;
-- les cinq vérifications du runbook 41.8, étape 5 ;
-- le superviseur accepte l'endpoint comme agent. **À confirmer en premier** : le type d'endpoint
-  que le superviseur accepte dépend du produit au moment du test, et ce dépôt ne peut pas le prouver.
+- L'endpoint démarre : session Connect serverless, agent enregistré (`sts_demo_catalog.agents.
+  skifer_agent`), LLM `skifer-openai-chat`. Un vrai bug a bloqué le premier essai — `build_hub`
+  construisait `SkiferEngine(config_manager=…)`, un kwarg inexistant, masqué en CI car `SkiferEngine`
+  y est mocké — corrigé et publié en 3.0.2 (voir CHANGELOG).
+- Question KPI → `custom_outputs.skifer.evidence` complet (`sql_hash`, `definition_hash`,
+  `certification_status`). `certification_status: NOT_EVALUATED` ici, attendu : ce workspace de démo
+  n'a pas de store de certification peuplé pour cet environnement.
+- **Le superviseur n'accepte pas l'endpoint directement.** `serving_endpoint` apparaît dans
+  l'énumération `tool_type` du CLI et du SDK, mais ni l'un ni l'autre n'ont de champ de spec pour
+  lui (vérifié avec `databricks-sdk` 0.152.0 et 0.153.0) : `create-tool` échoue systématiquement côté
+  serveur avec `"Tool spec must be provided"`. Contournement qui marche : une fonction SQL UC qui
+  appelle `ai_query('<endpoint>', question, failOnError => false)` — `ai_query` n'accepte qu'une
+  `STRING` pour un endpoint `ResponsesAgent` personnalisé (une `STRUCT` reproduisant `{"input": […]}`
+  est refusée), mais adapte seul la chaîne vers la forme attendue par l'endpoint depuis sa signature
+  MLflow — attachée au superviseur en `tool_type: uc_function`. Détails et SQL exact :
+  `docs/databricks_supervisor.md` section 5.
+- Routage testé en direct sur l'endpoint du superviseur : une question KPI (« Quel est le taux de
+  churn par segment de client ? ») route vers `skifer_kpi` et répond avec les bons chiffres ; une
+  question d'exploration (« Liste-moi 5 commandes récentes du segment premium ») route vers
+  `genie_exploration` et répond depuis Genie.
 
 ## Hors périmètre
 
@@ -194,6 +220,6 @@ Chaque point est un commit séparé (`feat(plan41-N): …`), avec ses tests et s
 
 | # | Risque | Mitigation |
 |---|---|---|
-| R1 | Le superviseur n'accepte pas un endpoint `ResponsesAgent` personnalisé | Vérifié en premier en 41.9. Repli : l'endpoint reste utilisable seul, depuis un notebook, une app ou le Playground. |
+| R1 | Le superviseur n'accepte pas un endpoint `ResponsesAgent` personnalisé | **Confirmé en 41.9** : pas de `tool_type` direct pour un endpoint de serving. Contournement qui marche : fonction SQL UC + `ai_query`, en `tool_type: uc_function` (`docs/databricks_supervisor.md` section 5). L'endpoint reste aussi utilisable seul, depuis un notebook, une app ou le Playground. |
 | R2 | Démarrage à froid lent de Connect serverless | Session ouverte une seule fois dans `load_context` ; à mesurer en 41.9. |
 | R3 | Le passage à `mlflow>=3` casse un autre extra | 41.4 met à jour tous les extras qui pinnent `mlflow<3` ; la CI de 41.5 le vérifie. |

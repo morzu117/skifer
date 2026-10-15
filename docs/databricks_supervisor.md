@@ -149,13 +149,54 @@ differently from Skifer.
 
 ## 5. Wire the supervisor
 
-In Agent Bricks, create a supervisor with two agents. The supervisor routes on the descriptions,
-so they carry the division of labour:
+In Agent Bricks, create a supervisor and attach the Genie space directly (`tool_type: genie_space`).
+**The Skifer endpoint cannot be attached the same way**: as of this writing, `serving_endpoint` is
+listed as an allowed `tool_type` value by the CLI and SDK, but neither actually has a spec field
+for it — `create-tool` fails server-side with `"Tool spec must be provided"` whatever key is tried
+(checked against `databricks-sdk` 0.152.0 and 0.153.0; confirmed against the CLI's own JSON schema,
+not just its client-side validation). Verified live on this workspace in Plan 41.9.
 
-| Agent | Description to give the supervisor |
-|---|---|
-| Skifer endpoint | Official figures: KPIs, revenue, volumes and every metric defined in the semantic layer. Answers only with certified data and returns the evidence behind each figure. Use it whenever a number will be reported or compared. |
-| Genie space | Free exploration of the certified Gold tables: listing, filtering, ad-hoc breakdowns and questions no defined metric covers. |
+**Workaround: a Unity Catalog SQL function wrapping `ai_query`, attached as `tool_type: uc_function`.**
+`ai_query` against a custom `ResponsesAgent` endpoint only accepts a plain `STRING` request — passing
+a `STRUCT` matching the endpoint's own `{"input": [...]}` shape is rejected
+(`only the following types are supported: STRING`). Databricks adapts the plain string into the
+endpoint's expected request from its logged MLflow signature. The function calls `ai_query` once,
+aliased, so a single question is a single call to the endpoint (and to its own chat endpoint inside
+`AgenticHub`) rather than twice:
+
+```sql
+CREATE OR REPLACE FUNCTION <catalog>.<schema>.ask_skifer(question STRING)
+RETURNS STRING
+COMMENT 'Official figures: KPIs, revenue, volumes, every metric defined in the semantic layer.
+Refuses an invented metric and returns the evidence behind each figure. Use whenever a number
+will be reported or compared.'
+RETURN (
+  SELECT COALESCE(ai_response.errorMessage, ai_response.result)
+  FROM (SELECT ai_query('<skifer-endpoint-name>', question, failOnError => false) AS ai_response)
+)
+```
+
+```bash
+databricks supervisor-agents create-tool supervisor-agents/<id> skifer_kpi --json '{
+    "tool_type": "uc_function",
+    "description": "Official figures: KPIs, revenue, volumes and every metric defined in the
+      semantic layer. Answers only with certified data. Use it whenever a number will be reported
+      or compared.",
+    "uc_function": {"name": "<catalog>.<schema>.ask_skifer"}
+}'
+databricks supervisor-agents create-tool supervisor-agents/<id> genie_exploration --json '{
+    "tool_type": "genie_space",
+    "description": "Free exploration of the certified Gold tables: listing, filtering, ad-hoc
+      breakdowns and questions no defined metric covers.",
+    "genie_space": {"id": "<genie_space_id>"}
+}'
+```
+
+The function loses `custom_outputs.skifer.evidence` — `ai_query` only surfaces the top-level text —
+so the supervisor's answer carries the figure and the one-line provenance already embedded in that
+text (source dataset, certification status), not the full evidence structure. A client that needs
+the full evidence record still calls the Skifer endpoint directly (section 3), bypassing the
+supervisor.
 
 ## 6. Verify
 
