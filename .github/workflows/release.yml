@@ -1,0 +1,109 @@
+name: Release
+
+# Montée de version à la demande : bump pyproject/uv.lock/docs, CHANGELOG [Unreleased] -> section
+# datée, commit `chore(release): X.Y.Z`, tag `vX.Y.Z`, puis publication PyPI (+ TestPyPI + Tests).
+#
+# Lancer :  gh workflow run release.yml -f bump=patch      (ou minor / major)
+#           gh workflow run release.yml -f version=3.1.0   (version explicite)
+#           gh workflow run release.yml -f bump=minor -f dry_run=true
+#
+# Pourquoi des `gh workflow run` plutôt que de compter sur `on: push: tags`: un push fait avec
+# GITHUB_TOKEN ne déclenche aucun autre workflow, sauf workflow_dispatch. On évite ainsi tout PAT.
+# Les publications restent faites par publish-pypi.yml / publish-testpypi.yml (mêmes noms de
+# fichier et mêmes environnements prod/test : c'est ce que la publication de confiance PyPI vérifie).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Type de montée de version (ignoré si 'version' est rempli)"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: "Version explicite X.Y.Z (optionnel)"
+        type: string
+        required: false
+      dry_run:
+        description: "Vérifier et afficher, sans rien pousser ni publier"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # commit + tag sur main, GitHub Release
+  actions: write    # gh workflow run (publish-*.yml, tests.yml)
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TZ: Europe/Paris          # date de la section CHANGELOG, comme les releases faites à la main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # Les deux workflows de publication ne lancent pas les tests : on exige donc ici que la CI
+      # soit verte sur le commit exact qu'on va publier.
+      - name: CI verte sur HEAD
+        run: |
+          sha=$(git rev-parse HEAD)
+          ok=$(gh api "repos/${{ github.repository }}/actions/workflows/tests.yml/runs?head_sha=$sha&status=success" --jq '.total_count')
+          if [ "$ok" -lt 1 ]; then
+            echo "::error::Aucun run 'Tests' vert sur $sha. Attends la CI de main puis relance."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Préparer la version
+        id: prep
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          target="${{ inputs.version || inputs.bump }}"
+          flags=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then flags="--dry-run"; fi
+          python scripts/release.py "$target" $flags | tee release.log
+          echo "version=$(sed -n 's/.* -> \([0-9][^ ]*\) .*/\1/p' release.log | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Pousser le commit et le tag
+        if: ${{ !inputs.dry_run }}
+        run: git push origin main "v${{ steps.prep.outputs.version }}"   # échoue si main a bougé : voulu
+
+      - name: Publier (PyPI prod, TestPyPI, Tests)
+        if: ${{ !inputs.dry_run }}
+        run: |
+          v="v${{ steps.prep.outputs.version }}"
+          gh workflow run publish-pypi.yml --ref "$v"
+          gh workflow run publish-testpypi.yml --ref main
+          gh workflow run tests.yml --ref main
+
+      - name: GitHub Release (notes = section du CHANGELOG)
+        if: ${{ !inputs.dry_run }}
+        run: |
+          v="${{ steps.prep.outputs.version }}"
+          awk -v h="## [$v]" 'index($0,h)==1{f=1;next} /^## \[/{f=0} f' CHANGELOG.md > notes.md
+          gh release create "v$v" --verify-tag --title "v$v" --notes-file notes.md
+
+      - name: Attendre la 'publication sur PyPI'
+        if: ${{ !inputs.dry_run }}
+        run: |
+          v="${{ steps.prep.outputs.version }}"
+          for i in $(seq 1 40); do
+            if curl -fsS "https://pypi.org/pypi/skifer/$v/json" >/dev/null; then
+              echo "skifer $v est sur PyPI."; exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::skifer $v n'est pas apparu sur PyPI en 10 min. Voir le run 'Publish to PyPI' (relançable : gh workflow run publish-pypi.yml --ref v$v)."
+          exit 1
