@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   d'environnement `semantic_metric_views_schema` (défaut `semantic`, suffixe sandbox en interactif,
   comme `semantic_views_schema`). `dry_run=True` n'exécute aucun DDL. `MetricViewReport` ne porte
   que des clés de modèle et du DDL — aucune valeur de donnée.
+- `skifer semantic metric-views --catalog <c> [--schema semantic] [--models-dir …] [--model KEY]`
+  (Plan 42.4) : affiche le DDL de chaque modèle sans Spark et sans gate de certification (traduction
+  seule). Code de sortie `0` si tout se traduit, `1` si un modèle est refusé — sans empêcher
+  l'affichage des autres.
 
 ## [3.0.1] - 2026-10-14
 

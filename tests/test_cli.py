@@ -30,6 +30,7 @@ from skifer.cli import (
     SEMANTIC_EXIT_OK,
     run_contract_command,
     run_audit,
+    run_semantic_metric_views,
     run_semantic_sync,
     run_semantic_validate,
     _run_api,
@@ -771,6 +772,96 @@ def test_semantic_validate_reports_semantic_dimension_error_shape(tmp_path, monk
 
     assert exit_code == SEMANTIC_EXIT_ERROR
     assert "[semantic.dimensions] 'missing_dimension' is not a projected output." in capsys.readouterr().out
+
+
+def _write_metric_views_catalog(models_dir: Path, models: list[dict]) -> None:
+    for model in models:
+        (models_dir / f"{model['key']}.yaml").write_text(
+            yaml.safe_dump({"models": [model]}), encoding="utf-8"
+        )
+    catalog = {"models": [{"key": m["key"], "file": f"{m['key']}.yaml"} for m in models]}
+    (models_dir / "semantic_catalog.yaml").write_text(yaml.safe_dump(catalog), encoding="utf-8")
+
+
+def _metric_view_model(key: str, table: str, **extra) -> dict:
+    return {
+        "key": key,
+        "table": table,
+        "dimensions": [{"name": "region", "sql": "region"}],
+        "metrics": [{"name": "total_revenue", "sql": "revenue", "type": "sum"}],
+        **extra,
+    }
+
+
+def test_semantic_metric_views_prints_the_ddl_without_touching_spark(tmp_path, capsys):
+    models_dir = tmp_path / "semantic_models"
+    models_dir.mkdir()
+    _write_metric_views_catalog(models_dir, [_metric_view_model("sales.orders", "gold.kpi_orders")])
+
+    exit_code = run_semantic_metric_views(str(models_dir), "sts_demo_catalog", "semantic")
+
+    assert exit_code == SEMANTIC_EXIT_OK
+    out = capsys.readouterr().out
+    assert "CREATE OR REPLACE VIEW `sts_demo_catalog`.`semantic`.`orders`" in out
+    assert "SUM(revenue)" in out
+
+
+def test_semantic_metric_views_model_flag_restricts_to_one_model(tmp_path, capsys):
+    models_dir = tmp_path / "semantic_models"
+    models_dir.mkdir()
+    _write_metric_views_catalog(
+        models_dir,
+        [_metric_view_model("sales.orders", "gold.kpi_orders"), _metric_view_model("sales.customers", "gold.kpi_customers")],
+    )
+
+    exit_code = run_semantic_metric_views(
+        str(models_dir), "sts_demo_catalog", "semantic", model_key="sales.customers"
+    )
+
+    assert exit_code == SEMANTIC_EXIT_OK
+    out = capsys.readouterr().out
+    assert "`customers`" in out
+    assert "`orders`" not in out
+
+
+def test_semantic_metric_views_unknown_model_key_is_an_error(tmp_path, capsys):
+    models_dir = tmp_path / "semantic_models"
+    models_dir.mkdir()
+    _write_metric_views_catalog(models_dir, [_metric_view_model("sales.orders", "gold.kpi_orders")])
+
+    exit_code = run_semantic_metric_views(
+        str(models_dir), "sts_demo_catalog", "semantic", model_key="sales.unknown"
+    )
+
+    assert exit_code == SEMANTIC_EXIT_ERROR
+    assert "'sales.unknown' not found" in capsys.readouterr().out
+
+
+def test_semantic_metric_views_exit_one_on_a_translation_refusal(tmp_path, capsys):
+    models_dir = tmp_path / "semantic_models"
+    models_dir.mkdir()
+    _write_metric_views_catalog(
+        models_dir,
+        [
+            _metric_view_model("sales.orders", "gold.kpi_orders", relationships=[{"name": "r", "to": {}}]),
+            _metric_view_model("sales.customers", "gold.kpi_customers"),
+        ],
+    )
+
+    exit_code = run_semantic_metric_views(str(models_dir), "sts_demo_catalog", "semantic")
+
+    out = capsys.readouterr().out
+    assert exit_code == SEMANTIC_EXIT_ERROR
+    assert "sales.orders" in out and "relationships" in out
+    # Un modèle refusé par la traduction ne bloque pas l'affichage des autres.
+    assert "`customers`" in out
+
+
+def test_semantic_metric_views_missing_catalog_is_a_clean_error(tmp_path, capsys):
+    exit_code = run_semantic_metric_views(str(tmp_path / "does-not-exist"), "c", "semantic")
+
+    assert exit_code == SEMANTIC_EXIT_ERROR
+    assert "Failed to read catalog" in capsys.readouterr().out
 
 
 def test_semantic_sync_promote_preserves_human_curation_on_rerun(tmp_path, monkeypatch, capsys):

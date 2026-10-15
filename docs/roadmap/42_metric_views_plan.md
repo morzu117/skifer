@@ -109,7 +109,7 @@ Port du prototype demo_sts, durci :
   `enforce`, `warn` publie et compte, `off` publie sans résoudre de dépendance, `dry_run` n'exécute
   rien.
 
-### 42.4 — CLI : `skifer semantic metric-views`
+### 42.4 — CLI : `skifer semantic metric-views` (fait)
 
 `skifer semantic metric-views --catalog <c> [--schema semantic] [--models-dir …] [--model KEY]` affiche
 les DDL **sans Spark** (traduction seule, pas de gate). Code de sortie `0` si tout se traduit, `1` si
