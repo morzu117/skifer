@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<model_name>.<split_value>` qui produisait des clés comme `sales.customers.customer_id` pour un
   modèle demandé sous `sales.customers`.
 
+### Added
+
+- `semantic/metric_views.py` (Plan 42.2) : traduit un modèle sémantique en *metric view* Unity
+  Catalog — une vue que Genie sait interroger avec les dimensions et mesures de Skifer. Traduction
+  pure (aucun Spark) ; l'expression d'une mesure est produite par `QueryResolver.aggregate_expression`
+  — la même fonction qu'une requête sémantique exécute — pour qu'une mesure Genie et une métrique
+  Skifer ne puissent pas calculer des chiffres différents sous le même nom. Périmètre v1 : modèles
+  mono-table ; une métrique `semi_additive` ou un modèle avec des `relationships` est refusé
+  (`MetricViewTranslationError`), leur sémantique dépendant de ce qu'une metric view ne respecte pas.
+  `QueryResolver._build_metric_expr` est inchangé pour l'appelant (refactor pur).
+
 ## [3.0.1] - 2026-10-14
 
 ### Fixed

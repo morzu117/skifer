@@ -467,7 +467,18 @@ class QueryResolver:
         return table_ref
 
     def _build_metric_expr(self, met: dict, qualifier: str | None = None) -> str:
-        """Construit l'expression SQL d'agrégation pour une métrique."""
+        """Construit l'expression SQL d'agrégation pour une métrique, avec son alias."""
+        return f"{self.aggregate_expression(met, qualifier)} AS {met['name']}"
+
+    def aggregate_expression(self, met: dict, qualifier: str | None = None) -> str:
+        """Construit l'expression d'agrégat d'une métrique, sans alias.
+
+        Pas de nom d'underscore : c'est le contrat partagé avec
+        `semantic/metric_views.py`, qui traduit une métrique en mesure de metric
+        view (`expr:`, sans `AS`). Les deux lectures d'une même métrique doivent
+        rester la même expression — sans quoi Genie et Skifer calculeraient des
+        chiffres différents pour le même nom.
+        """
         name = met["name"]
         sql = met["sql"]
         agg_type = met.get("type", "sum").lower()
@@ -490,23 +501,21 @@ class QueryResolver:
             inner = sql
 
         if agg_type == "sum":
-            expr = f"SUM({inner})"
+            return f"SUM({inner})"
         elif agg_type == "count_distinct":
-            expr = f"COUNT(DISTINCT {inner})"
+            return f"COUNT(DISTINCT {inner})"
         elif agg_type == "count":
-            expr = f"COUNT({inner})"
+            return f"COUNT({inner})"
         elif agg_type == "avg":
-            expr = f"AVG({inner})"
+            return f"AVG({inner})"
         elif agg_type == "min":
-            expr = f"MIN({inner})"
+            return f"MIN({inner})"
         elif agg_type == "max":
-            expr = f"MAX({inner})"
+            return f"MAX({inner})"
         else:
             raise SemanticQueryError(
                 f"Type d'agrégation '{agg_type}' non supporté pour la métrique '{name}'."
             )
-
-        return f"{expr} AS {name}"
 
     def _validate_plan_query(self, query: SemanticQuery, plan) -> None:
         metric_refs = {ref.reference for ref in plan.metrics}

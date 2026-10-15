@@ -80,7 +80,7 @@ API du warehouse, pas par Connect. À vérifier au 42.3 si la publication passe 
   `CASE WHEN … END`) ; `tests/test_semantic_builder.py` (une réponse LLM fautive puis corrigée passe
   à la 2e tentative) ; vérifier qu'aucun modèle de `examples/` ni des tests n'est refusé.
 
-### 42.2 — Traduction pure : `semantic/metric_views.py`
+### 42.2 — Traduction pure : `semantic/metric_views.py` (fait)
 
 Port du prototype demo_sts, durci :
 
