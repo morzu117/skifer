@@ -135,6 +135,21 @@ def test_metric_rejects_invalid_additivity(validator, valid_model, additivity):
     assert not validator.validate(valid_model).ok
 
 
+@pytest.mark.parametrize("sql", ["SUM(amount_ttc)", "count( amount_ttc )", "AVG(amount_ttc)"])
+def test_metric_rejects_an_already_aggregated_sql(validator, valid_model, sql):
+    # QueryResolver applique l'agrégat de "type" autour de "sql" (SUM(<sql>)) :
+    # un "sql" déjà agrégé double l'agrégat et échoue à l'exécution.
+    valid_model["metrics"][0]["sql"] = sql
+    result = validator.validate(valid_model)
+    assert not result.ok
+    assert any("agrégat" in e for e in result.errors)
+
+
+def test_metric_accepts_a_non_aggregated_sql_expression(validator, valid_model):
+    valid_model["metrics"][0]["sql"] = "amount_ttc - discount"
+    assert validator.validate(valid_model).ok
+
+
 def test_semi_additive_requires_declared_non_additive_dimensions(validator, valid_model):
     metric = valid_model["metrics"][0]
     metric["additivity"] = "semi_additive"

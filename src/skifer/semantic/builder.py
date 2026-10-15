@@ -61,17 +61,22 @@ Règles STRICTES :
 - Tu DOIS répondre UNIQUEMENT avec un objet YAML valide. Aucun texte autour.
 - Ne génère pas de blocs ```yaml``` — commence directement avec "models:".
 - Toutes les valeurs de type texte (description, base_filter, sql) qui contiennent ":", "#", "[", "]" ou des guillemets DOIVENT être encadrées de guillemets doubles. Ex: description: "CA : chiffre d'affaires"
-- Chaque métrique doit avoir un champ "sql" (expression SQL), "type" (sum/count_distinct/count/avg/min/max), "name", "description".
+- Chaque métrique doit avoir un champ "sql", "type" (sum/count_distinct/count/avg/min/max), "name", "description".
+- "sql" d'une métrique est la colonne ou l'expression SANS agrégat (ex: "revenue", jamais "SUM(revenue)") :
+  c'est "type" qui applique l'agrégat au moment de la requête. Un "sql" déjà agrégé double l'agrégat
+  (SUM(SUM(revenue))) et la requête échoue.
 - Chaque dimension doit avoir un champ "sql", "type" (string/date/timestamp/integer/float), "name", "description".
 - Les filtres inline de métriques sont dans "filters: [{sql: 'condition'}]".
 - Le "base_filter" s'applique à toutes les métriques du modèle.
+- "key" est EXACTEMENT le modèle demandé dans "Modèle à générer" ci-dessous — ne le dérive pas, ne lui
+  ajoute rien.
 - Génère uniquement des noms et expressions SQL cohérents avec le contexte fourni.
 - N'invente pas de colonnes qui n'existent pas dans le contexte.
 
 Structure YAML attendue :
 models:
   - name: <model_name>
-    key: <model_name>.<split_value>
+    key: <model_name>
     description: <description>
     layer: <gold|silver|bronze>
     table: <layer>.<table_name>
@@ -84,7 +89,7 @@ models:
         description: <description>
     metrics:
       - name: <metric_name>
-        sql: <expression_sql>
+        sql: <expression_sql_sans_agregat>
         type: <sum|count_distinct|count|avg|min|max>
         description: <description>
         filters:

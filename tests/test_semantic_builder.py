@@ -163,6 +163,30 @@ def test_build_retries_on_invalid_yaml(tmp_path):
     assert mock_llm.complete.call_count == 2
 
 
+DOUBLE_AGGREGATE_YAML_RESPONSE = VALID_YAML_RESPONSE.replace("sql: amount", "sql: SUM(amount)")
+
+
+def test_build_retries_when_llm_doubles_the_aggregate(tmp_path):
+    """Un 'sql' de métrique déjà agrégé est rejeté par le validateur et corrigé au 2e essai."""
+    mock_llm = MagicMock()
+    mock_llm.complete.side_effect = [DOUBLE_AGGREGATE_YAML_RESPONSE, VALID_YAML_RESPONSE]
+
+    builder = SemanticBuilder(
+        llm_provider=mock_llm,
+        output_dir=str(tmp_path / "sm"),
+    )
+    yaml_path = builder.build(
+        model_key="kpi_test_default",
+        table="gold.fact_test",
+        layer="gold",
+    )
+    assert os.path.exists(yaml_path)
+    assert mock_llm.complete.call_count == 2
+    # Le message d'erreur renvoyé au LLM nomme le problème, pas seulement "invalide".
+    second_call_message = mock_llm.complete.call_args_list[1].kwargs["user_message"]
+    assert "agrégat" in second_call_message
+
+
 def test_build_raises_after_max_retries(tmp_path):
     """Après MAX_VALIDATION_LOOPS tentatives KO, build() lève RuntimeError."""
     mock_llm = MagicMock()

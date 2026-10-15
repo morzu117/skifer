@@ -230,7 +230,7 @@ metrics:
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `name` | yes | string | Metric name used in `SemanticQuery.metrics` |
-| `sql` | yes | string | Column or expression to aggregate |
+| `sql` | yes | string | Column or expression to aggregate — **without** the aggregate itself; `type` applies it |
 | `type` | yes | string | Aggregation: `sum`, `count_distinct`, `count`, `avg`, `min`, `max` |
 | `description` | no | string | Business description |
 | `filters` | no | list | Inline filters (applied as CASE WHEN inside the aggregation) |
@@ -247,6 +247,11 @@ metrics:
 | `avg` | `AVG(sql)` |
 | `min` | `MIN(sql)` |
 | `max` | `MAX(sql)` |
+
+`sql` is wrapped in the aggregate — it must **not** already contain one. `sql: SUM(amount_ttc)` with
+`type: sum` compiles to `SUM(SUM(amount_ttc))` and fails at query time; the correct form is
+`sql: amount_ttc` with `type: sum`. `SemanticValidator` rejects a `sql` that starts with
+`SUM`/`COUNT`/`AVG`/`MIN`/`MAX`.
 
 **Inline metric filters:**
 

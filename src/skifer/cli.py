@@ -227,6 +227,32 @@ def main() -> None:
         help="Semantic model YAML file path.",
     )
 
+    semantic_metric_views_parser = semantic_subparsers.add_parser(
+        "metric-views",
+        help="Print the Unity Catalog metric view DDL each semantic model translates to (Plan 42).",
+    )
+    semantic_metric_views_parser.add_argument(
+        "--catalog",
+        required=True,
+        help="Unity Catalog catalog the metric views are published into.",
+    )
+    semantic_metric_views_parser.add_argument(
+        "--schema",
+        default="semantic",
+        help="Target schema for the metric views (default: semantic).",
+    )
+    semantic_metric_views_parser.add_argument(
+        "--models-dir",
+        default=None,
+        help="Semantic models directory (default: ./semantic_models).",
+    )
+    semantic_metric_views_parser.add_argument(
+        "--model",
+        default=None,
+        metavar="KEY",
+        help="Translate only this model key, instead of the whole catalog.",
+    )
+
     mcp_parser = subparsers.add_parser(
         "mcp",
         help="Run the optional read-only MCP server.",
@@ -985,6 +1011,15 @@ def _run_semantic(args: argparse.Namespace) -> None:
         sys.exit(run_semantic_sync(args.pipeline, mode=_semantic_sync_mode(args)))
     if args.semantic_command == "validate":
         sys.exit(run_semantic_validate(args.pipeline, args.model))
+    if args.semantic_command == "metric-views":
+        sys.exit(
+            run_semantic_metric_views(
+                args.models_dir or _semantic_models_dir(),
+                args.catalog,
+                args.schema,
+                model_key=args.model,
+            )
+        )
     print("Semantic command missing. Use 'skifer semantic --help'.")
     sys.exit(SEMANTIC_EXIT_ERROR)
 
@@ -1248,6 +1283,53 @@ def _sentinel_params(yaml_text: str) -> dict[str, str]:
 
 def _semantic_models_dir() -> str:
     return os.path.abspath("semantic_models")
+
+
+def run_semantic_metric_views(
+    models_dir: str,
+    catalog: str,
+    schema: str,
+    *,
+    model_key: str | None = None,
+) -> int:
+    """Print the metric view DDL each semantic model translates to (Plan 42.4).
+
+    Reads the catalog and model YAML from disk only — no Spark, no certification
+    gate. Returns 0 if every selected model translates, 1 if any is refused
+    (Plan 42, decision D4: relationships, a semi_additive metric, an unsafe
+    identifier). Publishing the DDL is `SemanticEngine.publish_metric_views`'s
+    job, not this command's.
+    """
+    from skifer.semantic.metric_views import MetricViewTranslationError, metric_view_ddl
+
+    catalog_path = os.path.join(models_dir, "semantic_catalog.yaml")
+    try:
+        entries = _load_yaml_file(catalog_path).get("models", [])
+    except OSError as exc:
+        print(f"[semantic.metric-views] Failed to read catalog '{catalog_path}': {exc}")
+        return SEMANTIC_EXIT_ERROR
+
+    if model_key is not None:
+        entries = [entry for entry in entries if entry.get("key") == model_key]
+        if not entries:
+            print(f"[semantic.metric-views] Model '{model_key}' not found in '{catalog_path}'.")
+            return SEMANTIC_EXIT_ERROR
+
+    exit_code = SEMANTIC_EXIT_OK
+    for entry in entries:
+        key = entry.get("key", "?")
+        try:
+            model_path = os.path.join(models_dir, entry["file"])
+            model = _load_yaml_file(model_path)["models"][0]
+            ddl = metric_view_ddl(model, catalog, schema)
+        except (MetricViewTranslationError, KeyError, OSError) as exc:
+            print(f"[semantic.metric-views] Model '{key}': {exc}")
+            exit_code = SEMANTIC_EXIT_ERROR
+            continue
+        print(ddl)
+        print()
+
+    return exit_code
 
 
 def _print_sync_report(pipeline_path: str, report) -> None:

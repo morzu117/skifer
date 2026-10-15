@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `SemanticValidator._check_metrics` refuse un `sql` de métrique qui commence déjà par un agrégat
+  (`SUM(...)`, `COUNT(...)`, `AVG(...)`, `MIN(...)`, `MAX(...)`, insensible à la casse). `sql` est
+  l'expression intérieure et `type` applique l'agrégat (`QueryResolver._build_metric_expr`) : un
+  modèle où les deux se confondent produit `SUM(SUM(...))` et échoue à chaque requête, sans que la
+  validation l'ait signalé. Mesuré sur un modèle généré par `SemanticBuilder` pour demo_sts.
+- `SemanticBuilder._BUILDER_SYSTEM` dit maintenant explicitement que `sql` d'une métrique est non
+  agrégé, et que `key` reprend exactement le modèle demandé plutôt qu'un gabarit
+  `<model_name>.<split_value>` qui produisait des clés comme `sales.customers.customer_id` pour un
+  modèle demandé sous `sales.customers`.
+
+### Added
+
+- `semantic/metric_views.py` (Plan 42.2) : traduit un modèle sémantique en *metric view* Unity
+  Catalog — une vue que Genie sait interroger avec les dimensions et mesures de Skifer. Traduction
+  pure (aucun Spark) ; l'expression d'une mesure est produite par `QueryResolver.aggregate_expression`
+  — la même fonction qu'une requête sémantique exécute — pour qu'une mesure Genie et une métrique
+  Skifer ne puissent pas calculer des chiffres différents sous le même nom. Périmètre v1 : modèles
+  mono-table ; une métrique `semi_additive` ou un modèle avec des `relationships` est refusé
+  (`MetricViewTranslationError`), leur sémantique dépendant de ce qu'une metric view ne respecte pas.
+  `QueryResolver._build_metric_expr` est inchangé pour l'appelant (refactor pur).
+- `SemanticEngine.publish_metric_views()` (Plan 42.3) : publie le catalogue (ou une sélection de
+  modèles) en metric views, avec le même gate de certification par modèle que `create_view` (Plan
+  29). Un modèle refusé — décertifié ou non traduisible — n'est pas publié et sa vue existante est
+  supprimée (`DROP VIEW IF EXISTS`), sans bloquer la publication des autres modèles. Nouvelle clé
+  d'environnement `semantic_metric_views_schema` (défaut `semantic`, suffixe sandbox en interactif,
+  comme `semantic_views_schema`). `dry_run=True` n'exécute aucun DDL. `MetricViewReport` ne porte
+  que des clés de modèle et du DDL — aucune valeur de donnée.
+- `skifer semantic metric-views --catalog <c> [--schema semantic] [--models-dir …] [--model KEY]`
+  (Plan 42.4) : affiche le DDL de chaque modèle sans Spark et sans gate de certification (traduction
+  seule). Code de sortie `0` si tout se traduit, `1` si un modèle est refusé — sans empêcher
+  l'affichage des autres.
+
 ## [3.0.1] - 2026-10-14
 
 ### Fixed

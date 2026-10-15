@@ -8,6 +8,7 @@ Declarative YAML schemas ("what") are strictly decoupled from Python business ru
 src/skifer/
   core/         # SkiferEngine, ConfigurationManager, RuleRegistry, SandboxResolver, schema_loader
   semantic/     # SemanticEngine (catalog-first, lazy), SemanticBuilder (LLM), SemanticValidator
+                # metric_views.py — pure translation to Unity Catalog metric views, for Genie (Plan 42)
                 # llm_provider.py — LLMProvider ABC + DatabricksProvider / OpenAI / Anthropic / Google
                 # access_policy.py (pure cert policy), dependencies.py, output_projection.py — Plan 29
                 # draft_builder.py (managed drafts), sync.py (three-way merge),
@@ -374,6 +375,24 @@ An environment in `config.yaml` may declare an optional `params:` mapping; these
 - **Certification store**: `default_certification_store(engine)` — SQLite locally, Delta in `<catalog>._skifer_certification` on Databricks. `uc_certification_tags: true` tags each promoted table in Unity Catalog (best-effort).
 - **Install**: `pip install -e ".[serving]"` (adds `mlflow>=3,<4`, `openai>=1.0` and `databricks-connect`), never together with `[spark]`.
 
+### Metric views for Genie (Plan 42)
+
+`semantic/metric_views.py` translates one semantic model into a Unity Catalog metric view
+(`CREATE VIEW ... WITH METRICS LANGUAGE YAML`) — pure, no Spark. A measure's SQL comes from
+`QueryResolver.aggregate_expression()`, the same function a live query uses, so a metric view and a
+`SemanticQuery` can never compute a different number under the same name. Rejected explicitly
+(`MetricViewTranslationError`): models with `relationships` (mono-table only in v1), a
+`semi_additive` metric (its meaning depends on pinned dimensions a metric view's `GROUP BY` doesn't
+respect), and any unsafe identifier.
+
+`SemanticEngine.publish_metric_views(model_keys=None, consumer_context=None, dry_run=False)`
+publishes the catalog (or a subset) with the same per-model certification gate as `create_view()`:
+a decertified model is not published and its existing view is dropped, rather than left serving a
+stale definition. Target schema: `semantic_metric_views_schema` in `config.yaml` (default
+`semantic`, sandbox-suffixed in interactive mode — same shape as `semantic_views_schema`).
+`skifer semantic metric-views --catalog <c> [--schema] [--model KEY]` prints the DDL without Spark
+or the gate, for review; exit `1` if any model is refused. Runbook: `docs/genie_metric_views.md`.
+
 ### Tests
 - LLM calls are always mocked; no live cluster, API key or network is needed.
 - Spark is **not** mocked everywhere: 182 tests run a real local Delta session (the `spark`
@@ -528,6 +547,7 @@ import the engine. CLI surfaces: `skifer api serve|openapi`, incident management
 | [Best-effort hardening and parameter injection (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implemented (37.0–37.4) |
 | [Tracker lineage: aggregates, join keys, intermediates (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | `feat/plan38-tracker-lineage` | Plan finalised, not started |
 | [Skifer behind a Genie supervisor (Plan 41)](docs/roadmap/41_genie_supervisor_plan.md) | `feat/plan41-genie-supervisor` | Implemented (41.1–41.8); 41.9 is manual validation on a workspace |
+| [Semantic layer as metric views for Genie (Plan 42)](docs/roadmap/42_metric_views_plan.md) | `feat/plan42-metric-views` | Implemented (42.0–42.5); 42.6 (demo_sts switching over) is out of this repo, and `publish_metric_views` itself is not yet verified live on a workspace |
 
 ## Key files
 | File | Purpose |
