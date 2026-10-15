@@ -1,8 +1,11 @@
 # Plan 42 — Couche sémantique publiée en metric views, et builder fiable
 
 > **Statut :** décisions D1 à D5 validées le 15 octobre 2026 (recommandations retenues).
-> 42.0 vérifié sur `sts_demo_catalog` (R1 et R2 levés : `version: 1.1` accepté avec `comment` par
-> membre, une mesure peut porter le nom de sa colonne source). 42.1 implémenté.
+> **42.0 à 42.5 implémentés.** 42.0 vérifié sur `sts_demo_catalog` (R1 et R2 levés : `version: 1.1`
+> accepté avec `comment` par membre, une mesure peut porter le nom de sa colonne source) — mais avec
+> le SQL brut du prototype demo_sts, pas encore `SemanticEngine.publish_metric_views()` lui-même : R3
+> (DDL via Databricks Connect) reste à vérifier en le lançant sur le workspace. Restent 42.6 (demo_sts
+> bascule sur Skifer, hors dépôt) et cette vérification live.
 > Branche : `feat/plan42-metric-views`, partie de `main` (`822ff9e`).
 
 ## Objectif
@@ -115,7 +118,7 @@ Port du prototype demo_sts, durci :
 les DDL **sans Spark** (traduction seule, pas de gate). Code de sortie `0` si tout se traduit, `1` si
 un modèle est refusé par la traduction. La publication reste dans un notebook ou un job (42.3).
 
-### 42.5 — Documentation
+### 42.5 — Documentation (fait)
 
 - Page `docs/genie_metric_views.md` (nav « Semantic & agentic ») : pourquoi, configuration,
   publication, espace Genie limité au schéma, interaction avec la certification, limites (D4).

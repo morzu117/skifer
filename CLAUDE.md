@@ -52,7 +52,8 @@ src/skifer/
     classification.py  # public→pii classification propagation over lineage (Plan 31)
   semantic/
     builder.py         # SemanticBuilder — LLM-based YAML model generation
-    semantic.py        # SemanticEngine — catalog-first, lazy-load, query/create_view
+    semantic.py        # SemanticEngine — catalog-first, lazy-load, query/create_view/publish_metric_views
+    metric_views.py    # Pure translation: semantic model -> Unity Catalog metric view, for Genie (Plan 42)
     validator.py       # SemanticValidator — validates YAML model structure
     access_policy.py   # Pure certification policy: evaluate(), ConsumerContext, overrides (Plan 29)
     dependencies.py    # resolve_dependencies() — datasets a semantic model reads (Plan 29)
@@ -834,7 +835,7 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Durcissement best-effort et injection de paramètres (Plan 37)](docs/roadmap/37_best_effort_hardening_plan.md) | `fix/plan37-best-effort-hardening` (PR #4) | Implémenté (37.0–37.4) — chemins best-effort jamais bloquants sous `-W error`, `\` préservé à l'injection, exemples portables Windows |
 | [Lineage du tracker : agrégats, jointures, intermédiaires (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | — | **Pas encore un plan ; un point livré.** Le document ne contenait rien (ni fichier, ni branche, ni commit — lien mort) ; il porte désormais le **comportement mesuré**. Deux fail-open sont **fermés** : `aggregate:` produit maintenant du lineage, et l'arête d'une règle porte le nom publié par `select_final` plutôt que le nom interne de la règle — dans les deux cas, une colonne `pii` ne perd plus sa classification en chemin et `mode="strict"` peut l'attraper. Restent quatre points, qui demandent des décisions de conception : comment représenter un doute, si le tracker peut lire un schéma, comment séparer la condition de jointure du flux, et **si une source qualifiée (`ord.id`) est exécutable** — elle ne l'est aujourd'hui sur aucun moteur alors qu'elle est le seul remède à l'attribution par défaut et qu'`examples/23_openlineage` l'emploie ; un garde-fou épingle les deux moteurs ensemble en attendant. |
 | [Skifer derrière un superviseur Genie (Plan 41)](docs/roadmap/41_genie_supervisor_plan.md) | `feat/plan41-genie-supervisor` | Implémenté (41.1–41.8) — `SkiferResponsesAgent` (MLflow 3), Connect serverless, store de certification par catalogue, tags UC, `log_agent`, runbook `docs/databricks_supervisor.md`. Le 41.9 est une validation manuelle sur le workspace, à faire avec l'utilisateur ; en premier : le superviseur accepte-t-il l'endpoint. |
-| [Couche sémantique en metric views pour Genie (Plan 42)](docs/roadmap/42_metric_views_plan.md) | `feat/plan42-metric-views` | Plan rédigé — décisions D1–D5 à valider ; 42.0 (validation sur le workspace) avant tout code |
+| [Couche sémantique en metric views pour Genie (Plan 42)](docs/roadmap/42_metric_views_plan.md) | `feat/plan42-metric-views` | Implémenté (42.0–42.5) — `metric_views.py`, `SemanticEngine.publish_metric_views`, `skifer semantic metric-views`, page `docs/genie_metric_views.md`. Reste 42.6 (demo_sts bascule sur Skifer, hors dépôt) et la vérification live de `publish_metric_views` lui-même sur le workspace (42.0 n'a vérifié que le DDL brut). |
 
 ## Key files
 

@@ -126,9 +126,15 @@ The answer text is in `output[0].content[0].text`, the evidence in
 (`consumer_id`, `user_id`, `trace_id`); those values feed logs and traces, never an
 authorization, and `scopes` is ignored.
 
-## 4. Limit the Genie space to certified tables
+## 4. Limit the Genie space to certified data
 
-Add to the Genie space only the Gold tables tagged `CERTIFIED`. This query lists them:
+**Recommended: metric views (Plan 42).** `SemanticEngine.publish_metric_views()` publishes each
+semantic model as a Unity Catalog metric view — the same dimensions and measures Skifer computes,
+gated by certification. Add only these views to the Genie space, and Genie answers with Skifer's own
+definitions instead of raw tables it reaggregates itself. See
+[Genie on metric views](genie_metric_views.md) for the publication step and its limits.
+
+**Without metric views, limit Genie to the certified Gold tables directly.** This query lists them:
 
 ```sql
 SELECT catalog_name, schema_name, table_name
@@ -138,7 +144,8 @@ ORDER BY schema_name, table_name;
 ```
 
 Genie and Skifer then read the same tables, and a figure Genie shows can be cross-checked against
-the Skifer answer.
+the Skifer answer — but Genie still writes its own SQL over them, so it can compute a metric
+differently from Skifer.
 
 ## 5. Wire the supervisor
 
@@ -169,5 +176,6 @@ Run these checks after each deployment:
 - The caller's identity is declared by the client, not authenticated by Model Serving: the
   endpoint reads data as the principal of `DATABRICKS_TOKEN`.
 - Answers are not streamed.
-- Genie does not see the semantic models: the metric definitions are not exported to it.
+- Genie does not see the semantic models directly: without the metric views of
+  [Plan 42](genie_metric_views.md), the metric definitions are not exported to it.
 - Skifer's [read-only MCP server](mcp.md) is not deployed by this page.

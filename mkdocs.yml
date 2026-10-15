@@ -53,6 +53,7 @@ nav:
       - Semantic Layer: semantic.md
       - Agentic Layer: agentic.md
       - Databricks Supervisor: databricks_supervisor.md
+      - Genie on Metric Views: genie_metric_views.md
   - Governance:
       - End-to-end Governance: governance.md
       - Services and Local API: services_and_api.md
