@@ -25,9 +25,18 @@ from skifer.serving._response_serializer import (
     semantic_evidence_to_dict,
 )
 
-MAX_TABLE_ROWS = 20
+MAX_TABLE_ROWS = 30
 # A business label longer than this is a sentence, not a column header.
 MAX_LABEL_LENGTH = 48
+
+_NUMERIC_TYPES = frozenset(
+    {"tinyint", "smallint", "int", "bigint", "float", "double", "decimal", "long", "short"}
+)
+_TEMPORAL_TYPES = frozenset({"date", "timestamp", "timestamp_ntz"})
+_TEMPORAL_HINTS = (
+    "date", "day", "jour", "week", "semaine", "month", "mois",
+    "quarter", "trimestre", "year", "annee", "année", "period",
+)
 
 _NBSP = "\u00a0"
 
@@ -118,7 +127,7 @@ def _markdown_table(data: Any, labels: Mapping[str, str]) -> str | None:
         return None
     try:
         # One row more than shown, only to know whether the table was cut.
-        rows = data.limit(MAX_TABLE_ROWS + 1).collect()
+        rows = _display_order(data).limit(MAX_TABLE_ROWS + 1).collect()
         columns = list(data.columns)
     except Exception:
         return None
@@ -143,6 +152,30 @@ def _markdown_table(data: Any, labels: Mapping[str, str]) -> str | None:
     if len(rows) > MAX_TABLE_ROWS:
         table += f"\n\n_{MAX_TABLE_ROWS} premières lignes affichées._"
     return table
+
+
+def _display_order(data: Any) -> Any:
+    """Order a breakdown for reading: a time axis ascending, else the first measure descending.
+
+    The semantic query has no ORDER BY, so rows come back in whatever order Spark
+    produced them — and the rows kept under the cap would be arbitrary too.
+    """
+    try:
+        dtypes = [(str(name), str(kind).split("(")[0].lower()) for name, kind in data.dtypes]
+    except Exception:
+        return data
+    numeric = [name for name, kind in dtypes if kind in _NUMERIC_TYPES]
+    temporal = [
+        name
+        for name, kind in dtypes
+        if name not in numeric
+        and (kind in _TEMPORAL_TYPES or any(hint in name.lower() for hint in _TEMPORAL_HINTS))
+    ]
+    if temporal:
+        return data.orderBy(*temporal)
+    if numeric and len(numeric) < len(dtypes):
+        return data.orderBy(numeric[0], ascending=False)
+    return data
 
 
 def _is_number(value: Any) -> bool:

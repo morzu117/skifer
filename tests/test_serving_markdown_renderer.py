@@ -286,3 +286,49 @@ def test_failed_execution_is_never_presented_as_complete():
     )
 
     assert "- ❌ Exécution incomplète (échec)" in hub_response_to_markdown(r)
+
+
+# ---------------------------------------------------------------------------
+# Display order — the semantic query has no ORDER BY
+# ---------------------------------------------------------------------------
+
+def _table_rows(text):
+    return [line for line in text.splitlines()[2:] if line.startswith("| ")]
+
+
+def test_a_time_axis_is_shown_in_chronological_order(spark):
+    df = spark.createDataFrame(
+        [("2025-03", 3.0), ("2025-01", 1.0), ("2025-02", 2.0)],
+        "order_month string, revenue double",
+    )
+    result = FormattedResult(format=ResponseFormat.TABLE, data=df)
+    r = AgentResponse(question="q", mode="query", result=result)
+
+    rows = _table_rows(hub_response_to_markdown(r))
+
+    assert [row.split(" | ")[0] for row in rows] == ["| 2025-01", "| 2025-02", "| 2025-03"]
+
+
+def test_a_breakdown_is_ranked_by_its_first_measure(spark):
+    df = spark.createDataFrame(
+        [("APAC", 2.0), ("EMEA", 9.0), ("AMER", 5.0)],
+        "region string, revenue double",
+    )
+    result = FormattedResult(format=ResponseFormat.TABLE, data=df)
+    r = AgentResponse(question="q", mode="query", result=result)
+
+    rows = _table_rows(hub_response_to_markdown(r))
+
+    assert [row.split(" | ")[0] for row in rows] == ["| EMEA", "| AMER", "| APAC"]
+
+
+def test_the_rows_kept_under_the_cap_are_the_first_in_display_order(spark):
+    months = [(f"2025-{month:02d}", float(month)) for month in range(12, 0, -1)]
+    df = spark.createDataFrame(months * 3, "order_month string, revenue double")
+    result = FormattedResult(format=ResponseFormat.TABLE, data=df)
+    r = AgentResponse(question="q", mode="query", result=result)
+
+    rows = _table_rows(hub_response_to_markdown(r))
+
+    assert len(rows) == MAX_TABLE_ROWS
+    assert rows[0].startswith("| 2025-01 |")

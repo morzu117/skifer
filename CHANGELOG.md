@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   superviseur rendent le texte en Markdown, si bien que la réponse en texte brut y perdait son saut de ligne et
   affichait les flottants bruts (`total_revenue: 16200985.329999981`). Un KPI affiche désormais le `label` de la
   métrique (sinon sa `description` si elle est courte) et une valeur au format français (`16 200 985,33`), une
-  ventilation devient un tableau Markdown de 20 lignes au plus, et la provenance est un bloc séparé qui explique
+  ventilation devient un tableau Markdown de 30 lignes au plus — triée, puisque la requête n'a pas d'`ORDER BY` :
+  un axe temporel dans l'ordre chronologique, toute autre ventilation par sa première mesure décroissante —, et la provenance est un bloc séparé qui explique
   le statut de certification (`NOT_EVALUATED` → « non évaluée (gate de certification désactivé) »). Les règles de
   divulgation ne changent pas : aucune valeur de filtre, le maillon le plus faible l'emporte. La CLI et l'API
   locale gardent le texte brut de `hub_response_to_text`.

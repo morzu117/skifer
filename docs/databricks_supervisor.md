@@ -124,11 +124,13 @@ curl -X POST "$DATABRICKS_HOST/serving-endpoints/<endpoint>/invocations" \
 The answer text is in `output[0].content[0].text`, the evidence in
 `custom_outputs.skifer.evidence`. The text is Markdown, which the Playground and the supervisor
 render: a KPI shows the metric's `label` (else its `description`, when short) and a French-formatted
-value, a breakdown is a Markdown table of at most 20 rows, and a **Provenance** block lists the
-sources, the weakest certification and the freshness. Filter values never appear in it.
+value, a breakdown is a Markdown table of at most 30 rows — a time axis in chronological order,
+anything else ranked by its first measure, since the query has no `ORDER BY` — and a
+**Provenance** block lists the sources, the weakest certification and the freshness. Filter values
+never appear in it.
 
-A client may declare who is asking in `custom_inputs` (`consumer_id`, `user_id`, `trace_id`); those values feed logs and traces, never an
-authorization, and `scopes` is ignored.
+A client may declare who is asking in `custom_inputs` (`consumer_id`, `user_id`, `trace_id`);
+those values feed logs and traces, never an authorization, and `scopes` is ignored.
 
 ## 4. Limit the Genie space to certified data
 
