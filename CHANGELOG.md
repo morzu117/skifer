@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `SkiferResponsesAgent` (Plan 41) répond en Markdown (`serving/_markdown_renderer.py`) : le Playground et le
+  superviseur rendent le texte en Markdown, si bien que la réponse en texte brut y perdait son saut de ligne et
+  affichait les flottants bruts (`total_revenue: 16200985.329999981`). Un KPI affiche désormais le `label` de la
+  métrique (sinon sa `description` si elle est courte) et une valeur au format français (`16 200 985,33`), une
+  ventilation devient un tableau Markdown de 20 lignes au plus, et la provenance est un bloc séparé qui explique
+  le statut de certification (`NOT_EVALUATED` → « non évaluée (gate de certification désactivé) »). Les règles de
+  divulgation ne changent pas : aucune valeur de filtre, le maillon le plus faible l'emporte. La CLI et l'API
+  locale gardent le texte brut de `hub_response_to_text`.
+
 ## [3.0.3] - 2026-10-16
 
 ### Added

@@ -122,8 +122,12 @@ curl -X POST "$DATABRICKS_HOST/serving-endpoints/<endpoint>/invocations" \
 ```
 
 The answer text is in `output[0].content[0].text`, the evidence in
-`custom_outputs.skifer.evidence`. A client may declare who is asking in `custom_inputs`
-(`consumer_id`, `user_id`, `trace_id`); those values feed logs and traces, never an
+`custom_outputs.skifer.evidence`. The text is Markdown, which the Playground and the supervisor
+render: a KPI shows the metric's `label` (else its `description`, when short) and a French-formatted
+value, a breakdown is a Markdown table of at most 20 rows, and a **Provenance** block lists the
+sources, the weakest certification and the freshness. Filter values never appear in it.
+
+A client may declare who is asking in `custom_inputs` (`consumer_id`, `user_id`, `trace_id`); those values feed logs and traces, never an
 authorization, and `scopes` is ignored.
 
 ## 4. Limit the Genie space to certified data
@@ -193,7 +197,7 @@ databricks supervisor-agents create-tool supervisor-agents/<id> genie_exploratio
 ```
 
 The function loses `custom_outputs.skifer.evidence` — `ai_query` only surfaces the top-level text —
-so the supervisor's answer carries the figure and the one-line provenance already embedded in that
+so the supervisor's answer carries the figure and the provenance block already embedded in that
 text (source dataset, certification status), not the full evidence structure. A client that needs
 the full evidence record still calls the Skifer endpoint directly (section 3), bypassing the
 supervisor.
