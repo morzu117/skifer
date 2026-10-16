@@ -18,13 +18,16 @@ from types import SimpleNamespace
 
 from skifer.serving._agent_core import (
     answer,
+    business_labels,
     build_hub,
     consumer_context_from_request,
     extract_question,
 )
 from skifer.agentic.models import (
     AgentResponse,
+    FormattedResult,
     LineageResponse,
+    ResponseFormat,
 )
 from skifer.serving._response_serializer import hub_response_to_text
 from skifer.semantic.access_policy import ConsumerContext
@@ -169,7 +172,13 @@ def test_answer_puts_versioned_redacted_evidence_in_custom_outputs():
 
     text, custom_outputs = answer(_hub(response), "q", None)
 
-    assert text == "All good.\nProvenance : source gold.fact_orders · certifié le 2026-09-04 · fraîcheur 2 h"
+    # Rendered as Markdown since the Playground collapsed the plain-text line break.
+    assert text == (
+        "All good.\n\n---\n**Provenance**\n"
+        "- Source : `gold.fact_orders`\n"
+        "- Certification : ✅ certifiée le 2026-09-04\n"
+        "- Fraîcheur : il y a 2 h"
+    )
     assert custom_outputs["skifer"]["schema_version"] == "1"
     assert json.loads(json.dumps(custom_outputs)) == custom_outputs
     encoded = json.dumps(custom_outputs)
@@ -185,7 +194,7 @@ def test_answer_exposes_failed_evidence_without_presenting_it_as_complete():
     text, custom_outputs = answer(hub, "q", None)
 
     assert custom_outputs["skifer"]["evidence"]["execution_status"] == "failed"
-    assert "exécution incomplète (échec)" in text
+    assert "Exécution incomplète (échec)" in text
 
 
 def test_answer_passes_question_and_consumer_to_hub():
@@ -304,3 +313,51 @@ def test_build_hub_uses_the_llm_endpoint_from_model_config():
         build_hub({}, {"llm_endpoint": "my-chat-endpoint"})
 
     fake_llm.get_llm_provider.assert_called_once_with("databricks", model="my-chat-endpoint")
+
+
+# ---------------------------------------------------------------------------
+# business_labels() — presentation only, never fails the answer
+# ---------------------------------------------------------------------------
+
+def _labelled_hub(response, model):
+    hub = _hub(response)
+    hub._semantic_engine._get_model.return_value = model
+    return hub
+
+
+def test_answer_renders_kpis_with_the_label_declared_in_the_model():
+    response = AgentResponse(
+        question="q",
+        mode="query",
+        result=FormattedResult(
+            format=ResponseFormat.KPI, data=None, kpi_value=16200985.33, kpi_label="total_revenue",
+        ),
+        evidence=_evidence(),
+    )
+    model = {"metrics": [{"name": "total_revenue", "description": "CA total TTC (€)"}]}
+
+    text, _ = answer(_labelled_hub(response, model), "Quel est le CA total ?", None)
+
+    assert text.startswith("**CA total TTC (€)**\n\n### 16 200 985,33")
+
+
+def test_business_labels_prefer_label_over_description_and_cover_dimensions():
+    model = {
+        "metrics": [{"name": "ca", "label": "CA", "description": "Chiffre d'affaires TTC"}],
+        "dimensions": [{"name": "region", "description": "Région commerciale"}, "junk", {"name": 3}],
+    }
+    hub = _labelled_hub(None, model)
+
+    assert business_labels(hub, {"model_keys": ["sales.orders"]}) == {
+        "ca": "CA",
+        "region": "Région commerciale",
+    }
+
+
+def test_business_labels_never_fail_the_answer():
+    hub = _hub(None)
+    hub._semantic_engine._get_model.side_effect = ValueError("unknown model")
+
+    assert business_labels(hub, {"model_keys": ["missing"]}) == {}
+    assert business_labels(hub, None) == {}
+    assert business_labels(object(), {"model_keys": ["sales.orders"]}) == {}

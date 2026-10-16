@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `SkiferResponsesAgent` (Plan 41) répond en Markdown (`serving/_markdown_renderer.py`) : le Playground et le
+  superviseur rendent le texte en Markdown, si bien que la réponse en texte brut y perdait son saut de ligne et
+  affichait les flottants bruts (`total_revenue: 16200985.329999981`). Un KPI affiche désormais le `label` de la
+  métrique (sinon sa `description` si elle est courte) et une valeur au format français (`16 200 985,33`), une
+  ventilation devient un tableau Markdown de 30 lignes au plus — triée, puisque la requête n'a pas d'`ORDER BY` :
+  un axe temporel dans l'ordre chronologique, toute autre ventilation par sa première mesure décroissante —, et la provenance est un bloc séparé qui explique
+  le statut de certification (`NOT_EVALUATED` → « non évaluée (gate de certification désactivé) »). Les règles de
+  divulgation ne changent pas : aucune valeur de filtre, le maillon le plus faible l'emporte. La CLI et l'API
+  locale gardent le texte brut de `hub_response_to_text`.
+
+### Fixed
+
+- Gate de certification sémantique (Plan 29) : sur Databricks, un modèle dont la `table` est en deux parties
+  (`gold.kpi_orders`) était toujours refusé `MISSING` en `warn`/`enforce`, même publié en mode certifié. Le
+  resolver lit cette table dans le catalogue du moteur et la publication enregistre le run sous ce nom à trois
+  parties (`sts_demo_catalog.gold.kpi_orders`), alors que le gate cherchait le nom nu. `SemanticEngine` cherche
+  désormais d'abord sous le nom qualifié par le catalogue, puis sous le nom nu, et la certification garde le nom
+  du modèle dans la preuve.
+- `ContractExtractor` ne dérive plus de `FilterInvariantCheck` pour un filtre de source portant sur une colonne que
+  la sortie ne publie pas (absente de `select_final` ou de `aggregate`). Le check s'évalue sur la table publiée :
+  un filtre `status:in:completed,shipped` suivi d'un `select_final` sans `status` échouait en erreur SQL à chaque
+  publication certifiée, avec une trace Spark complète dans les logs. Avec `keep_all_columns`, la sortie n'est
+  pas connue et le check est conservé.
+
 ## [3.0.3] - 2026-10-16
 
 ### Added

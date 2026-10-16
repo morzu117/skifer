@@ -113,17 +113,49 @@ def answer(hub: Any, question: str, consumer_context: Any) -> tuple[str, dict | 
     provide for it, versioned so a client can tell an evolution from a regression.
     """
     from skifer.observability.tracing import NoOpTracer, configured_span_scope
-    from skifer.serving._response_serializer import (
-        hub_response_to_text,
-        semantic_evidence_to_dict,
-    )
+    from skifer.serving._markdown_renderer import hub_response_to_markdown
+    from skifer.serving._response_serializer import semantic_evidence_to_dict
 
     response = hub.ask(question, consumer_context=consumer_context)
     tracer = getattr(hub, "tracer", None) or NoOpTracer()
     required = bool(getattr(hub, "_tracing_required", False))
     with configured_span_scope(tracer, "skifer.response.serialize", required=required):
-        text = hub_response_to_text(response)
         evidence = semantic_evidence_to_dict(getattr(response, "evidence", None))
+        # Chat surfaces (Playground, supervisor) render the text as Markdown.
+        text = hub_response_to_markdown(response, business_labels(hub, evidence))
     if evidence is None:
         return text, None
     return text, {"skifer": {"schema_version": EVIDENCE_SCHEMA_VERSION, "evidence": evidence}}
+
+
+def business_labels(hub: Any, evidence: Mapping[str, Any] | None) -> dict[str, str]:
+    """Map the metric and dimension names of the answered models to their labels.
+
+    A metric's ``label``, else its ``description``, read from the semantic models the
+    evidence names. Presentation only, hence best-effort: a model that cannot be read
+    leaves the technical names in place and never fails the answer.
+    """
+    semantic = getattr(hub, "_semantic_engine", None)
+    if not evidence or semantic is None:
+        return {}
+    labels: dict[str, str] = {}
+    for model_key in evidence.get("model_keys") or ():
+        try:
+            # Already loaded and cached by the query that produced the evidence.
+            model = semantic._get_model(model_key)
+        except Exception:
+            logger.debug("Skifer serving agent: no labels for model %r.", model_key)
+            continue
+        if not isinstance(model, Mapping):
+            continue
+        for section in ("metrics", "dimensions"):
+            items = model.get(section)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, Mapping) or not isinstance(item.get("name"), str):
+                    continue
+                label = item.get("label") or item.get("description")
+                if isinstance(label, str) and label.strip():
+                    labels.setdefault(item["name"], label.strip())
+    return labels

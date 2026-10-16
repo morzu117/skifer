@@ -348,7 +348,8 @@ def test_warn_uncertified_continues(models_dir, semantic_query):
 
     engine.query(semantic_query)
 
-    assert len(store.calls) == 2
+    # Preflight + recheck, each trying the catalog-qualified name before the bare one.
+    assert store.calls == [("main.gold.fact_orders", "agent_read"), ("gold.fact_orders", "agent_read")] * 2
     assert len(engine.core.backend.sql) == 1
     assert engine.certification_warning_count == 1
 
@@ -408,7 +409,8 @@ def test_recheck_denies_before_execute_when_certification_changes(
         engine.query(semantic_query)
 
     assert exc_info.value.decision == CertificationDecision.DENY
-    assert store.calls == 2
+    # Preflight certified on the qualified name; the recheck finds neither name.
+    assert store.calls == 3
     assert engine.core.backend.sql == []
 
 
@@ -468,8 +470,9 @@ def test_create_view_sql_uses_real_certification_provenance(
     assert "contract_version=None" not in ddl
     assert "definition_hash=None" not in ddl
     # preflight + recheck only; the recheck's certifications are reused for the
-    # comment (bug_003 review follow-up removed the 3rd re-fetch).
-    assert len(store.calls) == 2
+    # comment (bug_003 review follow-up removed the 3rd re-fetch). Each pass tries
+    # the catalog-qualified name first, absent from this store.
+    assert store.calls == [("main.gold.fact_orders", "agent_read"), ("gold.fact_orders", "agent_read")] * 2
 
 
 def test_create_view_with_no_resolved_dependencies_writes_readable_comment(
@@ -967,3 +970,63 @@ def test_valid_override_allows_no_resolved_dependencies_in_enforce_mode(
 
     assert result["sql"].startswith("SELECT")
     assert len(engine.core.backend.sql) == 1
+
+
+def test_enforce_finds_a_certification_recorded_under_the_catalog_qualified_name(
+    models_dir, semantic_query
+):
+    # Certified publication records `catalog.schema.table`; the model names
+    # `schema.table`. Looking the bare name up refused every table as MISSING.
+    certified_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = MappingStore({
+        "main.gold.fact_orders": Certification(
+            "main.gold.fact_orders", "agent_read", "CERTIFIED", "v1", "hash1", certified_at,
+        ),
+    })
+    engine = _engine("enforce", models_dir, store=store)
+
+    result = engine.query_with_evidence(semantic_query)
+
+    assert result.dataframe["sql"].startswith("SELECT")
+    assert store.calls[0] == ("main.gold.fact_orders", "agent_read")
+    (source,) = result.evidence.sources
+    assert source.dataset == "gold.fact_orders"
+    assert source.certification_status == "CERTIFIED"
+
+
+def test_enforce_still_denies_when_neither_name_is_certified(models_dir, semantic_query):
+    store = MappingStore({})
+    engine = _engine("enforce", models_dir, store=store)
+
+    with pytest.raises(SemanticAccessDenied):
+        engine.query(semantic_query)
+    assert ("main.gold.fact_orders", "agent_read") in store.calls
+    assert ("gold.fact_orders", "agent_read") in store.calls
+
+
+def test_a_store_returning_plain_objects_is_still_keyed_on_the_model_name(
+    models_dir, semantic_query
+):
+    # A store is a Protocol, not a dataclass contract: rekeying must not fail on
+    # a plain object, or the broad fail-closed handler turns CERTIFIED into MISSING.
+    from types import SimpleNamespace
+
+    certified_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = MappingStore({
+        "main.gold.fact_orders": SimpleNamespace(
+            dataset="main.gold.fact_orders",
+            consumer_class="agent_read",
+            status="CERTIFIED",
+            contract_version="v1",
+            definition_hash="hash1",
+            certified_at=certified_at,
+            checks_passed=True,
+        ),
+    })
+    engine = _engine("enforce", models_dir, store=store)
+
+    result = engine.query_with_evidence(semantic_query)
+
+    (source,) = result.evidence.sources
+    assert source.dataset == "gold.fact_orders"
+    assert source.certification_status == "CERTIFIED"

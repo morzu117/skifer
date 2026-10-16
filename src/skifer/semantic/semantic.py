@@ -11,7 +11,8 @@ Architecture catalog-first avec chargement lazy :
 from __future__ import annotations
 
 import datetime
-from dataclasses import replace
+import copy
+from dataclasses import is_dataclass, replace
 import os
 from pathlib import Path
 import time
@@ -961,9 +962,40 @@ class SemanticEngine:
             return None
 
         try:
+            physical = self._physical_dataset(dataset)
+            if physical != dataset:
+                certification = self.certification_store.get_certification(
+                    physical, consumer_class
+                )
+                if getattr(certification, "status", None) == "CERTIFIED":
+                    # Keyed back on the model's name: evidence and gate match on it.
+                    return self._rekeyed(certification, dataset)
             return self.certification_store.get_certification(dataset, consumer_class)
         except Exception:
             return None
+
+    @staticmethod
+    def _rekeyed(certification, dataset: str):
+        """A copy of ``certification`` under ``dataset``, whatever type the store returns."""
+        if is_dataclass(certification):
+            return replace(certification, dataset=dataset)
+        clone = copy.copy(certification)
+        clone.dataset = dataset
+        return clone
+
+    def _physical_dataset(self, dataset: str) -> str:
+        """The name certified publication records a model's ``schema.table`` under.
+
+        The resolver reads a two-part table in the engine's catalog, and publication
+        records the run under that same three-part name. Looking up the bare name
+        alone found nothing on Databricks, so ``warn``/``enforce`` refused every
+        certified table as MISSING.
+        """
+        catalog = getattr(self.core, "db", None)
+        parts = dataset.replace("`", "").split(".")
+        if not isinstance(catalog, str) or not catalog.strip("`") or len(parts) != 2:
+            return dataset
+        return ".".join([catalog.strip("`"), *parts])
 
     @staticmethod
     def _recommended_certification_action(datasets: tuple[str, ...]) -> str:
