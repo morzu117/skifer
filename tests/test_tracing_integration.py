@@ -905,7 +905,9 @@ def test_deny_gate_evaluation_count_and_zero_sql_are_tracer_independent(
         with pytest.raises(SemanticAccessDenied):
             engine.query_with_evidence(_semantic_query())
         assert backend.sql == []
-        assert store.calls == 1
+        # One gate evaluation, two lookups: the catalog-qualified name the
+        # publication records, then the model's bare name.
+        assert store.calls == 2
 
     assert counts == {"noop": 1, "memory": 1}
 

@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   divulgation ne changent pas : aucune valeur de filtre, le maillon le plus faible l'emporte. La CLI et l'API
   locale gardent le texte brut de `hub_response_to_text`.
 
+### Fixed
+
+- Gate de certification sémantique (Plan 29) : sur Databricks, un modèle dont la `table` est en deux parties
+  (`gold.kpi_orders`) était toujours refusé `MISSING` en `warn`/`enforce`, même publié en mode certifié. Le
+  resolver lit cette table dans le catalogue du moteur et la publication enregistre le run sous ce nom à trois
+  parties (`sts_demo_catalog.gold.kpi_orders`), alors que le gate cherchait le nom nu. `SemanticEngine` cherche
+  désormais d'abord sous le nom qualifié par le catalogue, puis sous le nom nu, et la certification garde le nom
+  du modèle dans la preuve.
+
 ## [3.0.3] - 2026-10-16
 
 ### Added

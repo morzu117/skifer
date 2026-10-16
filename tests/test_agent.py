@@ -276,7 +276,8 @@ def test_agent_query_mode_recheck_denies_when_certification_changes(tmp_path):
     assert response.mode == "error"
     assert response.access_denied is True
     assert response.policy_decision == CertificationDecision.DENY.value
-    assert store.calls == 2
+    # Preflight certified on the catalog-qualified name; the recheck finds neither name.
+    assert store.calls == 3
     assert core.backend.sql == []
 
 
