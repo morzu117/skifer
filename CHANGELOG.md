@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-16
+
 ### Changed
 
 - `SkiferResponsesAgent` (Plan 41) répond en Markdown (`serving/_markdown_renderer.py`) : le Playground et le
