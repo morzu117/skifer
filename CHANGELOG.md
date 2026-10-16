@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parties (`sts_demo_catalog.gold.kpi_orders`), alors que le gate cherchait le nom nu. `SemanticEngine` cherche
   désormais d'abord sous le nom qualifié par le catalogue, puis sous le nom nu, et la certification garde le nom
   du modèle dans la preuve.
+- `ContractExtractor` ne dérive plus de `FilterInvariantCheck` pour un filtre de source portant sur une colonne que
+  la sortie ne publie pas (absente de `select_final` ou de `aggregate`). Le check s'évalue sur la table publiée :
+  un filtre `status:in:completed,shipped` suivi d'un `select_final` sans `status` échouait en erreur SQL à chaque
+  publication certifiée, avec une trace Spark complète dans les logs. Avec `keep_all_columns`, la sortie n'est
+  pas connue et le check est conservé.
 
 ## [3.0.3] - 2026-10-16
 

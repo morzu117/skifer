@@ -134,6 +134,48 @@ tables:
         assert filters[0].column == "customer_id"
         assert filters[0].operator == "is_not_null"
 
+    def test_filter_on_a_column_the_output_drops_is_not_checked(self):
+        # The check runs on the published table: a dropped column made it error on every run.
+        schema = parse_schema("""
+tables:
+  - name: silver.orders
+    filter:
+      - status:in:completed,shipped
+      - region:equals:EMEA
+select_final:
+  - [order_id, order_id]
+  - [region, region]
+""")
+        contracts = ContractExtractor().extract(schema)
+        filters = [c for c in contracts if isinstance(c, FilterInvariantCheck)]
+        assert [c.column for c in filters] == ["region"]
+
+    def test_filter_is_kept_when_the_output_columns_are_unknown(self):
+        schema = parse_schema("""
+tables:
+  - name: silver.orders
+    filter:
+      - status:in:completed,shipped
+keep_all_columns: true
+""")
+        contracts = ContractExtractor().extract(schema)
+        assert [c.column for c in contracts if isinstance(c, FilterInvariantCheck)] == ["status"]
+
+    def test_filter_on_an_aggregate_group_key_is_kept(self):
+        schema = parse_schema("""
+tables:
+  - name: silver.orders
+    filter:
+      - country:equals:FR
+      - status:equals:done
+aggregate:
+  group_by: [country]
+  measures:
+    - [amount, total_amount, sum]
+""")
+        contracts = ContractExtractor().extract(schema)
+        assert [c.column for c in contracts if isinstance(c, FilterInvariantCheck)] == ["country"]
+
     def test_extract_type_check_from_cast(self):
         schema = parse_schema("""
 tables:
