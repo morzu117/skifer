@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `AgenticHub`'s LLM intent-classification fallback (free-form questions with no matching keyword)
+  could route to `lineage`/`dictionary`/`quality`/`builder` even when that agent isn't configured in
+  the hub, and `_dispatch` treated it as a hard `"Agent '<x>' non configure dans ce hub."` error
+  instead of falling back to GenBI — on a hub exposing only GenBI, a free-form metrics question like
+  "l'évolution mensuelle du CA des commandes" could be misrouted and fail outright. Fixed by
+  restricting `_llm_classify_intent`'s candidate intents (and its system prompt's per-intent
+  descriptions) to the agents actually configured on the hub, and by falling back to GenBI in
+  `_dispatch` only when the intent came from that LLM fallback — an explicit keyword-detected
+  request for an unconfigured agent still returns the "non configure" error as before.
+- A failed Spark/Spark Connect query (e.g. an `AnalysisException`) leaked its full message —
+  including the `JVM stacktrace:` marker and thousands of characters of `at org.apache.spark...`/
+  `at com.databricks...` frames — into `AgentResponse.error`/`QualityResponse.error`, and from there
+  into the Markdown rendered for Playground/the supervisor. Fixed by sanitizing the message at the
+  point each agent builds its error response (new `agentic/_errors.py::sanitize_exception_message`),
+  keeping only the readable prefix (error code, short message) up to the `JVM stacktrace:` marker (or
+  the first stack-frame line when that marker is absent) and capping the result's length; the full
+  original message is still available via `exc_info=True` logging. The Provenance block is unaffected
+  — it reads only from `evidence`, never from `error`.
+
 ## [3.1.1] - 2026-10-19
 
 ### Fixed

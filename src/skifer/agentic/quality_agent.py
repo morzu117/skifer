@@ -17,6 +17,7 @@ import unicodedata
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from ._errors import sanitize_exception_message
 from ..observability.monitor import DataMonitor
 from ..observability.contracts import ContractExtractor
 from ..observability.reporter import MonitorReporter
@@ -156,7 +157,7 @@ class QualityAgent:
                 question=f"check({fqn})",
                 mode="error",
                 table=fqn,
-                error=str(exc),
+                error=sanitize_exception_message(str(exc)),
             )
 
         if self._alert_config:
@@ -198,7 +199,7 @@ class QualityAgent:
                 question=f"get_history({fqn})",
                 mode="error",
                 table=fqn,
-                error=str(exc),
+                error=sanitize_exception_message(str(exc)),
             )
         return QualityResponse(
             question=f"get_history({fqn})",

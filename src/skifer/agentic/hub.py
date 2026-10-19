@@ -91,6 +91,14 @@ _INTENT_TO_KEYWORDS = [
     ("builder",    _BUILDER_KEYWORDS),
 ]
 
+_INTENT_DESCRIPTIONS = {
+    "genbi": "questions chiffrees sur des metriques, dimensions ou KPI",
+    "lineage": "provenance ou dependances d'une table/colonne",
+    "dictionary": "definition d'une colonne ou d'un terme du glossaire",
+    "quality": "checks et qualite des donnees (table saine, anomalies)",
+    "builder": "generation d'un schema de pipeline YAML",
+}
+
 
 def _detect_intent(question: str) -> str:
     """Retourne l'intent déterministe : 'lineage' | 'dictionary' | 'quality' | 'builder' | 'genbi'."""
@@ -207,12 +215,14 @@ class AgenticHub:
 
         # 2. Détection de l'intent
         intent = _detect_intent(resolved)
+        llm_routed = False
 
         # 3. Fallback LLM si ambiguïté et provider disponible
         if intent == "genbi" and self._llm_provider is not None:
             llm_intent = self._llm_classify_intent(resolved)
             if llm_intent:
                 intent = llm_intent
+                llm_routed = True
 
         # 4. Dispatch
         set_span_attribute(
@@ -221,7 +231,7 @@ class AgenticHub:
             intent,
             required=self._tracing_required,
         )
-        return self._dispatch(intent, question, resolved, **kwargs)
+        return self._dispatch(intent, question, resolved, llm_routed=llm_routed, **kwargs)
 
     @property
     def tracer(self):
@@ -265,14 +275,37 @@ class AgenticHub:
             )
         return resolved
 
+    def _configured_intents(self) -> dict[str, Any]:
+        """Intents dont l'agent correspondant est réellement injecté dans ce hub."""
+        return {
+            name: agent
+            for name, agent in (
+                ("genbi", self._genbi),
+                ("lineage", self._lineage),
+                ("dictionary", self._dictionary),
+                ("quality", self._quality),
+                ("builder", self._builder),
+            )
+            if agent is not None
+        }
+
     def _llm_classify_intent(self, question: str) -> str | None:
         """
         Appel LLM minimal : classification de l'intent.
-        Retourne l'un des 5 intents ou None si appel échoue.
+
+        Restreint aux intents réellement configurés dans ce hub — un hub qui
+        n'expose que GenBI ne doit jamais recevoir 'lineage' en réponse, même
+        si le LLM croit en détecter un. Retourne l'un des intents configurés,
+        ou None si l'appel échoue ou que la réponse est hors de cette liste.
         """
+        configured = self._configured_intents()
+        choices = ", ".join(sorted(configured))
+        descriptions = "\n".join(
+            f"- {name}: {_INTENT_DESCRIPTIONS[name]}" for name in sorted(configured)
+        )
         system_prompt = (
-            "Classe la question de l'utilisateur dans l'un de ces intents : "
-            "genbi, lineage, quality, dictionary, builder. "
+            f"Classe la question de l'utilisateur dans l'un de ces intents : {choices}.\n"
+            f"{descriptions}\n"
             "Réponds uniquement avec le mot-clé de l'intent, sans aucun autre texte."
         )
         try:
@@ -286,7 +319,7 @@ class AgenticHub:
                     user_message=question,
                     temperature=0.0,
                 ).strip().lower()
-            if raw in {"genbi", "lineage", "quality", "dictionary", "builder"}:
+            if raw in configured:
                 return raw
         except Exception:
             logger.warning("LLM intent classification failed", exc_info=True)
@@ -297,6 +330,8 @@ class AgenticHub:
         intent: str,
         original_question: str,
         resolved_question: str,
+        *,
+        llm_routed: bool = False,
         **kwargs: Any,
     ) -> HubResponse:
         """Route vers l'agent cible et retourne sa réponse."""
@@ -308,23 +343,44 @@ class AgenticHub:
                 error=f"Agent '{agent_name}' non configure dans ce hub.",
             )
 
+        def _fallback_to_genbi() -> HubResponse:
+            return self._genbi.ask(
+                resolved_question,
+                consumer_context=kwargs.get("consumer_context"),
+            )
+
+        # Un intent déterminé par le fallback LLM (question libre, pas de
+        # mot-clé explicite) vers un agent non configuré n'est pas une
+        # demande explicite de l'utilisateur pour cette fonction : on
+        # retombe sur GenBI plutôt que de renvoyer une erreur de routage.
+        # Un intent déterminé par _detect_intent (mots-clés) garde l'erreur,
+        # car l'utilisateur a alors explicitement demandé une fonction absente.
+
         if intent == "lineage":
             if self._lineage is None:
+                if llm_routed and self._genbi is not None:
+                    return _fallback_to_genbi()
                 return _unavailable("lineage")
             return self._lineage.ask(resolved_question)
 
         if intent == "dictionary":
             if self._dictionary is None:
+                if llm_routed and self._genbi is not None:
+                    return _fallback_to_genbi()
                 return _unavailable("dictionary")
             return self._dictionary.ask(resolved_question)
 
         if intent == "quality":
             if self._quality is None:
+                if llm_routed and self._genbi is not None:
+                    return _fallback_to_genbi()
                 return _unavailable("quality")
             return self._quality.ask(resolved_question)
 
         if intent == "builder":
             if self._builder is None:
+                if llm_routed and self._genbi is not None:
+                    return _fallback_to_genbi()
                 return _unavailable("builder")
             output_dir = kwargs.get("output_dir", "schemas")
             return self._builder.ask(resolved_question, output_dir=output_dir)
@@ -332,7 +388,4 @@ class AgenticHub:
         # fallback → GenBIAgent
         if self._genbi is None:
             return _unavailable("genbi")
-        return self._genbi.ask(
-            resolved_question,
-            consumer_context=kwargs.get("consumer_context"),
-        )
+        return _fallback_to_genbi()

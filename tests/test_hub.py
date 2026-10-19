@@ -280,3 +280,76 @@ def test_structured_unregistered_capability_is_refused():
 
     with pytest.raises(CapabilityRegistryError, match="inventory.missing"):
         hub.invoke_capability(CapabilityRequest("inventory.missing", {}))
+
+
+# ---------------------------------------------------------------------------
+# LLM fallback routed to an unconfigured agent → fall back to GenBI
+# (Bug Skifer 3.1.1 — défaut 1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("llm_answer", ["lineage", "builder", "dictionary"])
+def test_llm_routed_intent_to_unconfigured_agent_falls_back_to_genbi(llm_answer: str):
+    """Hub avec uniquement GenBI configuré : le fallback LLM ne doit jamais
+    pointer vers un agent absent — la question libre doit être traitée par
+    GenBI plutôt que de renvoyer une erreur 'non configure'."""
+    llm = MagicMock()
+    llm.complete.return_value = llm_answer
+    genbi = MagicMock()
+    genbi.ask.side_effect = _make_genbi_response
+    hub = AgenticHub(llm_provider=llm, genbi_agent=genbi)
+
+    response = hub.ask(
+        "tu peux me donner l'evolution mensuelle du CA des commandes depuis janvier 2026 ?"
+    )
+
+    assert isinstance(response, AgentResponse)
+    assert response.mode == "query"
+    genbi.ask.assert_called_once()
+
+
+def test_keyword_detected_unconfigured_agent_still_errors_even_with_llm():
+    """Une demande explicite (mot-clé) pour une fonction absente doit garder
+    l'erreur 'non configure', même quand un llm_provider est injecté — ce
+    n'est pas une ambiguïté que le fallback LLM doit arbitrer."""
+    llm = MagicMock()
+    llm.complete.return_value = "genbi"
+    genbi = MagicMock()
+    genbi.ask.side_effect = _make_genbi_response
+    hub = AgenticHub(llm_provider=llm, genbi_agent=genbi)
+
+    response = hub.ask("D'où vient le champ amount_eur ?")
+
+    assert isinstance(response, AgentResponse)
+    assert response.mode == "error"
+    assert "lineage" in response.error.lower()
+    llm.complete.assert_not_called()
+
+
+def test_llm_classify_intent_restricted_to_configured_intents():
+    """_llm_classify_intent ne doit jamais renvoyer un intent dont l'agent
+    n'est pas configuré dans ce hub, même si le LLM le propose."""
+    llm = MagicMock()
+    llm.complete.return_value = "lineage"
+    genbi = MagicMock()
+    hub = AgenticHub(llm_provider=llm, genbi_agent=genbi)
+
+    assert hub._llm_classify_intent("une question quelconque") is None
+
+
+def test_llm_classify_intent_system_prompt_lists_only_configured_intents():
+    """Le prompt système envoyé au LLM ne doit mentionner que les intents
+    réellement configurés dans ce hub, pas les 5 intents possibles."""
+    llm = MagicMock()
+    llm.complete.return_value = "genbi"
+    genbi = MagicMock()
+    quality = MagicMock()
+    hub = AgenticHub(llm_provider=llm, genbi_agent=genbi, quality_agent=quality)
+
+    hub._llm_classify_intent("une question quelconque")
+
+    system_prompt = llm.complete.call_args.kwargs["system_prompt"]
+    assert "genbi" in system_prompt
+    assert "quality" in system_prompt
+    assert "lineage" not in system_prompt
+    assert "builder" not in system_prompt
+    assert "dictionary" not in system_prompt
