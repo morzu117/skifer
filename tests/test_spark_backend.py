@@ -7,13 +7,29 @@ from uuid import uuid4
 import pytest
 
 from skifer.core.spark_backend import SparkBackend
-from skifer.observability.certification_store import DeltaCertificationStore
+from skifer.observability.certification import ContractDefinition
+from skifer.observability.certification_store import (
+    DeltaCertificationStore,
+    RunEvent,
+    StoredCheckResult,
+)
+from skifer.observability.checks import CheckStatus, ContractScope
 from skifer.observability.incidents import Incident, IncidentStatus
 
 
 @pytest.fixture
 def incident_store(spark):
     schema = f"skifer_incidents_{uuid4().hex}"
+    backend = SparkBackend(spark=spark, is_local=True)
+    try:
+        yield DeltaCertificationStore(backend, schema=schema), backend, schema
+    finally:
+        spark.sql(f"DROP SCHEMA IF EXISTS `{schema}` CASCADE")
+
+
+@pytest.fixture
+def cert_store(spark):
+    schema = f"skifer_certification_{uuid4().hex}"
     backend = SparkBackend(spark=spark, is_local=True)
     try:
         yield DeltaCertificationStore(backend, schema=schema), backend, schema
@@ -86,3 +102,69 @@ def test_real_backend_incident_filter_values_round_trip_quotes_and_backslashes(
     backend.upsert_incident(schema, row)
 
     assert backend.get_open_incident(schema, target_fqn, check_name) == row
+
+
+def test_real_backend_run_event_with_all_optional_fqns_none_does_not_crash_inference(
+    cert_store,
+):
+    # A STARTED RunEvent carries target_fqn/staging_fqn/quarantine_fqn unset — a
+    # single-row DataFrame built by inference then has a column that is entirely
+    # None, which fails with CANNOT_DETERMINE_TYPE. _append_certification must
+    # supply an explicit schema instead of relying on inference.
+    store, _backend, _schema = cert_store
+    event = RunEvent(
+        event_id="run-none:STARTED",
+        run_id="run-none",
+        dataset="gold.kpi_orders",
+        state="STARTED",
+        contract_id="sales.kpi_orders",
+        contract_version="1.0.0",
+        definition_hash="sha256:v1:hash",
+        occurred_at=datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc),
+        target_fqn=None,
+        staging_fqn=None,
+        quarantine_fqn=None,
+    )
+
+    store.append_run_event(event)
+
+    assert store.get_run("run-none") == event
+
+
+def test_real_backend_contract_with_optional_fields_none_does_not_crash_inference(
+    cert_store,
+):
+    store, _backend, _schema = cert_store
+    definition = ContractDefinition(
+        contract_id="sales.kpi_orders",
+        contract_version="1.0.0",
+        definition_hash="sha256:v1:hash",
+        canonical_json="{}",
+        data_product_id="sales.kpi_orders",
+        owner=None,
+    )
+
+    store.register_contract(definition)
+
+    assert store.get_contract("sales.kpi_orders", "1.0.0") == definition
+
+
+def test_real_backend_check_result_with_none_values_does_not_crash_inference(
+    cert_store,
+):
+    store, _backend, _schema = cert_store
+    result = StoredCheckResult(
+        event_id="run-none:check-1",
+        run_id="run-none",
+        check_type="NullCheck",
+        scope=ContractScope.ROW,
+        severity="critical",
+        status=CheckStatus.PASS,
+        actual_value=None,
+        expected_value=None,
+        message="ok",
+    )
+
+    store.append_check_results([result])
+
+    assert store.get_check_results("run-none") == [result]
