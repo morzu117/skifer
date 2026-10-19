@@ -148,6 +148,29 @@ def test_check_backend_exception_produces_failed_report(backend):
     assert len(resp.report.failures()) > 0
 
 
+def test_check_monitor_exception_sanitizes_spark_stacktrace(backend):
+    """An exception reaching check()'s own except branch (not swallowed by
+    DataMonitor) must not leak a raw JVM stacktrace into resp.error
+    (Bug Skifer 3.1.1 — défaut 2)."""
+    raw_message = (
+        '[DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES] Cannot resolve "(is_vip = true)".\n'
+        "JVM stacktrace:\n"
+        "org.apache.spark.sql.AnalysisException: [DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES]\n"
+        "\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis$.checkAnalysis0(CheckAnalysis.scala:271)\n"
+    )
+    ag = QualityAgent(backend=backend)
+    ag._monitor = MagicMock()
+    ag._monitor.check_table.side_effect = RuntimeError(raw_message)
+    contracts = [NullCheck(table=FQN, column="amount")]
+
+    resp = ag.check(FQN, contracts=contracts)
+
+    assert resp.mode == "error"
+    assert "JVM stacktrace:" not in resp.error
+    assert "\tat " not in resp.error
+    assert resp.error.startswith("[DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES]")
+
+
 # ---------------------------------------------------------------------------
 # get_history()
 # ---------------------------------------------------------------------------

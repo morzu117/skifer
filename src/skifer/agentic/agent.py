@@ -23,6 +23,7 @@ import re
 from io import BytesIO
 from typing import Any
 
+from ._errors import sanitize_exception_message
 from ..semantic.access_policy import ConsumerContext, SemanticAccessDenied
 from ..semantic.evidence import SemanticExecutionError
 from ..semantic.llm_provider import LLMProvider, llm_span_scope
@@ -573,7 +574,7 @@ class GenBIAgent:
                 mode="error",
                 model_used=model_key,
                 explanation=semantic_query.explanation,
-                error=str(exc),
+                error=sanitize_exception_message(str(exc)),
                 evidence=exc.evidence,
             )
         except SemanticAccessDenied as exc:
@@ -596,7 +597,7 @@ class GenBIAgent:
                 mode="error",
                 model_used=model_key,
                 explanation=semantic_query.explanation,
-                error=str(exc),
+                error=sanitize_exception_message(str(exc)),
             )
 
     # ------------------------------------------------------------------
@@ -649,7 +650,7 @@ class GenBIAgent:
                 mode="error",
                 model_used=model_key,
                 explanation=semantic_query.explanation,
-                error=str(exc),
+                error=sanitize_exception_message(str(exc)),
             )
 
     # ------------------------------------------------------------------

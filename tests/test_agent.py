@@ -108,6 +108,48 @@ def test_format_kpi_spark_exception_propagates():
         agent._format_kpi(df, sq, "CA 2024")
 
 
+# ---------------------------------------------------------------------------
+# _execute_query — un message d'erreur Spark brut (JVM stacktrace) ne doit
+# jamais atteindre l'utilisateur final (Bug Skifer 3.1.1 — défaut 2)
+# ---------------------------------------------------------------------------
+
+def test_execute_query_sanitizes_spark_connect_stacktrace_in_error():
+    from skifer.semantic.evidence import SemanticExecutionError
+
+    agent = _make_agent()
+    sq = _make_query(metrics=["chiffre_affaires"])
+
+    raw_message = (
+        '[DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES] Cannot resolve "(is_vip = true)" '
+        "due to data type mismatch.\n"
+        "JVM stacktrace:\n"
+        "org.apache.spark.sql.AnalysisException: [DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES]\n"
+        "\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis$.checkAnalysis0(CheckAnalysis.scala:271)\n"
+        "\tat com.databricks.sql.connect.service.ExecuteThreadRunner.run(ExecuteThreadRunner.scala:120)\n"
+    )
+    partial_evidence = MagicMock()
+    agent.semantic._query_with_evidence_from_resolved.side_effect = SemanticExecutionError(
+        raw_message, evidence=partial_evidence
+    )
+
+    response = agent._execute_query(
+        "Liste moi les 10 plus grosses commandes de clients premium en France",
+        sq,
+        "kpi_orders",
+        resolved=MagicMock(),
+        model_full={},
+    )
+
+    assert response.mode == "error"
+    assert "JVM stacktrace:" not in response.error
+    assert "\tat " not in response.error
+    assert "org.apache.spark" not in response.error
+    assert response.error.startswith("[DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES]")
+    # The partial evidence (provenance block) is kept untouched — only the
+    # rendered error text is sanitized.
+    assert response.evidence is partial_evidence
+
+
 class _SpyBackend:
     def __init__(self):
         self.sql: list[str] = []
