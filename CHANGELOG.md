@@ -8,18 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.1.1] - 2026-10-19
-
 ### Fixed
 
-- `SparkBackend._append_certification` (contract/run/check certification rows) relied on Spark's
-  single-row schema inference, which fails with `CANNOT_DETERMINE_TYPE` as soon as one column is
-  entirely `None` in that row — the case for every `STARTED` `RunEvent` (`target_fqn`/`staging_fqn`/
-  `quarantine_fqn` all unset) on both Spark Connect and classic Spark. Certified publication could
-  never write its first `STARTED` event, blocking the whole `data_product` pipeline before any Gold
-  write. Fixed by giving each of the three certification tables (`contract_definitions`,
-  `materialization_runs`, `check_results`) an explicit schema, the same pattern already used by
-  `upsert_incident` and `append_semantic_usage_event`.
 - `AgenticHub`'s LLM intent-classification fallback (free-form questions with no matching keyword)
   could route to `lineage`/`dictionary`/`quality`/`builder` even when that agent isn't configured in
   the hub, and `_dispatch` treated it as a hard `"Agent '<x>' non configure dans ce hub."` error
@@ -38,6 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first stack-frame line when that marker is absent) and capping the result's length; the full
   original message is still available via `exc_info=True` logging. The Provenance block is unaffected
   — it reads only from `evidence`, never from `error`.
+
+## [3.1.1] - 2026-10-19
+
+### Fixed
+
+- `SparkBackend._append_certification` (contract/run/check certification rows) relied on Spark's
+  single-row schema inference, which fails with `CANNOT_DETERMINE_TYPE` as soon as one column is
+  entirely `None` in that row — the case for every `STARTED` `RunEvent` (`target_fqn`/`staging_fqn`/
+  `quarantine_fqn` all unset) on both Spark Connect and classic Spark. Certified publication could
+  never write its first `STARTED` event, blocking the whole `data_product` pipeline before any Gold
+  write. Fixed by giving each of the three certification tables (`contract_definitions`,
+  `materialization_runs`, `check_results`) an explicit schema, the same pattern already used by
+  `upsert_incident` and `append_semantic_usage_event`.
 
 ## [3.1.0] - 2026-10-16
 
