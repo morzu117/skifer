@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write. Fixed by giving each of the three certification tables (`contract_definitions`,
   `materialization_runs`, `check_results`) an explicit schema, the same pattern already used by
   `upsert_incident` and `append_semantic_usage_event`.
+- `AgenticHub`'s LLM intent-classification fallback (free-form questions with no matching keyword)
+  could route to `lineage`/`dictionary`/`quality`/`builder` even when that agent isn't configured in
+  the hub, and `_dispatch` treated it as a hard `"Agent '<x>' non configure dans ce hub."` error
+  instead of falling back to GenBI — on a hub exposing only GenBI, a free-form metrics question like
+  "l'évolution mensuelle du CA des commandes" could be misrouted and fail outright. Fixed by
+  restricting `_llm_classify_intent`'s candidate intents (and its system prompt's per-intent
+  descriptions) to the agents actually configured on the hub, and by falling back to GenBI in
+  `_dispatch` only when the intent came from that LLM fallback — an explicit keyword-detected
+  request for an unconfigured agent still returns the "non configure" error as before.
 
 ## [3.1.0] - 2026-10-16
 
