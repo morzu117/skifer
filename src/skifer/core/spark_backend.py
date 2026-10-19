@@ -260,7 +260,27 @@ class SparkBackend:
     def sql(self, query: str) -> Any:
         return self._spark.sql(query)
 
-    def _append_certification(self, schema: str, table: str, row: dict, key: str) -> None:
+    _CONTRACT_DEFINITION_SCHEMA = (
+        "contract_id STRING, contract_version STRING, definition_hash STRING, "
+        "canonical_json STRING, data_product_id STRING, owner STRING, "
+        "hash_algorithm STRING, canonicalization_version INT, status STRING, "
+        "created_at STRING"
+    )
+    _MATERIALIZATION_RUN_SCHEMA = (
+        "event_id STRING, run_id STRING, dataset STRING, state STRING, "
+        "contract_id STRING, contract_version STRING, definition_hash STRING, "
+        "occurred_at STRING, target_fqn STRING, staging_fqn STRING, "
+        "quarantine_fqn STRING"
+    )
+    _CHECK_RESULT_SCHEMA = (
+        "event_id STRING, run_id STRING, check_type STRING, scope STRING, "
+        "severity STRING, status STRING, actual_value STRING, expected_value STRING, "
+        "message STRING"
+    )
+
+    def _append_certification(
+        self, schema: str, table: str, row: dict, key: str, schema_ddl: str
+    ) -> None:
         from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
         qualified = f"{quote_fqn(schema)}.{quote_ident(table)}"
         plain = f"{schema}.{table}"
@@ -269,10 +289,18 @@ class SparkBackend:
             escaped = escape_sql_string(row[key])
             if self._spark.sql(f"SELECT 1 FROM {qualified} WHERE {quote_ident(key)} = '{escaped}' LIMIT 1").collect():
                 return
-        self._spark.createDataFrame([row]).write.format("delta").mode("append").saveAsTable(plain)
+        # An explicit schema is mandatory: a STARTED RunEvent (and other rows) can
+        # have every optional field None, and schema inference from a single such
+        # row fails with CANNOT_DETERMINE_TYPE on Spark Connect.
+        self._spark.createDataFrame([row], schema=schema_ddl).write.format(
+            "delta"
+        ).mode("append").saveAsTable(plain)
 
     def append_certification_contract(self, schema: str, row: dict) -> None:
-        self._append_certification(schema, "contract_definitions", row, "definition_hash")
+        self._append_certification(
+            schema, "contract_definitions", row, "definition_hash",
+            self._CONTRACT_DEFINITION_SCHEMA,
+        )
 
     def get_certification_contract(
         self, schema: str, contract_id: str, version: str
@@ -311,10 +339,16 @@ class SparkBackend:
         return rows[0].asDict(recursive=True) if rows else None
 
     def append_certification_run(self, schema: str, row: dict) -> None:
-        self._append_certification(schema, "materialization_runs", row, "event_id")
+        self._append_certification(
+            schema, "materialization_runs", row, "event_id",
+            self._MATERIALIZATION_RUN_SCHEMA,
+        )
 
     def append_certification_check(self, schema: str, row: dict) -> None:
-        self._append_certification(schema, "check_results", row, "event_id")
+        self._append_certification(
+            schema, "check_results", row, "event_id",
+            self._CHECK_RESULT_SCHEMA,
+        )
 
     def get_certification_run(self, schema: str, run_id: str) -> dict | None:
         from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
