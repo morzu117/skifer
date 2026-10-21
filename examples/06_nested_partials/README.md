@@ -16,7 +16,7 @@ Mode: inline
 2001 | C-1 | Alice | 900
 2003 | C-1 | Alice | 75
 Intermediate temp view exists: False
-Mode: temp_view (set in run params, absent from YAML)
+Mode: temp_view
 Intermediate temp view exists: True
 Refused partial: [partials] Partial alias 'customers' collides with a 'tables' alias/name. Aliases must be unique across 'partials' and 'tables'.
 ```

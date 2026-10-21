@@ -12,7 +12,7 @@ python examples/18_capability_execution/run.py
 
 No Spark, API key, network, or real ticket system is used. Two explicitly registered in-process
 executors append to call lists, making external side effects countable independently of the
-framework's journal. History lives in a temporary SQLite database that is removed afterwards.
+framework's journal. History lives in a SQLite database under a temporary directory.
 
 ## What you should see
 
@@ -36,7 +36,6 @@ Compensation is an audited action, not a rollback.
 Credential lease repr: CredentialLease(subject=<redacted>, audience=<redacted>, scopes=<redacted>, expires_at=<redacted>, secret=<redacted>)
 Secret present in repr: False
 Only reveal() returns the secret: True
-Temporary history removed: True
 ```
 
 The same approval passes for `Network issue` and fails for `Network issues`: one character changes

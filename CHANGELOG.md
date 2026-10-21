@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Examples réécrits au minimum.** Les 23 `examples/*/run.py` sont des scripts plats (plus de
+  `main()`, de garde `__main__`, d'assertions défensives ni de narration imprimée) : 2 356 → ~1 400
+  lignes, sortie inchangée hormis quelques lignes de confirmation sans valeur (« Temporary … removed »),
+  retirées aussi des README. La règle de l'exemple 05 vit dans `examples/05_rules_join_aggregate/rules.py`,
+  que les exemples 11 et 21 chargent directement ; le YAML de l'exemple 23 est sorti dans
+  `examples/23_openlineage/pipeline.yaml`.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed
