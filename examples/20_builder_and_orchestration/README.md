@@ -38,7 +38,6 @@ Generated files: scripts/run_pipelines.py
 Runner script excerpt:
   from skifer import SkiferEngine, load_schema
   # Pipeline: pipeline
-Temporary directory removed: True
 ```
 
 ## What the export is, and what it is not
@@ -51,7 +50,7 @@ Every format also emits `scripts/run_pipelines.py`, so a pipeline is never trapp
 orchestrator the team turns out not to run. And `auto` is not a promise of Airflow: off Databricks
 it resolves to that runner script, which the example shows by asking for both.
 
-`LocalCatalogBackend` is a tiny duck-typed catalog implementation kept in this example rather than
+`LocalCatalog` is a tiny duck-typed catalog implementation kept in this example rather than
 imported from the test suite. `BuilderAgent` only needs its catalog methods, so using it here is the
 smallest honest path and proves that schema drafting itself does not require live Spark.
 

@@ -26,7 +26,6 @@ semantic sync --check (current): exit 0
 semantic sync --check (added total_amount): exit 2
 semantic sync --check (changed grain): exit 3
 Refused unmanaged draft: Refusing to overwrite curated model without --promote.
-Temporary workspace removed: True
 ```
 
 The first check is current. Adding a contract output and matching aggregate measure is safe
