@@ -353,3 +353,12 @@ def test_llm_classify_intent_system_prompt_lists_only_configured_intents():
     assert "lineage" not in system_prompt
     assert "builder" not in system_prompt
     assert "dictionary" not in system_prompt
+
+
+def test_llm_classify_intent_skipped_when_a_single_intent_is_configured():
+    """Avec un seul agent configuré, aucun appel LLM : il n'y a rien à départager."""
+    llm = MagicMock()
+    hub = AgenticHub(llm_provider=llm, genbi_agent=MagicMock())
+
+    assert hub._llm_classify_intent("une question quelconque") is None
+    llm.complete.assert_not_called()

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `AgenticHub._llm_classify_intent` n'appelle plus le LLM quand un seul intent est configuré (hub GenBI seul) :
+  la réponse ne pouvait pas changer le routage.
+
 ### Changed
 
 - **Examples réécrits au minimum.** Les 23 `examples/*/run.py` sont des scripts plats (plus de
