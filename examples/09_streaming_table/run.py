@@ -3,6 +3,8 @@
     python examples/09_streaming_table/run.py
 """
 
+import atexit
+import shutil
 from pathlib import Path
 from tempfile import mkdtemp
 
@@ -17,7 +19,10 @@ engine = SkiferEngine(force_env="LOCAL")
 engine.full_refresh("streaming_example", "orders_current")  # drops table and checkpoint together
 print("Startup reset: target table and automatic checkpoint cleared.")
 
-source_path = str(Path(mkdtemp()) / "raw_orders")
+workdir = Path(mkdtemp())
+atexit.register(shutil.rmtree, workdir, ignore_errors=True)
+
+source_path = str(workdir / "raw_orders")
 params = {**engine.default_params, "source_path": source_path}
 target = f"{engine.get_target_schema('streaming_example')}.orders_current"
 checkpoint = engine.resolve_checkpoint_location(

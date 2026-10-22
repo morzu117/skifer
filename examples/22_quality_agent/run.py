@@ -3,6 +3,8 @@
     python examples/22_quality_agent/run.py
 """
 
+import atexit
+import shutil
 from pathlib import Path
 import tempfile
 
@@ -19,7 +21,10 @@ engine.spark.createDataFrame([(1, 100.0), (1, None), (2, 50.0)], "order_id INT, 
     "delta"
 ).mode("overwrite").option("overwriteSchema", "true").saveAsTable(table)
 
-store = SqliteHistoryStore(str(Path(tempfile.mkdtemp()) / "quality_history.db"))
+workdir = Path(tempfile.mkdtemp())
+atexit.register(shutil.rmtree, workdir, ignore_errors=True)
+
+store = SqliteHistoryStore(str(workdir / "quality_history.db"))
 agent = QualityAgent(backend=engine.backend, history_store=store)
 
 failed = agent.check(

@@ -3,6 +3,8 @@
     python examples/10_monitor_and_quarantine/run.py
 """
 
+import atexit
+import shutil
 from pathlib import Path
 import tempfile
 
@@ -23,7 +25,10 @@ def invalidate_rejected_order(df):
     return {"order_id": F.when(F.col("status") == "rejected", F.lit(None).cast("integer")).otherwise(F.col("order_id"))}
 
 
-store = SqliteCertificationStore(str(Path(tempfile.mkdtemp()) / "certification.db"))
+workdir = Path(tempfile.mkdtemp())
+atexit.register(shutil.rmtree, workdir, ignore_errors=True)
+
+store = SqliteCertificationStore(str(workdir / "certification.db"))
 engine = SkiferEngine(force_env="LOCAL")
 engine.monitor = DataMonitor(engine.backend)
 engine.certification_store = store

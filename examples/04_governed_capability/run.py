@@ -3,6 +3,8 @@
     python examples/04_governed_capability/run.py
 """
 
+import atexit
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
@@ -30,9 +32,12 @@ definition = registry.get("support.create_ticket")
 # Effective mode = the stricter of the document and the environment (default: shadow).
 mode = resolve_autonomy_mode(definition, configured=None)
 
+workdir = Path(tempfile.mkdtemp())
+atexit.register(shutil.rmtree, workdir, ignore_errors=True)
+
 governed = GovernedExecutor(
     registry,
-    SqliteCapabilityHistoryStore(str(Path(tempfile.mkdtemp()) / "history.db")),
+    SqliteCapabilityHistoryStore(str(workdir / "history.db")),
     clock=lambda: datetime.now(timezone.utc),
     scopes=["tickets:create"],
 )

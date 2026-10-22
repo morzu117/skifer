@@ -3,6 +3,8 @@
     python examples/03_semantic_and_question/run.py
 """
 
+import atexit
+import shutil
 from pathlib import Path
 import tempfile
 
@@ -15,7 +17,10 @@ from skifer.semantic.semantic import SemanticEngine
 EXAMPLE_DIR = Path(__file__).parent
 GOLD_SCHEMA = EXAMPLE_DIR.parent / "02_quality_and_contract" / "gold_orders.yaml"
 
-store = SqliteCertificationStore(str(Path(tempfile.mkdtemp()) / "certification.db"))
+workdir = Path(tempfile.mkdtemp())
+atexit.register(shutil.rmtree, workdir, ignore_errors=True)
+
+store = SqliteCertificationStore(str(workdir / "certification.db"))
 engine = SkiferEngine(force_env="LOCAL")
 engine.schema_suffix = ""  # the shared governed table, not a personal sandbox copy
 engine.monitor = DataMonitor(engine.backend)
