@@ -685,7 +685,6 @@ def _hub_53(tmp_path, tracer):
     engine, backend = _semantic_engine_53(tmp_path, tracer)
     llm = _TraceLLM(
         [
-            "genbi",
             '{"selected":"sales.orders","candidates":[],"reason":"ok"}',
             (
                 '{"model_name":"sales.orders","metrics":["revenue"],'
@@ -707,7 +706,6 @@ def test_hub_ask_nominal_span_tree_has_stable_names_order_and_parentage(tmp_path
     assert len(backend.sql) == 1
     assert _span_names(tracer) == [
         "skifer.agent.route",
-        "skifer.llm.complete",
         "skifer.semantic.query",
         "skifer.semantic.model_select",
         "skifer.llm.complete",
@@ -717,11 +715,10 @@ def test_hub_ask_nominal_span_tree_has_stable_names_order_and_parentage(tmp_path
         "skifer.semantic.policy",
         "skifer.sql.execute",
     ]
-    route, classify, semantic, select, select_llm, translate_llm, *semantic_tail = (
+    route, semantic, select, select_llm, translate_llm, *semantic_tail = (
         tracer.spans
     )
     assert route.parent_span_id is None
-    assert classify.parent_span_id == route.span_id
     assert semantic.parent_span_id == route.span_id
     assert select.parent_span_id == semantic.span_id
     assert select_llm.parent_span_id == select.span_id
