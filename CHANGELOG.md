@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `publish_metric_views` : une erreur d'exécution du DDL (droit manquant, DDL refusé) sur un modèle est
+  rapportée dans `refused` (classe d'erreur seulement) au lieu d'interrompre la publication des suivants
+  et de perdre le rapport.
+- DDL de `contract_definitions` : `canonicalization_version` est `BIGINT`, comme les tables créées par
+  l'inférence Spark avant le schéma explicite ; un test compare désormais les trois DDL de certification
+  aux champs des dataclasses.
 - `AgenticHub._llm_classify_intent` n'appelle plus le LLM quand un seul intent est configuré (hub GenBI seul) :
   la réponse ne pouvait pas changer le routage.
 
