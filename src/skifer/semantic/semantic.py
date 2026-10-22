@@ -784,7 +784,13 @@ class SemanticEngine:
                     continue  # nom de vue non résolvable : rien à supprimer de sûr
                 ddl_statements.append(drop_ddl)
                 if not dry_run:
-                    self.core._get_backend().execute_sql(drop_ddl)
+                    try:
+                        self.core._get_backend().execute_sql(drop_ddl)
+                    except Exception as exc:
+                        refused.append(
+                            {"model": key, "reason": f"drop failed: {type(exc).__name__}"}
+                        )
+                        continue
                 dropped.append(key)
                 continue
 
@@ -796,7 +802,13 @@ class SemanticEngine:
 
             ddl_statements.append(ddl)
             if not dry_run:
-                self.core._get_backend().execute_sql(ddl)
+                try:
+                    self.core._get_backend().execute_sql(ddl)
+                except Exception as exc:
+                    refused.append(
+                        {"model": key, "reason": f"publish failed: {type(exc).__name__}"}
+                    )
+                    continue
             published.append(key)
 
         return MetricViewReport(
