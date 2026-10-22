@@ -3,6 +3,8 @@
     python examples/02_quality_and_contract/run.py
 """
 
+import atexit
+import shutil
 from pathlib import Path
 import tempfile
 
@@ -12,7 +14,10 @@ from skifer.observability.monitor import DataMonitor
 
 EXAMPLE_DIR = Path(__file__).parent
 
-store = SqliteCertificationStore(str(Path(tempfile.mkdtemp()) / "certification.db"))
+workdir = Path(tempfile.mkdtemp())
+atexit.register(shutil.rmtree, workdir, ignore_errors=True)
+
+store = SqliteCertificationStore(str(workdir / "certification.db"))
 
 # A pipeline declaring `data_product` needs both a monitor and a certification store.
 engine = SkiferEngine(force_env="LOCAL")

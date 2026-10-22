@@ -191,3 +191,23 @@ def test_a_translation_refusal_does_not_block_the_other_models(tmp_path):
     [refusal] = report.refused
     assert refusal["model"] == "sales.orders"
     assert "relationships" in refusal["reason"]
+
+
+def test_a_backend_error_on_one_model_does_not_lose_the_report(models_dir):
+    core = FakeCore({"semantic_certification_policy": "off"})
+    original = core.backend.execute_sql
+
+    def execute_sql(sql: str):
+        if "kpi_orders" in sql:
+            raise PermissionError("secret detail that must not leak")
+        return original(sql)
+
+    core.backend.execute_sql = execute_sql
+    engine = SemanticEngine(core, models_dir=models_dir, certification_store=BombStore())
+
+    report = engine.publish_metric_views()
+
+    assert report.published == ("sales.customers",)
+    [refusal] = report.refused
+    assert refusal["model"] == "sales.orders"
+    assert refusal["reason"] == "publish failed: PermissionError"

@@ -299,6 +299,8 @@ class AgenticHub:
         ou None si l'appel échoue ou que la réponse est hors de cette liste.
         """
         configured = self._configured_intents()
+        if len(configured) <= 1:
+            return None  # un seul intent possible : l'appel LLM ne peut rien décider
         choices = ", ".join(sorted(configured))
         descriptions = "\n".join(
             f"- {name}: {_INTENT_DESCRIPTIONS[name]}" for name in sorted(configured)

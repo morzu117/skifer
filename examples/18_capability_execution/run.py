@@ -3,6 +3,8 @@
     python examples/18_capability_execution/run.py
 """
 
+import atexit
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
@@ -98,7 +100,10 @@ try:
 except ApprovalError as exc:
     print(f"Expired-approval refusal: {exc}")
 
-store = SqliteCapabilityHistoryStore(str(Path(tempfile.mkdtemp()) / "history.db"))
+workdir = Path(tempfile.mkdtemp())
+atexit.register(shutil.rmtree, workdir, ignore_errors=True)
+
+store = SqliteCapabilityHistoryStore(str(workdir / "history.db"))
 governed = GovernedExecutor(registry, store, clock=lambda: NOW, scopes=("tickets:create", "tickets:close"))
 
 first = governed.execute(definition, subject=SUBJECT, arguments=arguments, mode=AutonomyMode.SUPERVISED, approval=approval)

@@ -263,7 +263,7 @@ class SparkBackend:
     _CONTRACT_DEFINITION_SCHEMA = (
         "contract_id STRING, contract_version STRING, definition_hash STRING, "
         "canonical_json STRING, data_product_id STRING, owner STRING, "
-        "hash_algorithm STRING, canonicalization_version INT, status STRING, "
+        "hash_algorithm STRING, canonicalization_version BIGINT, status STRING, "
         "created_at STRING"
     )
     _MATERIALIZATION_RUN_SCHEMA = (

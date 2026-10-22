@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -168,3 +169,26 @@ def test_real_backend_check_result_with_none_values_does_not_crash_inference(
     store.append_check_results([result])
 
     assert store.get_check_results("run-none") == [result]
+
+
+def _ddl_columns(ddl: str) -> list[str]:
+    return [column.split()[0] for column in ddl.split(",")]
+
+
+@pytest.mark.parametrize(
+    ("ddl_name", "dataclass_type"),
+    [
+        ("_CONTRACT_DEFINITION_SCHEMA", ContractDefinition),
+        ("_MATERIALIZATION_RUN_SCHEMA", RunEvent),
+        ("_CHECK_RESULT_SCHEMA", StoredCheckResult),
+    ],
+)
+def test_certification_ddl_matches_its_dataclass(ddl_name, dataclass_type):
+    """Un champ ajouté à la dataclass sans l'être au DDL serait perdu sans erreur à l'écriture."""
+    ddl = getattr(SparkBackend, ddl_name)
+
+    assert _ddl_columns(ddl) == [f.name for f in dataclasses.fields(dataclass_type)]
+
+
+def test_certification_contract_ddl_types_the_canonicalization_version_as_bigint():
+    assert "canonicalization_version BIGINT" in SparkBackend._CONTRACT_DEFINITION_SCHEMA
