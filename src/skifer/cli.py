@@ -127,6 +127,21 @@ def main() -> None:
         metavar="DIALECT",
         help="sqlglot SQL dialect to parse with (default: databricks).",
     )
+    analyze_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Map each statement to a Skifer schema draft, round-trip-verify it "
+            "against the source, and print a report — writes nothing to disk."
+        ),
+    )
+    analyze_parser.add_argument(
+        "--format",
+        choices=("md", "json"),
+        default="md",
+        metavar="FORMAT",
+        help="Report format for --dry-run: md (default) or json.",
+    )
 
     index_parser = subparsers.add_parser(
         "index",
@@ -508,13 +523,16 @@ def _run_analyze(args: argparse.Namespace) -> None:
 
 
 def run_analyze_command(args: argparse.Namespace) -> int:
-    """Parse one or more SQL files and print a raw AST inventory (Plan 43 — 43.0).
+    """Parse one or more SQL files for ``--inventory`` (43.0) or ``--dry-run`` (43.2).
 
-    Nothing is mapped to the Skifer grammar here — this is the coverage
-    baseline the mapper (43.2) will be measured against.
+    ``--inventory`` prints a raw AST node-type count — nothing is mapped to the
+    Skifer grammar. ``--dry-run`` maps each statement to a schema draft,
+    round-trip-verifies it, and prints a report; it writes nothing to disk.
     """
-    if not getattr(args, "inventory", False):
-        print("[analyze] Nothing to do: pass --inventory.")
+    inventory = getattr(args, "inventory", False)
+    dry_run = getattr(args, "dry_run", False)
+    if not inventory and not dry_run:
+        print("[analyze] Nothing to do: pass --inventory or --dry-run.")
         return ANALYZE_EXIT_OK
 
     import glob as glob_mod
@@ -552,6 +570,13 @@ def run_analyze_command(args: argparse.Namespace) -> int:
 
     if had_error:
         return ANALYZE_EXIT_ERROR
+
+    if dry_run:
+        from skifer.analyzer.report import build_report
+
+        report = build_report(all_statements)
+        print(report.to_json() if args.format == "json" else report.to_markdown())
+        return report.exit_code
 
     from skifer.analyzer.inventory import inventory_corpus
 

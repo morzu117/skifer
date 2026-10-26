@@ -1017,6 +1017,74 @@ def test_analyze_bad_statement_names_file_and_line_and_exits_error(tmp_path, cap
     assert "2" in err
 
 
+def test_analyze_without_inventory_or_dry_run_is_a_noop(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT 1;\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=False, dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "Nothing to do" in capsys.readouterr().out
+
+
+def test_analyze_dry_run_markdown_clean_statement_exits_zero(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM bronze.orders WHERE status = 'ACTIVE';\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="md", dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "# Project analyzer report" in output
+    assert "verified" in output
+
+
+def test_analyze_dry_run_needs_curation_exits_two(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM a UNION SELECT id FROM b;\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="md", dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 2
+    assert "needs_curation" in output
+    assert "union_requires_multi_schema" in output
+
+
+def test_analyze_dry_run_json_format_is_valid_json(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM bronze.orders WHERE status = 'ACTIVE';\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="json", dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    out = capsys.readouterr().out
+    json_text = out[out.index("{"):]
+    payload = json.loads(json_text)
+    assert exit_code == ANALYZE_EXIT_OK
+    assert payload["statement_count"] == 1
+    assert payload["clean_count"] == 1
+
+
+def test_analyze_help_mentions_dry_run_and_format():
+    result = _run_cli("analyze", "--help")
+
+    assert result.returncode == 0
+    assert "--dry-run" in result.stdout
+    assert "--format" in result.stdout
+
+
 def test_analyze_unreadable_file_exits_error(tmp_path, capsys):
     args = argparse.Namespace(
         paths=[str(tmp_path / "does_not_exist.sql")], inventory=True, dialect="databricks"

@@ -47,6 +47,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   load time: requires at least one table, operators validated against the same catalog as
   table-level filters (aliases resolved at IR-parsing time, same as `filter:`).
 
+- Deterministic SQL -> Skifer schema mapper, round-trip oracle and report (Plan 43 — 43.2), in a
+  new `skifer.analyzer.mapper`/`roundtrip`/`report` modules. `map_statement()` turns one parsed SQL
+  statement into a Skifer schema draft with no LLM involved: FROM/JOIN (compact and composite equi-
+  join keys, join-type mapping, non-equi joins rejected), WHERE (push-down to table-level `filter:`/
+  `filter_groups:` vs. the post-join `where:`/`where_groups:` per the outer-join-nullability rule,
+  one bounded OR-of-ANDs group, `IS (NOT) NULL`/`IN`/`BETWEEN`/`LIKE` and their negations, a non-
+  blocking residue flagging `NOT IN`'s NULL tri-valued-logic pitfall), `SELECT` (bare columns,
+  literals, scalar op chains, N-branch `CASE WHEN`, an `expr:` fallback for anything else — non-
+  blocking per D7), `SELECT DISTINCT` (-> `quality_checks.drop_duplicates_on` on the single source
+  table), `GROUP BY`/`HAVING` (-> the declarative `aggregate:` block, `COUNT(*)`/`COUNT(DISTINCT)`
+  special-cased), and the `ROW_NUMBER() OVER (...) ... WHERE rn = 1` dedup pattern (->
+  `preprocess.qualify`). CTEs, `UNION`/`UNION ALL`, subqueries anywhere outside that one recognized
+  dedup shape, and other window functions are out of this module's scope and mark the statement
+  `needs_curation` (not emitted) with a named, non-crashing reason — the DAG/splitting work of 43.3
+  is what resolves them. `roundtrip.verify()` is the oracle: it compiles the mapped draft back to
+  SQL through the same Spark-free `parse_schema -> parse_to_ir -> compile_select` path the
+  materialized-view compiler uses and compares it structurally against the source (output column
+  names/expressions, base tables, join signatures, and the WHERE predicate as a DNF of qualifier-
+  stripped conjuncts, tolerant of push-down placement and of cosmetic paren/operand-order
+  differences) — `verified`, `divergent`, `unverified` (a construct `compile_select` itself refuses,
+  e.g. `preprocess.qualify` or `drop_duplicates_on`, reported with the compiler's own reason, never a
+  crash), or `skipped` (`needs_curation`, not emitted). `report.build_report()` ties both together
+  into an `AnalysisReport` (exit code `0` only when every statement mapped, verified and carries no
+  residue; `2` otherwise), serialized by an explicit field-by-field allowlist — never `asdict` — the
+  same discipline `semantic/evidence.py` uses. New CLI flags on `skifer analyze`: `--dry-run` prints
+  the report (`--format md`, the default, or `--format json`) and exits with its code; writes nothing
+  to disk. Against the 43.0 synthetic corpus: 5/8 statements map and verify cleanly, 3/8
+  (CTE-reuse-across-branches, scalar-subquery reuse, a `UNION ALL`) are `needs_curation`, resolved by
+  43.3's DAG/splitting work.
+  Four real bugs found and fixed while building this against hand-written statements beyond the
+  corpus (none of which the corpus itself exercised): a CTE's `WITH` clause went undetected because
+  sqlglot suffixes an arg key colliding with a Python keyword (`with_`, not `with`), so a `WITH ...
+  SELECT` statement was silently mapped as if the CTE's name were a real physical table, dropping the
+  CTE's own filter and source table entirely; `NOT LIKE` parses as `Like(negate=True)` rather than
+  `Not(Like(...))` (unlike `NOT IN`/`NOT BETWEEN`/`IS NOT NULL`, which do wrap in `Not`), so the
+  mapper silently dropped the negation and mapped it as a plain `LIKE`; the `ROW_NUMBER()=1` dedup
+  pattern re-ran the generic WHERE mapper on its own already-consumed predicate, adding a spurious
+  `filter: [rn:equals:1]` referencing a column that no longer exists post-dedup; and a parenthesized
+  AND branch inside an OR (`(a = 1 AND b = 2) OR c = 3`) wasn't recognized as mappable because the
+  flattening walk didn't see through the wrapping `Paren` node.
+  Also documents (and works around, oracle-side only) a `sqlglot`-`databricks`-dialect-specific
+  limitation: `compile_select()` emits ANSI-standard doubled-quote (`''`) apostrophe escaping, which
+  this sqlglot version's `databricks` dialect misparses as implicit string concatenation rather than
+  one escaped literal (real Spark/Databricks supports `''` correctly) — the oracle rewrites it to a
+  backslash escape before its own internal re-parse so this sqlglot-only quirk doesn't read as a
+  false divergence; the compiled SQL returned to the caller is untouched and remains valid.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed

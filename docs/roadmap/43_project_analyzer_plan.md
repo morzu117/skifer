@@ -222,6 +222,33 @@ Spark 4.1 — pas de garde-fou de type nécessaire côté `build_filter`.
   `needs_curation` est `verified`), `tests/test_analyzer_report.py` (allowlist : un champ ajouté
   au dataclass n'apparaît pas tant qu'il n'est pas admis).
 
+**Statut : implémenté.** Sur le corpus 43.0 : 5/8 statements mappent et vérifient (`verified`) —
+01, 02, 03, 04, 06 ; 3/8 restent `needs_curation` — 05 (CTE réutilisée par les deux branches d'un
+`UNION ALL`), 07 (sous-requête scalaire répétée), 08 (`UNION ALL`) — résolus par le DAG/splitting
+de 43.3. Écarts par rapport à l'esquisse ci-dessus : `GROUP BY ALL`/positionnel est un résidu
+bloquant (pas de résolution via `sqlglot.optimizer.qualify`) ; le verdict de l'oracle est
+`verified | divergent | unverified | skipped` (`skipped` pour `needs_curation`, pas
+`not_applicable`) ; la comparaison WHERE est une DNF (ensemble de branches OR, chacune un ensemble
+de conjoints ANDés) insensible aux parenthèses et à l'ordre des opérandes, pas une simple
+conjonction à plat.
+
+Quatre bugs réels trouvés et corrigés en testant au-delà du corpus (aucun n'était exercé par les
+8 statements) : (1) la détection de CTE lisait `body.args.get("with")`, toujours `None` — la clé
+réelle de sqlglot est `"with_"` (suffixe ajouté par collision avec le mot-clé Python `with`) — un
+`WITH … SELECT` était donc mappé en silence comme si le nom de la CTE était une vraie table
+physique, perdant son filtre et sa table source ; (2) `NOT LIKE` se parse en `Like(negate=True)`,
+pas en `Not(Like(...))` comme `NOT IN`/`NOT BETWEEN`/`IS NOT NULL` — la négation était
+silencieusement perdue ; (3) le pattern de dédup `ROW_NUMBER()=1` laissait le mapper WHERE
+générique retraiter le même prédicat déjà consommé, ajoutant un `filter: [rn:equals:1]` parasite
+sur une colonne qui n'existe plus post-dédup ; (4) un `OR` dont une branche `AND` est parenthésée
+(`(a = 1 AND b = 2) OR c = 3`) n'était pas reconnu car l'aplatissement ne traversait pas le nœud
+`Paren`. Documente aussi (et contourne, côté oracle uniquement) une limitation propre à cette
+version de `sqlglot` : son dialecte `databricks` lit l'échappement ANSI `''` de `compile_select()`
+comme une concaténation implicite de littéraux plutôt qu'un seul littéral échappé (Spark/Databricks
+accepte `''` correctement) — l'oracle réécrit `''` en `\'` avant sa propre re-parse interne pour que
+cette particularité de `sqlglot` ne se lise pas comme une fausse divergence ; le SQL compilé renvoyé
+à l'appelant n'est pas touché et reste valide.
+
 ### 43.3 — DAG de script : découpage, partials, tables intermédiaires, couches
 
 **But** : passer d'un statement à un projet.
