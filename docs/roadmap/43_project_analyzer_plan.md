@@ -272,6 +272,31 @@ cette particularité de `sqlglot` ne se lise pas comme une fausse divergence ; l
   (la CTE réutilisée devient un partial, la sous-requête inter-scripts une table intermédiaire,
   les couches attendues sont obtenues et justifiées).
 
+**Statut : implémenté.** `dag.py`/`splitter.py` suivent la classification décrite ci-dessus ;
+`report.build_split_report()` l'habille d'un rapport (section Markdown `## Découpage` ou clé JSON
+`split`, derrière `skifer analyze --dry-run --split`). Sur le corpus 43.0 : les statements 05 et 07
+(`needs_curation` en 43.2) résolvent maintenant à `verified` une fois leur CTE/sous-requête
+partagée découpée ; 08 résout partiellement — `monthly` devient un partial partagé honnêtement
+bloqué (dedup + JOIN, résidu nommé), `latest_snapshot` s'inline, et la branche `LAG()` garde son
+propre `window_function_unsupported` au lieu d'une seule raison de blocage opaque pour tout le
+statement. Deux bugs réels et préexistants du mapper 43.2 ont été trouvés et corrigés en
+exerçant des formes que le découpage rend atteignables pour la première fois (aucun test 43.2
+existant ne les couvrait) : un dedup `ROW_NUMBER()=1` combiné à un `JOIN` supplémentaire
+supprimait silencieusement ce join (`return tables, [], set(), True` court-circuitait avant la
+boucle de jointures) — remplacé par un résidu bloquant explicite
+`qualify_dedup_with_join_unsupported` ; et `CROSS JOIN` n'était jamais reconnu comme tel, mal
+classé en `non_equi_join_unsupported` (un `CROSS JOIN` ne porte ni `ON` ni `USING`).
+
+Écarts assumés par rapport à l'esquisse ci-dessus, documentés plutôt que masqués (même discipline
+que le Plan 38) : `metadata.layer_reason` n'est pas encore porté par `SplitUnit` lui-même —
+`infer_layer()` existe et est testé de façon autonome, mais n'est pas encore consommé par
+`split_corpus`/le rapport ; `--split` ne fait que rapporter, rien n'est encore écrit dans
+`schemas/.drafts/` (c'est le périmètre documenté de 43.4) ; les lecteurs d'une table intermédiaire
+ou d'un partial sont détectés en relisant le `tables:` mappé de chaque unité `main`, pas en
+conservant l'information au fil du découpage lui-même — suffisant pour le rapport, mais une
+réutilisation future par 43.4 (émission) devra probablement la calculer autrement si elle a besoin
+d'un graphe lecteur→lu plus riche qu'un simple nom.
+
 ### 43.4 — Fingerprints, règles partagées, divergences, émission
 
 **But** : la demande d'origine, les traitements récurrents en règles partagées, et l'écriture

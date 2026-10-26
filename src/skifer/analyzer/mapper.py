@@ -414,6 +414,16 @@ def _map_from_and_joins(body, residues: list[Residue]):
     dedup = _detect_qualify_dedup(base, body.args.get("where"))
     tables: dict[str, dict] = {}
     if dedup is not None:
+        if body.args.get("joins"):
+            residues.append(Residue(
+                code="qualify_dedup_with_join_unsupported",
+                message=(
+                    "A ROW_NUMBER()=1 dedup FROM combined with another JOIN is not mapped — "
+                    "the join would otherwise be silently dropped."
+                ),
+                blocking=True,
+            ))
+            return None, None, None, False
         alias = _default_alias(dedup.base_table, tables)
         table_dict: dict = {"name": dedup.base_table, "alias": alias}
         qualify: dict = {}
@@ -461,6 +471,17 @@ def _map_from_and_joins(body, residues: list[Residue]):
         elif join_type == "full":
             nullable_aliases.add(base_alias)
             nullable_aliases.add(right_alias)
+
+        if join_type == "cross":
+            # table_from/table_to are structurally required by the grammar but
+            # functionally ignored by compile_select for a cross join — no key
+            # to extract from the AST since a CROSS JOIN carries no condition.
+            joins.append({
+                "table_from": [base_alias, "_cross"],
+                "table_to": [right_alias, "_cross"],
+                "type": "cross",
+            })
+            continue
 
         using = join_node.args.get("using")
         if using:

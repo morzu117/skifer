@@ -1083,6 +1083,55 @@ def test_analyze_help_mentions_dry_run_and_format():
     assert result.returncode == 0
     assert "--dry-run" in result.stdout
     assert "--format" in result.stdout
+    assert "--split" in result.stdout
+
+
+def test_analyze_dry_run_split_markdown_appends_decoupage_section(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE a > 1 UNION ALL SELECT a FROM c WHERE a > 1;\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="md", dialect="databricks", split=True,
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    # The unsplit statement itself is needs_curation (a bare CTE) — the
+    # split report is what shows its CTE resolving into a shared partial.
+    assert exit_code == 2
+    assert "# Project analyzer report" in output
+    assert "## Découpage" in output
+    assert "```mermaid" in output
+
+
+def test_analyze_dry_run_split_json_adds_split_key(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM bronze.orders WHERE status = 'ACTIVE';\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="json", dialect="databricks", split=True,
+    )
+
+    exit_code = run_analyze_command(args)
+
+    out = capsys.readouterr().out
+    payload = json.loads(out[out.index("{"):])
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "split" in payload
+    assert "dag_mermaid" in payload["split"]
+
+
+def test_analyze_dry_run_without_split_flag_omits_decoupage_section(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM bronze.orders WHERE status = 'ACTIVE';\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="md", dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "Découpage" not in output
 
 
 def test_analyze_unreadable_file_exits_error(tmp_path, capsys):

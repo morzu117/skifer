@@ -142,6 +142,16 @@ def main() -> None:
         metavar="FORMAT",
         help="Report format for --dry-run: md (default) or json.",
     )
+    analyze_parser.add_argument(
+        "--split",
+        action="store_true",
+        help=(
+            "With --dry-run, also classify script-level CTEs/subqueries into "
+            "partials, proposed intermediate tables or inlined fragments, and "
+            "append a Mermaid dependency graph (Plan 43 — 43.3). Writes nothing "
+            "to disk; a cycle among materialized tables is reported, not raised."
+        ),
+    )
 
     index_parser = subparsers.add_parser(
         "index",
@@ -575,7 +585,21 @@ def run_analyze_command(args: argparse.Namespace) -> int:
         from skifer.analyzer.report import build_report
 
         report = build_report(all_statements)
-        print(report.to_json() if args.format == "json" else report.to_markdown())
+        split_report = None
+        if getattr(args, "split", False):
+            from skifer.analyzer.report import build_split_report
+
+            split_report = build_split_report(all_statements)
+
+        if args.format == "json":
+            payload = report.to_dict()
+            if split_report is not None:
+                payload["split"] = split_report.to_dict()
+            print(json.dumps(payload, indent=2, sort_keys=False))
+        else:
+            print(report.to_markdown())
+            if split_report is not None:
+                print(split_report.to_markdown())
         return report.exit_code
 
     from skifer.analyzer.inventory import inventory_corpus

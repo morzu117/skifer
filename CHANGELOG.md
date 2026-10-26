@@ -94,6 +94,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backslash escape before its own internal re-parse so this sqlglot-only quirk doesn't read as a
   false divergence; the compiled SQL returned to the caller is untouched and remains valid.
 
+- Corpus-wide dependency graph and CTE/subquery splitter (Plan 43 — 43.3), in new
+  `skifer.analyzer.dag`/`splitter` modules. `dag.build_dag()` builds a materialized-table (CREATE/
+  INSERT target) graph, resolving CTE/temp-view names away to the real base tables they ultimately
+  read; a cycle raises `DagCycleError` naming the exact cycle. `dag.infer_layer()` assigns
+  bronze/silver/gold from a target's own schema-name segment (`bronze`/`silver`/`gold`/`stg`/
+  `staging`/`dwh`/`mart`, exact segment match, never a substring) when present, else zero in-degree
+  -> bronze, an aggregate or an exclusively-external consumer -> gold, else silver — always with a
+  `(layer, reason)` pair. `splitter.split_corpus()` classifies every script-level CTE/subquery,
+  deterministically and without an LLM: read by several branches of the *same* script with the same
+  WHERE predicate -> one shared `partials:` child; several branches with *different* predicates ->
+  one partial per branch, each keeping only its own predicate; the same definition (qualifier-
+  stripped canonical SQL) recurring across *different* scripts -> one proposed Silver intermediate
+  table, every consuming script rewritten to read it (deduplicated once per corpus, not once per
+  consuming script); read exactly once -> inlined as a literal derived-table subquery in its one
+  consumer. A recurring scalar subquery (`(SELECT FUNC(col) FROM table)`, one aggregate over one un-
+  joined/un-grouped/un-filtered source) shared across statements becomes its own grand-total
+  intermediate table (`add_columns: [[literal:1, _group]]` + `aggregate:` — Skifer's single-row-
+  without-a-real-key idiom) with consumers rewritten to a `CROSS JOIN`. `report.build_split_report()`
+  ties both together: a `## Découpage` Markdown section (or the JSON equivalent) with a `graph LR`
+  Mermaid rendering of the materialized-table DAG and, per partial/intermediate table, its readers
+  (detected from the final mapped `tables:` of every `main` unit, not a name-match heuristic) and
+  whether it independently maps and round-trip verifies — a corpus cycle is reported, never raised,
+  past this function. New CLI flag `skifer analyze --dry-run --split` appends this section (`--format
+  json` adds a `"split"` key); without it, output is unchanged. Against the 43.0 corpus: statements 05
+  and 07 (previously `needs_curation`) now fully resolve to `verified` once their shared CTE/subquery
+  is split out; 08 partially resolves — `monthly` and `latest_snapshot` correctly classify as a shared
+  partial and an inlined CTE respectively, and the one remaining `LAG()` branch still surfaces its own
+  precise `window_function_unsupported` residue instead of one opaque blocking reason for the whole
+  statement.
+  Two real, pre-existing 43.2 mapper bugs found and fixed while exercising statements the splitter
+  newly makes reachable (neither was caught by 43.2's own tests, since neither shape existed in the
+  corpus before splitting produced it): a `ROW_NUMBER()=1` dedup `FROM` combined with another `JOIN`
+  in the same body silently discarded that join (`return tables, [], set(), True` short-circuited
+  before the join loop ran) instead of surfacing a residue — now an explicit, blocking
+  `qualify_dedup_with_join_unsupported`; and `CROSS JOIN` was never recognized as its own join kind,
+  misclassifying the synthesized intermediate-table `CROSS JOIN` as `non_equi_join_unsupported` (a
+  `CROSS JOIN` carries no `ON`/`USING` to satisfy the equi-join check it fell through to).
+  Deliberately out of scope for this slice, to be picked up by 43.4 (fingerprints/shared rules/
+  emission): `metadata.layer_reason` is not yet threaded onto `SplitUnit` itself (`infer_layer()`
+  works and is tested standalone); nothing is written to `schemas/.drafts/` yet — `--split` only
+  reports.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed
