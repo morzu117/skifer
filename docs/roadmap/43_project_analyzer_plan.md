@@ -156,11 +156,18 @@ sans analyzer.
 - `core/json_schema.py` : exposition des deux clés. `lineage/tracker.py` : aucun changement
   (un filtre ne crée pas d'arête), test qui l'épingle. `semantic/output_projection.py` : aucun
   effet sur la projection, test qui l'épingle.
-- Docs : `docs/yaml_spec.md`, `docs/core.md`, bloc YAML de `CLAUDE.md`/`AGENTS.md`.
+- Docs : `docs/core.md`, bloc YAML de `CLAUDE.md`/`AGENTS.md`. (`docs/yaml_spec.md` documente le
+  modèle sémantique, pas le schéma de pipeline — hors périmètre de ce point, corrigé après coup.)
 - Tests : `tests/test_schema_loader.py`, `tests/test_ir.py`, `tests/test_interpreter.py`,
-  `tests/test_sql_compiler.py`, et **un test Spark** (fixture `spark`) qui montre que
-  `where: ["b_status:equals:A"]` après un left join ne donne **pas** le même résultat que le
-  filtre de table — c'est la raison d'être du bloc, elle doit être exécutée, pas supposée.
+  `tests/test_sql_compiler.py`, `tests/test_json_schema.py`, et **un test Spark** (fixture
+  `spark`) qui montre que `where: ["b_status:equals:A"]` après un left join ne donne **pas** le
+  même résultat que le filtre de table — c'est la raison d'être du bloc, elle doit être exécutée,
+  pas supposée. Pinning tests : `tests/test_lineage_tracker.py` (le graphe est identique avec et
+  sans `where`/`where_groups`), `tests/test_semantic_projection.py` (même `definition_hash`).
+
+**Statut : implémenté** (commit `feat(plan43-43.1)`). Le test Spark a confirmé que la comparaison
+`order_id:equals:"3"` (colonne entière vs valeur filtre string) passe sans erreur de cast ANSI sous
+Spark 4.1 — pas de garde-fou de type nécessaire côté `build_filter`.
 
 ### 43.2 — Mapper statement → schéma, résidus, oracle de round-trip, couverture
 
