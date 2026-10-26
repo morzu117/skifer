@@ -548,7 +548,7 @@ import the engine. CLI surfaces: `skifer api serve|openapi`, incident management
 | [Tracker lineage: aggregates, join keys, intermediates (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | `feat/plan38-tracker-lineage` | Plan finalised, not started |
 | [Skifer behind a Genie supervisor (Plan 41)](docs/roadmap/41_genie_supervisor_plan.md) | `feat/plan41-genie-supervisor` | Implemented (41.1–41.8); 41.9 is manual validation on a workspace |
 | [Semantic layer as metric views for Genie (Plan 42)](docs/roadmap/42_metric_views_plan.md) | `feat/plan42-metric-views` | Implemented (42.0–42.5); 42.6 (demo_sts switching over) is out of this repo, and `publish_metric_views` itself is not yet verified live on a workspace |
-| [Project analyzer: from existing SQL to Skifer pipelines (Plan 43)](docs/roadmap/43_project_analyzer_plan.md) | `feat/plan43-project-analyzer` | **Plan written, awaiting validation (D4–D7).** Deterministic SQL → YAML via `sqlglot` (`[analyzer]` extra), round-trip oracle through `compile_select`, post-join `where:` block, recurring-expression detection into shared rules, split into partials / intermediate tables, parity run; optional LLM constrained to names/descriptions. |
+| [Project analyzer: from existing SQL to Skifer pipelines (Plan 43)](docs/roadmap/43_project_analyzer_plan.md) | `feat/plan43-project-analyzer` | **All decisions validated (D1–D8). Implementation in progress.** Deterministic SQL → YAML via `sqlglot` (`[analyzer]` extra), round-trip oracle through `compile_select`, post-join `where:` block, recurring-expression detection into shared rules, split into partials / intermediate tables, parity run; optional LLM constrained to names/descriptions. |
 
 ## Key files
 | File | Purpose |
