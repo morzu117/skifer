@@ -152,6 +152,45 @@ def main() -> None:
             "to disk; a cycle among materialized tables is reported, not raised."
         ),
     )
+    analyze_parser.add_argument(
+        "--emit",
+        action="store_true",
+        help=(
+            "Find recurring expressions across the corpus (Plan 43 — 43.4) and "
+            "write validated pipeline YAML drafts + shared-rule Python stubs "
+            "into --out. A file without the project_analyzer marker is never "
+            "overwritten; a file with the marker and an unchanged source hash "
+            "is left untouched."
+        ),
+    )
+    analyze_parser.add_argument(
+        "--out",
+        default=".",
+        metavar="DIR",
+        help=(
+            "Project root for --emit (default: current directory). Drafts go "
+            "to <DIR>/schemas/.drafts/..., rule stubs to <DIR>/rules/_generated/..."
+        ),
+    )
+    analyze_parser.add_argument(
+        "--min-occurrences",
+        type=int,
+        default=3,
+        metavar="N",
+        help="With --emit, minimum occurrences to promote a shared-rule candidate (default: 3).",
+    )
+    analyze_parser.add_argument(
+        "--min-scripts",
+        type=int,
+        default=2,
+        metavar="N",
+        help="With --emit, minimum distinct scripts to promote a shared-rule candidate (default: 2).",
+    )
+    analyze_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="With --emit, exit 2 on any residue (skipped unit, refused or invalid artifact).",
+    )
 
     index_parser = subparsers.add_parser(
         "index",
@@ -532,17 +571,25 @@ def _run_analyze(args: argparse.Namespace) -> None:
     sys.exit(run_analyze_command(args))
 
 
+ANALYZE_EXIT_RESIDUE = 2
+ANALYZE_EXIT_EXISTING_OUTPUT = 4
+
+
 def run_analyze_command(args: argparse.Namespace) -> int:
-    """Parse one or more SQL files for ``--inventory`` (43.0) or ``--dry-run`` (43.2).
+    """Parse one or more SQL files for ``--inventory`` (43.0), ``--dry-run``
+    (43.2), or ``--emit`` (43.4).
 
     ``--inventory`` prints a raw AST node-type count — nothing is mapped to the
     Skifer grammar. ``--dry-run`` maps each statement to a schema draft,
     round-trip-verifies it, and prints a report; it writes nothing to disk.
+    ``--emit`` finds recurring expressions and writes validated pipeline
+    drafts + rule stubs to ``--out``.
     """
     inventory = getattr(args, "inventory", False)
     dry_run = getattr(args, "dry_run", False)
-    if not inventory and not dry_run:
-        print("[analyze] Nothing to do: pass --inventory or --dry-run.")
+    emit = getattr(args, "emit", False)
+    if not inventory and not dry_run and not emit:
+        print("[analyze] Nothing to do: pass --inventory, --dry-run or --emit.")
         return ANALYZE_EXIT_OK
 
     import glob as glob_mod
@@ -602,10 +649,70 @@ def run_analyze_command(args: argparse.Namespace) -> int:
                 print(split_report.to_markdown())
         return report.exit_code
 
+    if emit:
+        return _run_analyze_emit(args, all_statements)
+
     from skifer.analyzer.inventory import inventory_corpus
 
     corpus = inventory_corpus(all_statements)
     _print_analyze_inventory(corpus)
+    return ANALYZE_EXIT_OK
+
+
+def _run_analyze_emit(args: argparse.Namespace, all_statements: list) -> int:
+    """``--emit``: find recurring patterns and publish validated drafts +
+    rule stubs to ``--out`` (Plan 43 — 43.4).
+
+    A preflight dry run decides ``--strict``'s "refuse outright" before any
+    file is touched: skipped units and failed validations are known without
+    writing anything, so a strict residue there means zero disk I/O. Whether
+    an artifact's *target* file already exists without the marker can only be
+    known against the real ``--out``, so that one is still checked during the
+    real (non-dry) run and reported with its own exit code (4) regardless of
+    ``--strict``.
+    """
+    from skifer.analyzer.emitter import emit_corpus
+    from skifer.analyzer.patterns import PatternThresholds
+
+    thresholds = PatternThresholds(
+        min_occurrences=args.min_occurrences,
+        min_scripts=args.min_scripts,
+    )
+
+    try:
+        preflight = emit_corpus(all_statements, out_dir=args.out, thresholds=thresholds, dry_run=True)
+    except Exception as exc:
+        print(f"[analyze] --emit failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    if args.strict and preflight.has_residue:
+        print(json.dumps(preflight.to_dict(), indent=2, sort_keys=False))
+        print("[analyze] --strict: residue detected in preflight, refusing to write anything.", file=sys.stderr)
+        return ANALYZE_EXIT_RESIDUE
+
+    from skifer.analyzer.parser import parse_script
+
+    # Re-parse fresh: split_corpus/map_statement rewrite the AST in place
+    # (43.3), so the preflight's statements are no longer safe to reuse.
+    fresh_statements = []
+    for path in sorted({s.source_path for s in all_statements}):
+        fresh_statements.extend(parse_script(path, dialect=args.dialect))
+
+    try:
+        report = emit_corpus(fresh_statements, out_dir=args.out, thresholds=thresholds)
+    except Exception as exc:
+        print(f"[analyze] --emit failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    print(json.dumps(report.to_dict(), indent=2, sort_keys=False))
+
+    if any(a.status == "refused_exists" for a in report.artifacts):
+        print("[analyze] Some files already exist without the project_analyzer marker; left untouched.", file=sys.stderr)
+        return ANALYZE_EXIT_EXISTING_OUTPUT
+
+    if report.has_residue:
+        return ANALYZE_EXIT_RESIDUE
+
     return ANALYZE_EXIT_OK
 
 

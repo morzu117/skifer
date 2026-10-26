@@ -341,6 +341,33 @@ des artefacts.
   en staging), `examples/24_project_analyzer/run.py` (analyse du corpus, émission dans un
   répertoire temporaire, assertions sur le rapport), exécuté par `tests/test_examples.py`.
 
+**Statut : implémenté.** Sur le corpus 43.0 : `country` (`UPPER(TRIM(country))`, 3 occurrences
+sur 3 scripts) devient une `SharedRuleCandidate` non paramétrée, wirée dans `business_rules:` de
+`stg_customers`/`orders_enriched` ; `discount` (`COALESCE(discount, 0)`, 2 occurrences) reste
+sous le seuil ; `net_margin` (`06_gold_margin_v1.sql` vs `07_gold_margin_v2.sql`, deux formules
+différentes) est une `DivergenceFinding`, les deux restant nommées côte à côte, jamais arbitrées.
+Le couple `amount * 1.2` / `total_amount * 1.21` (VAT markup, colonnes différentes) n'apparaît
+nulle part — le regroupement abstrait la valeur des littéraux, jamais l'identité de la colonne,
+pour ne jamais fusionner deux concepts métier distincts qui partagent juste la forme d'un
+opérateur. 7 drafts + 1 stub de règle sont émis, 5 unités restent `skipped` (3 partials non
+encore rattachés à un parent, et les deux `SELECT` sans cible matérialisée de 05 et 08).
+
+Coupes de périmètre assumées, sans régression sur le corpus réel : seul un `main` avec une vraie
+cible `CREATE`/`INSERT`, ou une `intermediate_table`, est drafté — un `SELECT` nu (05, 08) n'est
+pas une cible Skifer, donc `skipped`, jamais drafté silencieusement ; un draft qui référencerait
+une `partials:` par nom est lui aussi `skipped` — le réécriture `tables:` → `partials:` est
+différée, aucun statement du corpus ne l'exige aujourd'hui ; un stub de règle généré retombe
+toujours sur `F.expr("<fragment>")`, jamais sur la traduction `F.*` native de
+`RuleService.generate_snippet` — toujours correcte, juste moins idiomatique ; `metadata` ne porte
+que `source`/`needs_curation` dans cette tranche, pas `coverage`/`roundtrip`/`layer_reason` — un
+humain lit le rapport `--dry-run` pour ces informations aujourd'hui.
+
+`emit_corpus(..., dry_run=True)` stage et valide tout sans jamais lire ni écrire `out_dir` : la
+CLI s'en sert pour décider du refus `--strict` *avant* toute écriture réelle — seul un fichier
+cible déjà existant sans le marqueur ne peut être su qu'en lisant le vrai `--out`, donc ce seul
+cas reste vérifié pendant l'écriture réelle et rapporté par son propre code (`4`), indépendamment
+de `--strict`.
+
 ### 43.5 — Run de parité
 
 **But** : prouver l'équivalence sur les données avant de basculer.

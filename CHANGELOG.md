@@ -136,6 +136,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   works and is tested standalone); nothing is written to `schemas/.drafts/` yet — `--split` only
   reports.
 
+- Structural fingerprinting, recurring-pattern detection and validated emission (Plan 43 — 43.4),
+  in new `skifer.analyzer.fingerprint`/`patterns`/`emitter` modules, plus a new `skifer analyze
+  --emit` CLI mode. `fingerprint.expression_fingerprint()` hashes a `sha256:v1:…` canonical
+  rendering of one scalar expression (column qualifiers stripped, literals optionally abstracted
+  to a typed `STRLIT`/`NUMLIT` placeholder, commutative `+`/`*` operands sorted by their own
+  canonical text) — insensitive to `PYTHONHASHSEED` and to cosmetic operand order, never to the
+  original AST object identity; `fingerprint.subquery_fingerprint()` does the same for a `SELECT`
+  by `(tables, filters, projection)`. `patterns.find_patterns()` collects every recognized scalar
+  expression (`CASE`, `COALESCE`, `UPPER`/`LOWER`/`TRIM`/`CAST`, arithmetic over columns/literals —
+  a bare column or constant is a passthrough, not a pattern) from every `SELECT` in the corpus and
+  classifies it against named, explainable `PatternThresholds` (`min_occurrences=3`,
+  `min_scripts=2`, same discipline as `adaptive/recommender.py`): a shape recurring often enough
+  becomes a `SharedRuleCandidate` (`is_parameterized` when only its literals vary across
+  occurrences); the same output alias computed by two or more structurally different formulas
+  becomes a `DivergenceFinding` — both named side by side, never arbitrated (D7); anything
+  recurring but short of the threshold is still reported as `BelowThresholdCandidate`, never
+  silently dropped. Grouping abstracts literal *values*, never column *identity* — two expressions
+  over different columns that merely share an operator shape stay independent singletons and are
+  reported nowhere, so unrelated business concepts are never merged into one bogus rule.
+  `emitter.emit_corpus()` stages, validates (`parse_schema` for a draft, `ast.parse` +
+  `RuleAnalyzer.analyze_source` for a rule stub) and publishes drafts under
+  `<out_dir>/schemas/.drafts/…` and shared-rule stubs (always a `F.expr("<fragment>")` body in this
+  slice) under `<out_dir>/rules/_generated/…`, atomically (same tempfile-plus-`os.replace` pattern
+  as `write_yaml_atomic`). Every artifact carries a `_generated_by: project_analyzer` marker and a
+  source hash: re-emitting against an unchanged corpus is a byte-for-byte no-op (`unchanged`), a
+  file that exists without the marker is never overwritten (`refused_exists` — presumed
+  hand-edited), and a draft whose wiring would reference a `partials:` name is skipped rather than
+  rewired (deferred — no statement in the 43.0 corpus needs it). A new `dry_run=True` mode stages
+  and validates everything without reading or writing `out_dir` at all, so a caller can learn
+  whether a residue exists before a single byte is touched. New CLI flags on `skifer analyze`:
+  `--emit [--out DIR] [--min-occurrences N] [--min-scripts N] [--strict]`. `--out` defaults to the
+  current directory (the project root); without `--strict`, residues are reported but whatever
+  validates is still written (exit `2`); with `--strict`, a dry preflight decides every skipped-unit
+  and failed-validation residue *before* any write, so a strict refusal (exit `2`) touches zero
+  files — only a target file that already exists without the marker can't be known without reading
+  the real `--out`, so that one is still checked during the real write and reported with its own
+  exit code (`4`) regardless of `--strict`. Against the 43.0 corpus: `country`
+  (`UPPER(TRIM(country))`, 3 occurrences across 3 scripts) promotes to a shared rule wired into
+  `stg_customers`/`orders_enriched`'s `business_rules:`; `discount` (`COALESCE(discount, 0)`, 2
+  occurrences) stays below threshold; `net_margin` (two different formulas in
+  `06_gold_margin_v1.sql`/`07_gold_margin_v2.sql`) is a divergence; 7 drafts and 1 rule stub are
+  written, 5 units skipped (3 partials not yet rewired, plus `05_silver_customers_geo.sql` and
+  `08_kpi_monthly.sql`, whose bare `SELECT`s have no materialized target to draft). New example
+  `examples/24_project_analyzer/` (`README.md` + `run.py`) runs `--dry-run`, `--dry-run --split`
+  and `--emit` end to end against the corpus, Spark-free.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed

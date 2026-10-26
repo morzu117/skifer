@@ -473,6 +473,40 @@ via a table's `fields:` before it becomes ambiguous.
 
 ---
 
+## Project analyzer (`skifer analyze`) — Plan 43
+
+`skifer analyze` turns existing SQL scripts into a first-draft Skifer pipeline — deterministic
+parsing and mapping, no LLM:
+
+```bash
+skifer analyze "legacy_sql/*.sql" --inventory               # raw AST node-type counts
+skifer analyze "legacy_sql/*.sql" --dry-run [--split]        # map + round-trip-verify; writes nothing
+skifer analyze "legacy_sql/*.sql" --emit --out PROJECT_ROOT  # write validated drafts + rule stubs
+```
+
+`--dry-run` maps each statement to a schema draft and round-trip-verifies it against the source
+SQL via `compile_select`; a statement it cannot map (a window function, a `UNION`, …) is reported
+`needs_curation` with the reason, never silently dropped. `--split` additionally classifies every
+script-level CTE/subquery into a partial, a proposed intermediate table, or an inlined fragment,
+and appends a Mermaid dependency graph.
+
+`--emit` finds row-level expressions that recur across the corpus (`--min-occurrences`,
+`--min-scripts`; default 3 occurrences across 2+ scripts) and promotes them to a shared
+`RuleRegistry` stub under `rules/_generated/`, wired into every draft that used to inline the
+expression via `business_rules:`. The same output alias computed by two structurally different
+formulas is never arbitrated — both are reported as a named divergence, for a human to resolve.
+Every draft (`schemas/.drafts/`) and stub carries a `_generated_by: project_analyzer` marker and a
+source hash: re-emitting against an unchanged corpus is a byte-for-byte no-op, a hand-edited file
+without the marker is never overwritten (exit 4), and `--strict` refuses to write anything at all
+the moment a dry preflight finds any residue (skipped unit, failed validation).
+
+Exit codes: `0` clean · `1` a technical error · `2` a residue was reported (or, under `--strict`,
+refused outright before any write) · `4` an existing file without the marker blocked a write.
+`examples/24_project_analyzer/` runs all three modes end to end against a synthetic 8-script
+corpus.
+
+---
+
 ## Semantic projection metadata (`data_product`, `contract`, `semantic`) — Plan 29
 
 Pipeline YAML can describe a data product and its planned semantic surface before

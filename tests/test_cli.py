@@ -1165,6 +1165,94 @@ def test_analyze_without_sqlglot_reports_install_hint(tmp_path, capsys):
     assert "Traceback" not in result.stderr
 
 
+def _emit_args(tmp_path, paths, *, out, strict=False, min_occurrences=3, min_scripts=2):
+    return argparse.Namespace(
+        paths=paths, inventory=False, dry_run=False, emit=True, dialect="databricks",
+        out=str(out), strict=strict, min_occurrences=min_occurrences, min_scripts=min_scripts,
+    )
+
+
+def test_analyze_emit_clean_corpus_exits_zero(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert (out_dir / "schemas" / ".drafts" / "silver" / "t.yaml").exists()
+
+
+def test_analyze_emit_residue_exits_two_and_still_writes_what_it_can(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text(
+        "CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n"
+        "SELECT id FROM bronze.other;\n"  # no CREATE/INSERT target -> skipped, a residue.
+    )
+    out_dir = tmp_path / "out"
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+
+    output = capsys.readouterr().out
+    assert exit_code == 2
+    assert '"skipped"' in output
+    assert (out_dir / "schemas" / ".drafts" / "silver" / "t.yaml").exists()
+
+
+def test_analyze_emit_strict_refuses_outright_and_writes_nothing(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text(
+        "CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n"
+        "SELECT id FROM bronze.other;\n"
+    )
+    out_dir = tmp_path / "out"
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir, strict=True))
+
+    assert exit_code == 2
+    assert "refusing to write anything" in capsys.readouterr().err
+    assert not out_dir.exists() or list(out_dir.rglob("*")) == []
+
+
+def test_analyze_emit_refuses_existing_file_without_marker(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+    draft_dir = out_dir / "schemas" / ".drafts" / "silver"
+    draft_dir.mkdir(parents=True)
+    (draft_dir / "t.yaml").write_text("tables: []\n")
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+
+    assert exit_code == 4
+    assert "without the project_analyzer marker" in capsys.readouterr().err
+    assert (draft_dir / "t.yaml").read_text() == "tables: []\n"
+
+
+def test_analyze_emit_is_reproducible_on_a_fresh_parse(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+    capsys.readouterr()
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert '"status": "unchanged"' in output
+
+
+def test_analyze_help_mentions_emit_flags():
+    result = _run_cli("analyze", "--help")
+
+    assert result.returncode == 0
+    assert "--emit" in result.stdout
+    assert "--out" in result.stdout
+    assert "--min-occurrences" in result.stdout
+    assert "--strict" in result.stdout
+
+
 def test_core_cli_help_does_not_import_optional_sqlglot():
     code = r"""
 import importlib.abc
