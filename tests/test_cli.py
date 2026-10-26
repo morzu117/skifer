@@ -19,6 +19,8 @@ import pytest
 import yaml
 
 from skifer.cli import (
+    ANALYZE_EXIT_ERROR,
+    ANALYZE_EXIT_OK,
     API_LOOPBACK_HOST,
     AUDIT_EXIT_BELOW_THRESHOLD,
     AUDIT_EXIT_OK,
@@ -28,6 +30,7 @@ from skifer.cli import (
     SEMANTIC_EXIT_DRIFT,
     SEMANTIC_EXIT_ERROR,
     SEMANTIC_EXIT_OK,
+    run_analyze_command,
     run_contract_command,
     run_audit,
     run_semantic_metric_views,
@@ -934,3 +937,138 @@ def test_semantic_sync_promote_refuses_to_drop_curated_content(tmp_path, monkeyp
     message = str(exc_info.value)
     assert "description" in message
     assert "dimensions.country.description" in message
+
+
+def test_analyze_help_exits_zero():
+    result = _run_cli("analyze", "--help")
+
+    assert result.returncode == 0
+    assert "--inventory" in result.stdout
+
+
+def test_analyze_without_inventory_flag_is_a_noop(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT 1;\n")
+    args = argparse.Namespace(paths=[str(sql_path)], inventory=False, dialect="databricks")
+
+    exit_code = run_analyze_command(args)
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "Nothing to do" in capsys.readouterr().out
+
+
+def test_analyze_inventory_prints_join_and_function_counts(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text(
+        "SELECT o.id, UPPER(c.country) AS country\n"
+        "FROM silver.orders o\n"
+        "LEFT JOIN silver.customers c ON o.customer_id = c.id;\n"
+    )
+    args = argparse.Namespace(paths=[str(sql_path)], inventory=True, dialect="databricks")
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "1 statement(s) analyzed" in output
+    assert "left: 1" in output
+    assert "upper: 1" in output
+
+
+def test_analyze_expands_glob_patterns(tmp_path, capsys):
+    (tmp_path / "a.sql").write_text("SELECT 1;\n")
+    (tmp_path / "b.sql").write_text("SELECT 2;\n")
+    args = argparse.Namespace(
+        paths=[str(tmp_path / "*.sql")], inventory=True, dialect="databricks"
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "2 statement(s) analyzed" in output
+
+
+def test_analyze_non_matching_glob_falls_back_to_literal_path_and_errors(tmp_path, capsys):
+    # A pattern that expands to nothing is treated as a literal path, so a
+    # typo'd glob surfaces as a clear "cannot read" error instead of a silent
+    # "nothing found" that could mask a mistake.
+    pattern = str(tmp_path / "nothing_here_*.sql")
+    args = argparse.Namespace(paths=[pattern], inventory=True, dialect="databricks")
+
+    exit_code = run_analyze_command(args)
+
+    err = capsys.readouterr().err
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "Cannot read" in err
+    assert pattern in err
+
+
+def test_analyze_bad_statement_names_file_and_line_and_exits_error(tmp_path, capsys):
+    sql_path = tmp_path / "bad.sql"
+    sql_path.write_text("SELECT 1;\nSELECT FROM WHERE;\n")
+    args = argparse.Namespace(paths=[str(sql_path)], inventory=True, dialect="databricks")
+
+    exit_code = run_analyze_command(args)
+
+    err = capsys.readouterr().err
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert str(sql_path) in err
+    assert "2" in err
+
+
+def test_analyze_unreadable_file_exits_error(tmp_path, capsys):
+    args = argparse.Namespace(
+        paths=[str(tmp_path / "does_not_exist.sql")], inventory=True, dialect="databricks"
+    )
+
+    exit_code = run_analyze_command(args)
+
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "Cannot read" in capsys.readouterr().err
+
+
+def test_analyze_without_sqlglot_reports_install_hint(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT 1;\n")
+    code = (
+        f"import sys; sys.argv = {['skifer', 'analyze', str(sql_path), '--inventory']!r}; "
+        "import builtins; _real_import = builtins.__import__\n"
+        "def _blocking_import(name, *args, **kwargs):\n"
+        "    if name == 'sqlglot' or name.startswith('sqlglot.'):\n"
+        "        raise ImportError('simulated: sqlglot not installed')\n"
+        "    return _real_import(name, *args, **kwargs)\n"
+        "builtins.__import__ = _blocking_import\n"
+        "from skifer.cli import main; main()"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+
+    assert result.returncode == ANALYZE_EXIT_ERROR
+    assert 'pip install -e ".[analyzer]"' in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_core_cli_help_does_not_import_optional_sqlglot():
+    code = r"""
+import importlib.abc
+import sys
+
+class BlockSqlglot(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "sqlglot" or fullname.startswith("sqlglot."):
+            raise AssertionError("optional sqlglot dependency imported")
+        return None
+
+sys.meta_path.insert(0, BlockSqlglot())
+import skifer
+from skifer.cli import main
+sys.argv = ["skifer", "--help"]
+try:
+    main()
+except SystemExit as exc:
+    assert exc.code == 0
+assert "sqlglot" not in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stdout + result.stderr

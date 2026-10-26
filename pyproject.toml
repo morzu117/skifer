@@ -95,6 +95,11 @@ mcp = [
     "mcp>=2.1,<3",
 ]
 
+# --- Project analyzer : SQL existant -> pipelines Skifer (import strictement paresseux) ---
+analyzer = [
+    "sqlglot>=25",
+]
+
 # --- API locale (imports strictement paresseux) ---
 api = [
     "fastapi>=0.110",

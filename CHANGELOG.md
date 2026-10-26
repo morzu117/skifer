@@ -10,6 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New optional extra `pip install -e ".[analyzer]"` (`sqlglot>=25`) and a `skifer.analyzer` package —
+  the deterministic front-end of the project analyzer (Plan 43 — 43.0), which turns existing SQL
+  into a first draft of Skifer pipeline YAML. `frontends.split_sql_file()` splits a `.sql` file into
+  statements on top-level `;` without needing `sqlglot` (tracks single-quoted string literals with
+  Spark/Databricks's `\'` escape convention, `--` line comments and `/* ... */` block comments), so
+  the core package reports *where* a statement starts even without the optional dependency installed.
+  `parser.parse_script()` lazily imports `sqlglot` (dialect `databricks` by default) to parse each
+  statement, raising `AnalyzerDependencyError` with an install hint if it's missing and
+  `StatementParseError` naming the offending file/line on a bad statement — `skifer` and
+  `skifer.analyzer` themselves import cleanly without `sqlglot` on the path.
+  `inventory.inventory_corpus()` walks the parsed AST and reports a raw node-type inventory (join
+  types, scalar functions, aggregates, window functions, subqueries, CTEs, unions, `CASE`
+  expressions, `GROUP BY`/`HAVING`) — the coverage baseline the mapper (43.2) will be measured
+  against, with no translation to the Skifer grammar yet. New CLI command
+  `skifer analyze <path-or-glob>... --inventory [--dialect DIALECT]` prints it. New synthetic SQL
+  corpus under `examples/24_project_analyzer/legacy_sql/` (8 scripts) exercising every pattern the
+  plan requires: a recurring expression across 3+ scripts, two business-logic variants of the same
+  metric, a literal-variant divergence, a CTE reused by both branches of a `UNION ALL`, a scalar
+  subquery repeated byte-for-byte across two scripts, a base-table `WHERE` vs. a post-join `WHERE`
+  on an outer-joined table, a `ROW_NUMBER()`/`WHERE rn = 1` dedup, a `LAG()` window residue, and an
+  apostrophe literal escaped the way Spark/Databricks SQL actually parses it (`\'`, not sqlglot's
+  ANSI-only `''` convention — see the project analyzer plan's risk table for the parsing divergence
+  this surfaced between `sqlglot`'s `databricks` dialect and real Spark/Databricks engine behavior).
+
 - New top-level `where:` / `where_groups:` post-join filter block (Plan 43 — 43.1). Unlike a
   table-level `filter:`/`filter_groups:`, which runs before the join, `where`/`where_groups` runs
   after every join and before `business_rules`, on the already-joined DataFrame — the only way to

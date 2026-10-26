@@ -42,6 +42,9 @@ INCIDENTS_EXIT_USAGE = 2
 INCIDENTS_EXIT_INVALID_TRANSITION = 3
 INCIDENTS_EXIT_NOT_FOUND = 4
 
+ANALYZE_EXIT_OK = 0
+ANALYZE_EXIT_ERROR = 1
+
 INDEX_EXIT_OK = 0
 INDEX_EXIT_ERROR = 1
 INDEX_EXIT_USAGE = 2
@@ -101,6 +104,28 @@ def main() -> None:
         default=None,
         metavar="N",
         help="Exit 2 when overall coverage is below this percentage.",
+    )
+
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Analyze existing SQL scripts towards a Skifer pipeline draft (no Spark; Plan 43).",
+    )
+    analyze_parser.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATHS",
+        help="SQL file path(s) or glob patterns (e.g. legacy_sql/*.sql).",
+    )
+    analyze_parser.add_argument(
+        "--inventory",
+        action="store_true",
+        help="Print a raw AST node-type inventory (joins, functions, windows, aggregates, subqueries).",
+    )
+    analyze_parser.add_argument(
+        "--dialect",
+        default="databricks",
+        metavar="DIALECT",
+        help="sqlglot SQL dialect to parse with (default: databricks).",
     )
 
     index_parser = subparsers.add_parser(
@@ -440,6 +465,8 @@ def main() -> None:
         _run_validate(args)
     elif args.command == "audit":
         _run_audit(args)
+    elif args.command == "analyze":
+        _run_analyze(args)
     elif args.command == "index":
         _run_index(args)
     elif args.command == "lineage":
@@ -473,6 +500,84 @@ def _run_adaptive(args: argparse.Namespace) -> None:
 def _run_incidents(args: argparse.Namespace) -> None:
     """Run incident management with stable, category-specific exit codes."""
     sys.exit(run_incidents_command(args))
+
+
+def _run_analyze(args: argparse.Namespace) -> None:
+    """Run the project analyzer with stable exit codes (Plan 43)."""
+    sys.exit(run_analyze_command(args))
+
+
+def run_analyze_command(args: argparse.Namespace) -> int:
+    """Parse one or more SQL files and print a raw AST inventory (Plan 43 — 43.0).
+
+    Nothing is mapped to the Skifer grammar here — this is the coverage
+    baseline the mapper (43.2) will be measured against.
+    """
+    if not getattr(args, "inventory", False):
+        print("[analyze] Nothing to do: pass --inventory.")
+        return ANALYZE_EXIT_OK
+
+    import glob as glob_mod
+
+    paths: list[str] = []
+    for pattern in args.paths:
+        expanded = sorted(glob_mod.glob(pattern, recursive=True))
+        paths.extend(expanded if expanded else [pattern])
+
+    if not paths:
+        print("[analyze] No SQL files found.")
+        return ANALYZE_EXIT_OK
+
+    from skifer.analyzer.parser import AnalyzerDependencyError, StatementParseError, parse_script
+
+    all_statements = []
+    had_error = False
+    for path in paths:
+        try:
+            statements = parse_script(path, dialect=args.dialect)
+        except AnalyzerDependencyError as exc:
+            # Missing the optional dependency is global, not per-file: stop immediately.
+            print(f"[analyze] {exc}", file=sys.stderr)
+            return ANALYZE_EXIT_ERROR
+        except StatementParseError as exc:
+            print(f"[analyze] {exc}", file=sys.stderr)
+            had_error = True
+            continue
+        except OSError as exc:
+            print(f"[analyze] Cannot read '{path}': {exc}", file=sys.stderr)
+            had_error = True
+            continue
+        print(f"[analyze] {path}: {len(statements)} statement(s)")
+        all_statements.extend(statements)
+
+    if had_error:
+        return ANALYZE_EXIT_ERROR
+
+    from skifer.analyzer.inventory import inventory_corpus
+
+    corpus = inventory_corpus(all_statements)
+    _print_analyze_inventory(corpus)
+    return ANALYZE_EXIT_OK
+
+
+def _print_analyze_inventory(corpus) -> None:
+    print(f"\n{len(corpus.statements)} statement(s) analyzed.\n")
+    print("Join types:")
+    for name, count in corpus.join_types.most_common():
+        print(f"  {name}: {count}")
+    print("Functions:")
+    for name, count in corpus.function_names.most_common():
+        print(f"  {name}: {count}")
+    print("Aggregates:")
+    for name, count in corpus.aggregate_names.most_common():
+        print(f"  {name}: {count}")
+    print(f"Windows: {corpus.window_count}")
+    print(f"Subqueries: {corpus.subquery_count}")
+    print(f"CTEs: {corpus.cte_count}")
+    print(f"UNIONs: {corpus.union_count}")
+    print(f"CASE expressions: {corpus.case_count}")
+    print(f"GROUP BYs: {corpus.group_by_count}")
+    print(f"HAVINGs: {corpus.having_count}")
 
 
 def _run_index(args: argparse.Namespace) -> None:
