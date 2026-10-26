@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New top-level `where:` / `where_groups:` post-join filter block (Plan 43 — 43.1). Unlike a
+  table-level `filter:`/`filter_groups:`, which runs before the join, `where`/`where_groups` runs
+  after every join and before `business_rules`, on the already-joined DataFrame — the only way to
+  express a predicate that collapses an outer join back to an inner join on that condition (e.g.
+  `LEFT JOIN refunds WHERE refunds.status = 'APPROVED'`), which a pre-join `filter:` cannot do.
+  Same grammar as table-level filters (string list, `column:operator:value`, or dict mapping),
+  `where_groups:` is an OR-of-ANDs like `filter_groups:`. Columns are **not** alias-qualified (no
+  `alias.column` form — rename upstream via `fields:` to disambiguate). Compiled into the `WHERE`
+  clause of `compile_select()`'s generated SQL (participates in a materialized view's definition
+  hash) and applied via `SparkBackend.build_filter()` in the DataFrame pipeline. Validated at
+  load time: requires at least one table, operators validated against the same catalog as
+  table-level filters (aliases resolved at IR-parsing time, same as `filter:`).
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed

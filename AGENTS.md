@@ -91,6 +91,17 @@ Canonical join types: `left`, `right`, `inner`, `full`, `cross`, `left_anti`, `l
 Accepted aliases include `full outer`/`full_outer`/`outer` → `full`, `anti`/`left anti` → `left_anti`,
 and `semi`/`left semi` → `left_semi`. `left_anti` and `left_semi` are Spark DataFrame-only.
 
+### Post-join filters (Plan 43)
+A top-level `where:` / `where_groups:` block filters the DataFrame **after** every join and
+**before** `business_rules` — it is never pushed down into a table's `filter:`, because on an
+outer join filtering the joined side beforehand is not equivalent (it also drops the unmatched
+rows the outer join exists to keep). Same two forms as a table's `filter:` (string list or
+column-mapping dict for `where:`, list-of-lists OR-of-ANDs for `where_groups:`, matching
+`filter_groups:`). Columns are not alias-qualified — resolved by name on the joined row, so a
+column present on both sides must be renamed upstream via a table's `fields:`. Requires at least
+one table in `tables:`, enforced at load. Compiled into the `WHERE` clause of the joined `SELECT`
+by `core/sql_compiler.py`, so it also applies to materialized views.
+
 ### Nested partials (Plan 25)
 A top-level `partials:` block (`{alias, path}` entries) runs nested YAML schemas as sub-transformations
 and exposes each output under its `alias` (usable in `join`/`business_rules`) — a join can therefore depend

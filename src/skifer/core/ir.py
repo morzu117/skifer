@@ -278,6 +278,10 @@ class ParsedSchema:
         partials: Nested sub-transformation specs, resolved before tables.
         tables: Source table specs in declaration order.
         joins: JOIN specs in application order.
+        where: Post-join filter predicates (Plan 43), applied after every join and
+            before business_rules — never pushed down to a table, since the
+            equivalence with a table-level filter does not hold across an outer join.
+        where_groups: Post-join OR-of-ANDs filter groups (Plan 43), same placement as `where`.
         business_rules: Registered rule names in application order.
         select_final: Final output column specs (or empty if keep_all_columns).
         add_columns: Extra column specs added to an unchanged output.
@@ -301,6 +305,8 @@ class ParsedSchema:
     partials: list[ParsedPartial] = field(default_factory=list)
     tables: list[ParsedTable] = field(default_factory=list)
     joins: list[ParsedJoin] = field(default_factory=list)
+    where: list[ParsedFilter] = field(default_factory=list)
+    where_groups: list[list[ParsedFilter]] = field(default_factory=list)
     business_rules: list[str] = field(default_factory=list)
     select_final: list[ParsedColumnSpec] = field(default_factory=list)
     add_columns: list[ParsedColumnSpec] = field(default_factory=list)
@@ -387,6 +393,13 @@ def parse_to_ir(schema_dict: dict) -> ParsedSchema:
             join_type=join_type,
         ))
 
+    # --- Post-join filters (Plan 43) ---
+    where = _parse_filter_list(schema_dict.get("where", []), resolve_filter_operator)
+    where_groups = [
+        _parse_filter_list(g, resolve_filter_operator)
+        for g in schema_dict.get("where_groups", [])
+    ]
+
     # --- select_final / add_columns ---
     select_final = [
         _parse_column_spec(f, resolve_column_op)
@@ -454,6 +467,8 @@ def parse_to_ir(schema_dict: dict) -> ParsedSchema:
         partials=partials,
         tables=tables,
         joins=joins,
+        where=where,
+        where_groups=where_groups,
         business_rules=schema_dict.get("business_rules", []),
         select_final=select_final,
         add_columns=add_columns,

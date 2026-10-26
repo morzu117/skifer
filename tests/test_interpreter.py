@@ -10,6 +10,7 @@ import pytest
 
 from skifer.core.context import ExecutionContext
 from skifer.core.interpreter import SchemaInterpreter
+from skifer.core.spark_backend import SparkBackend
 
 
 @pytest.fixture
@@ -158,3 +159,96 @@ class TestProcessSchema:
                 },
                 dataframes_in={"t": df},
             )
+
+
+# ---------------------------------------------------------------------------
+# Plan 43 — post-join 'where:' is NOT equivalent to a table-level 'filter:'
+# across an outer join. Run on a real Spark session (not a mock/fake) because
+# this is exactly the kind of NULL/outer-join semantics a simulated backend
+# can get subtly wrong — the whole reason the block exists has to be proven,
+# not assumed.
+# ---------------------------------------------------------------------------
+
+class TestWherePostJoinFilterOnRealSpark:
+    @pytest.fixture
+    def spark_interpreter(self, spark):
+        backend = SparkBackend(spark=spark, is_local=True)
+        ctx = ExecutionContext()
+        ctx.env = "test"
+        ctx.config = {}
+        ctx.is_job_execution = True
+        ctx.schema_suffix = ""
+        return SchemaInterpreter(backend=backend, context=ctx)
+
+    @pytest.fixture
+    def orders_and_refunds(self, spark):
+        # order 1 has a REJECTED refund, order 2 an APPROVED refund,
+        # order 3 has no refund row at all.
+        orders = spark.createDataFrame(
+            [(1,), (2,), (3,)], ["order_id"]
+        )
+        refunds = spark.createDataFrame(
+            [(1, "REJECTED"), (2, "APPROVED")], ["order_id", "status"]
+        )
+        return orders, refunds
+
+    def _schema(self, extra: dict) -> dict:
+        base = {
+            "tables": [
+                {"name": "orders", "alias": "o"},
+                {"name": "refunds", "alias": "r"},
+            ],
+            "join": [
+                {"table_from": "o", "table_to": "r", "on_from": "order_id", "on_to": "order_id", "type": "left"}
+            ],
+            "keep_all_columns": True,
+        }
+        base.update(extra)
+        return base
+
+    def test_table_level_filter_pushed_before_join_keeps_every_order(
+        self, spark_interpreter, orders_and_refunds
+    ):
+        """Filtering 'refunds' to APPROVED BEFORE the join only narrows what can
+        match — every order is still an unmatched left row otherwise kept."""
+        orders, refunds = orders_and_refunds
+        schema = self._schema(
+            {"tables": [
+                {"name": "orders", "alias": "o"},
+                {"name": "refunds", "alias": "r", "filter": [{"column": "status", "operator": "equals", "value": "APPROVED"}]},
+            ]}
+        )
+        result = spark_interpreter.process_schema(
+            schema, dataframes_in={"orders": orders, "refunds": refunds}
+        )
+        assert {row["order_id"] for row in result.collect()} == {1, 2, 3}
+
+    def test_where_after_join_drops_every_order_without_an_approved_refund(
+        self, spark_interpreter, orders_and_refunds
+    ):
+        """The SAME predicate, applied post-join via 'where:', collapses the left
+        join back to an inner join on it: order 1 (REJECTED) and order 3 (no
+        refund, so 'status' is NULL) are both dropped — only order 2 survives."""
+        orders, refunds = orders_and_refunds
+        schema = self._schema(
+            {"where": [{"column": "status", "operator": "equals", "value": "APPROVED"}]}
+        )
+        result = spark_interpreter.process_schema(
+            schema, dataframes_in={"orders": orders, "refunds": refunds}
+        )
+        assert {row["order_id"] for row in result.collect()} == {2}
+
+    def test_where_groups_or_of_ands_after_join(self, spark_interpreter, orders_and_refunds):
+        orders, refunds = orders_and_refunds
+        schema = self._schema(
+            {
+                "where_groups": [
+                    [{"column": "status", "operator": "equals", "value": "APPROVED"}],
+                    [{"column": "order_id", "operator": "equals", "value": "3"}],
+                ]
+            }
+        )
+        result = spark_interpreter.process_schema(
+            schema, dataframes_in={"orders": orders, "refunds": refunds}
+        )
+        assert {row["order_id"] for row in result.collect()} == {2, 3}

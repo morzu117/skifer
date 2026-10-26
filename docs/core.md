@@ -435,6 +435,44 @@ aliases, so a typo fails before any Spark work.
 
 ---
 
+## Post-join filters (`where` / `where_groups`) — Plan 43
+
+A table's `filter:` runs **before** the join — on an outer join, filtering the joined
+side there is not equivalent to filtering it after the join: it drops the unmatched
+rows the outer join is meant to keep. `where:` / `where_groups:` fill that gap: a
+top-level, post-join filter applied after every join and before `business_rules`.
+
+```yaml
+tables:
+  - name: silver.orders
+    alias: o
+  - name: silver.refunds
+    alias: r
+    fields:                             # rename ahead of the join to keep status unambiguous
+      - [status, refund_status]
+
+join:
+  - table_from: [o, order_id]
+    table_to: [r, order_id]
+    type: left                          # keep every order, matched or not
+
+where:                                  # applied AFTER the join
+  - "refund_status:equals:APPROVED"     # orders with no approved refund are dropped here,
+                                         # not silently lost by filtering r before the join
+where_groups:                           # optional — OR-of-ANDs, same placement
+  - ["country:equals:FR", "amount:greater_than:100"]
+  - ["country:equals:BE"]
+```
+
+Same two forms as a table's `filter:` (compact string list, column-mapping dict) and
+the same grammar as `filter_groups:` for `where_groups:`. Requires at least one table
+— it is refused at load time otherwise. Columns are **not** alias-qualified (there is
+no `alias.column` form, same as `select_final`): they are resolved by name on the
+joined row, so a column present on both sides of the join must be renamed upstream
+via a table's `fields:` before it becomes ambiguous.
+
+---
+
 ## Semantic projection metadata (`data_product`, `contract`, `semantic`) — Plan 29
 
 Pipeline YAML can describe a data product and its planned semantic surface before

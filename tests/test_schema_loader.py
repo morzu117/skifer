@@ -1267,6 +1267,113 @@ tables:
         assert filters[1]["operator"] == "in"
 
 
+class TestWhereBlock:
+    """Post-join 'where:' / 'where_groups:' (Plan 43)."""
+
+    def test_where_string_list_normalizes(self):
+        yaml_str = """
+tables:
+  - name: silver.orders
+    alias: orders
+where:
+  - "status:equals:ACTIVE"
+  - "customer_id:is_not_null"
+"""
+        schema = parse_schema(yaml_str)
+        assert schema["where"] == [
+            {"column": "status", "operator": "equals", "value": "ACTIVE"},
+            {"column": "customer_id", "operator": "is_not_null"},
+        ]
+
+    def test_where_dict_mapping_normalizes(self):
+        yaml_str = """
+tables:
+  - name: silver.orders
+    alias: orders
+where:
+  status: ACTIVE
+  customer_id: is_not_null
+"""
+        schema = parse_schema(yaml_str)
+        where = schema["where"]
+        assert len(where) == 2
+        assert {"column": "status", "operator": "equals", "value": "ACTIVE"} in where
+        assert {"column": "customer_id", "operator": "is_not_null"} in where
+
+    def test_where_groups_normalizes(self):
+        yaml_str = """
+tables:
+  - name: silver.orders
+    alias: orders
+where_groups:
+  - ["country:equals:FR", "amount:greater_than:100"]
+  - ["country:equals:BE"]
+"""
+        schema = parse_schema(yaml_str)
+        groups = schema["where_groups"]
+        assert len(groups) == 2
+        assert groups[0] == [
+            {"column": "country", "operator": "equals", "value": "FR"},
+            {"column": "amount", "operator": "greater_than", "value": "100"},
+        ]
+        assert groups[1] == [{"column": "country", "operator": "equals", "value": "BE"}]
+
+    def test_where_without_tables_raises(self):
+        yaml_str = """
+where:
+  - "status:equals:ACTIVE"
+"""
+        with pytest.raises(ValueError, match="requires at least one table"):
+            parse_schema(yaml_str)
+
+    def test_where_groups_without_tables_raises(self):
+        yaml_str = """
+where_groups:
+  - ["status:equals:ACTIVE"]
+"""
+        with pytest.raises(ValueError, match="requires at least one table"):
+            parse_schema(yaml_str)
+
+    def test_where_unknown_operator_raises(self):
+        yaml_str = """
+tables:
+  - name: silver.orders
+    alias: orders
+where:
+  - "status:equalz:ACTIVE"
+"""
+        with pytest.raises(ValueError, match="equalz"):
+            parse_schema(yaml_str)
+
+    def test_where_groups_unknown_operator_raises(self):
+        yaml_str = """
+tables:
+  - name: silver.orders
+    alias: orders
+where_groups:
+  - ["status:equalz:ACTIVE"]
+"""
+        with pytest.raises(ValueError, match="equalz"):
+            parse_schema(yaml_str)
+
+    def test_where_alias_operator_accepted(self):
+        """Operator aliases (e.g. 'gt') are accepted, same as table-level filter.
+
+        Alias -> canonical resolution happens at IR-parsing time (parse_to_ir),
+        not during schema normalization — the normalized dict keeps the alias
+        as written, mirroring table-level filter behavior.
+        """
+        yaml_str = """
+tables:
+  - name: silver.orders
+    alias: orders
+where:
+  - "amount:gt:100"
+"""
+        schema = parse_schema(yaml_str)
+        assert schema["where"][0]["operator"] == "gt"
+
+
 class TestSelectFinalMappingForm:
     def test_from_as_basic(self):
         """Entry with from/as keys normalizes to source/target."""

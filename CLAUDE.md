@@ -251,6 +251,15 @@ join:
                                           # anti/left anti -> left_anti, semi/left semi -> left_semi
                                           # left_anti et left_semi : Spark DataFrame only for now
 
+where:                                   # optional (Plan 43) — post-join filter, applied AFTER
+  - "ord_status:equals:ACTIVE"           # every join and BEFORE business_rules. Never pushed down
+                                          # to a table: a LEFT/RIGHT/FULL join's unmatched rows would
+                                          # be silently dropped by filtering a table beforehand instead.
+where_groups:                            # optional — OR-of-ANDs, same placement, same grammar as
+  - ["country:equals:FR"]                # filter_groups. Columns are NOT alias-qualified (no
+  - ["country:equals:BE"]                # "alias.column" form) — rename via fields: before the join
+                                          # if the same column name exists on both sides.
+
 business_rules:
   - flag_high_value
 

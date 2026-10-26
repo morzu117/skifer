@@ -529,6 +529,29 @@ class SchemaInterpreter:
                     if join_type not in _LEFT_ONLY_JOIN_TYPES:
                         df_main = b.drop_columns(df_main, [df_to[r] for r in on_r])
 
+        # 2.5. WHERE — post-join filters (Plan 43). Applied on the joined
+        # DataFrame, never pushed down to a table: 'LEFT JOIN b WHERE b.x = v'
+        # is not equivalent to filtering b before the join (it also drops the
+        # unmatched left rows an outer join is meant to keep).
+        if "where" in schema_dict:
+            from skifer.core.ir import ParsedFilter
+            pf_list = [ParsedFilter(d["column"], d["operator"], d.get("value")) for d in schema_dict["where"]]
+            if pf_list:
+                cond = reduce(lambda a, c: a & c, [b.build_filter(pf, allow_raw_sql) for pf in pf_list])
+                df_main = b.filter(df_main, cond)
+
+        if "where_groups" in schema_dict:
+            from skifer.core.ir import ParsedFilter
+            group_conditions = []
+            for group in schema_dict["where_groups"]:
+                pf_list = [ParsedFilter(d["column"], d["operator"], d.get("value")) for d in group]
+                if pf_list:
+                    gc = reduce(lambda a, c: a & c, [b.build_filter(pf, allow_raw_sql) for pf in pf_list])
+                    group_conditions.append(gc)
+            if group_conditions:
+                combined = reduce(lambda a, c: a | c, group_conditions)
+                df_main = b.filter(df_main, combined)
+
         # 3. BUSINESS RULES
         if "business_rules" in schema_dict:
             df_main = self._apply_business_rules(df_main, schema_dict["business_rules"])

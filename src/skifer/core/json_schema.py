@@ -62,6 +62,23 @@ def generate_json_schema() -> dict:
                 "type": "array",
                 "items": {"$ref": "#/$defs/JoinDef"},
             },
+            "where": {
+                "description": (
+                    "Post-join row filter (Plan 43), applied after every join and before "
+                    "business_rules. Never pushed down to a table — a table's 'filter:' is "
+                    "applied BEFORE the join, which is not equivalent across an outer join. "
+                    "Requires at least one table."
+                ),
+                "oneOf": [
+                    {"$ref": "#/$defs/FilterList"},
+                    {"$ref": "#/$defs/FilterMapping"},
+                ],
+            },
+            "where_groups": {
+                "description": "OR-of-AND groups of post-join filter predicates (Plan 43), same placement as 'where'.",
+                "type": "array",
+                "items": {"$ref": "#/$defs/FilterList"},
+            },
             "business_rules": {
                 "description": "Ordered list of registered rule names to apply.",
                 "type": "array",
