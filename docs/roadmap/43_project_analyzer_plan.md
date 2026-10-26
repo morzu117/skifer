@@ -1,6 +1,6 @@
 # Plan 43 — Project analyzer : du SQL existant aux pipelines Skifer
 
-> **Statut :** plan rédigé le 26 octobre 2026, décisions D1 à D3 validées à l'oral, D4 à D8 à
+> **Statut :** plan rédigé le 26 octobre 2026, décisions D1 à D3 et D8 validées, D4 à D7 à
 > valider avant implémentation. Aucun code écrit.
 > Branche : `feat/plan43-project-analyzer`.
 
@@ -83,7 +83,7 @@ nommer et décrire ; sa sortie est traitée comme non fiable, comme déjà dans
 | D5 | Emplacement des sorties | `schemas/.drafts/<cible>.yaml` et `rules/_generated/<nom>.py`, chacun portant `_generated_by: project_analyzer` et le hash de la source. Même règle que `SemanticDraftBuilder` : jamais d'écrasement d'un fichier sans marqueur. Le rapport va dans `analysis/<horodatage>/report.{md,json}`, ou sur stdout en `--dry-run`. | Écrire dans `schemas/` directement : un draft doit être promu par un humain, jamais exécuté par surprise. |
 | D6 | Push-down des prédicats | Un prédicat du `WHERE` descend en filtre de table **seulement s'il est prouvablement équivalent** : il référence une seule table et cette table n'est pas du côté nullable d'un outer join dans l'arbre (côté droit d'un `left`, gauche d'un `right`, les deux d'un `full`). Sinon il reste dans `where:`. | Tout dans `where:` : correct mais produit un YAML non idiomatique ; tout en push-down : faux. |
 | D7 | Résidus | Par défaut une expression non mappable devient `expr:<sql>` (ou l'opérateur de filtre `sql`) : le pipeline **tourne dès le premier jour**, et chaque résidu est listé dans le rapport avec son fragment. `--strict` refuse d'émettre dès qu'il y a un résidu. Les constructions sans équivalent (fenêtre hors dédup, explode, pivot, UDF) sortent en `needs_curation:` dans les métadonnées du draft, fragment conservé, statement non émis en YAML. | Tout en `needs_curation` : rien ne tourne, l'adoption n'avance pas. |
-| D8 | Version | Nouvelle fonctionnalité → **3.2.0**, décidée par l'utilisateur au moment de la release. | — |
+| D8 | Version | Nouvelle fonctionnalité → montée de version **3.2.0**, déclenchée par l'utilisateur au moment de la release. **Validé.** | — |
 
 ## Périmètre v1 et exclusions
 
