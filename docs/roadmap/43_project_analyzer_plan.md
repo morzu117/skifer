@@ -124,7 +124,8 @@ Après chaque point : `pytest tests/ -x --tb=short && ruff check src/`.
   - un `WHERE` sur la table de base (→ push-down en `filter`) ;
   - un `ROW_NUMBER() OVER (...) = 1` (→ `qualify`), une fenêtre `LAG` (→ résidu) ;
   - un `UNION ALL`, un `CASE WHEN` à trois branches, un `GROUP BY` + `HAVING` ;
-  - des littéraux avec apostrophe (`'O''Brien'`) et un `NOT IN` sur colonne nullable.
+  - des littéraux avec apostrophe (`'O\'Brien'` — voir note sur `sqlglot` ci-dessous) et un
+    `NOT IN` sur colonne nullable.
 - `src/skifer/analyzer/__init__.py`, `frontends.py` (front-end `.sql` uniquement à ce stade :
   découpe en statements, origine fichier/ligne), `parser.py` (import paresseux de sqlglot,
   dialecte `databricks`, `parse_script() → list[Statement]`, erreur explicite si l'extra manque).
@@ -137,6 +138,14 @@ Après chaque point : `pytest tests/ -x --tb=short && ruff check src/`.
 - Tests : `tests/test_analyzer_parser.py`, `tests/test_analyzer_inventory.py`. Le cœur
   s'importe sans `sqlglot` (`sys.modules`), `skifer analyze` sans l'extra renvoie `1` avec le
   message d'installation.
+
+**Statut : implémenté** (commit `feat(plan43-43.0)`). Le corpus et l'inventaire produisent,
+vérifié de bout en bout : `join_types={'left': 2, 'inner': 3}`, `upper/trim/coalesce` à 3
+occurrences chacun, `aggregate_names={'sum': 9, 'lag': 1}`, `window=2`, `subquery=3`, `cte=3`,
+`union=2`, `case=2`, `group_by=1`, `having=1` — correspond au patron requis ci-dessus. Trouvaille
+en cours de route, documentée dans le tableau de risques : le dialecte `databricks` de `sqlglot`
+ne lit **pas** `''` comme guillemet échappé (contrairement à Spark/Databricks réel, qui accepte
+les deux formes) ; le corpus et le découpeur utilisent `\'` exclusivement pour cette raison.
 
 ### 43.1 — Bloc `where:` / `where_groups:` dans la grammaire
 
