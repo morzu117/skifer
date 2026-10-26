@@ -102,6 +102,8 @@ pip install skifer[semantic-pdf]
 
 Run the same Spark-oriented framework on your laptop without a Databricks cluster. PySpark runs in `local[*]` mode, Delta Lake is enabled, and Apache Derby serves as the embedded metastore (no installation required).
 
+> **Prerequisite: a Java Runtime (JRE/JDK 8–17).** PySpark itself is launched by the JVM, so `pip install skifer[spark]` is not enough on its own — without a local Java install, `get_spark_session()`/`SkiferEngine()` fail with `JAVA_GATEWAY_EXITED: Java gateway process exited before sending its port number`, and so does `pytest` for the ~180 tests that run against a real local Delta session (see `tests/conftest.py`'s `spark` fixture) and every `examples/*/run.py`. Check with `java -version`; on macOS, `brew install openjdk@17` (or any Temurin/Zulu build) resolves it. This isn't needed for Databricks Connect or Databricks jobs — only for the `local[*]` path described below.
+
 ### 1. Create `config.yaml` at your project root
 
 ```yaml
