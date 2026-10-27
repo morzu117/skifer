@@ -1,7 +1,7 @@
 # Plan 43 — Project analyzer : du SQL existant aux pipelines Skifer
 
-> **Statut :** plan rédigé le 26 octobre 2026, décisions D1 à D8 validées. Implémentation en cours.
-> Branche : `feat/plan43-project-analyzer`.
+> **Statut :** plan rédigé le 26 octobre 2026, décisions D1 à D8 validées. **Implémenté — 43.0 à
+> 43.8 sont tous faits.** Branche : `feat/plan43-project-analyzer`.
 
 ## Objectif
 
@@ -554,6 +554,24 @@ non-Spark passent sans régression au-delà du déficit JRE déjà connu.
 - `CLAUDE.md` / `AGENTS.md` : arborescence `analyzer/`, section « Project analyzer (Plan 43) »,
   statut du plan.
 - `examples/README.md` : ligne pour l'exemple 24.
+
+**Statut : implémenté.** Nouveau `docs/project_analyzer.md`, un parcours guidé complet sur
+`examples/24_project_analyzer/` couvrant chaque mode (`--inventory`, `--dry-run`/`--split`,
+`--emit`, les front-ends notebook et `system.query.history`, `analyze parity`, `--enrich`), la
+lecture du rapport et de ses codes de sortie, et la règle « le LLM ne décide jamais de la
+structure » en détail — croisé avec la section de référence rapide de `core.md` et ajouté à la nav
+de `mkdocs.yml` sous « Building pipelines ». Une ligne devenue fausse dans
+`examples/24_project_analyzer/README.md` (qui présentait le DAG de partials, le partage de
+fingerprints et le nommage LLM comme encore « à venir ») a été corrigée : les trois sont livrés
+depuis 43.3/43.4/43.6. `CLAUDE.md`/`AGENTS.md` ont reçu l'arborescence `analyzer/` sous « Package
+structure » (absente jusqu'ici, Plan 43 entier compris) et une section prose « Project analyzer
+(`skifer analyze`) — Plan 43 » au même format que les autres sections de feature. `mkdocs build
+--strict` passe proprement (vérifié via `uv run --extra docs`, l'extra `[docs]` n'étant pas
+installé dans cet environnement auparavant — un contrôle réellement nouveau, pas la répétition
+d'un passage déjà vert) : la première tentative a révélé un vrai lien d'ancre cassé dans la
+nouvelle page (le slug généré par mkdocs pour le titre de `core.md` perd un tiret par rapport à
+une devinette naïve depuis son texte Markdown), corrigé avant ce commit. **Ce point clôt le Plan
+43 : 43.0 à 43.8 sont tous implémentés.**
 
 ## Risques
 

@@ -306,6 +306,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ruff check src/` and the full non-Spark suite pass with no new failures beyond the pre-existing
   JRE gap.
 
+- Documentation for the project analyzer (Plan 43 — 43.8, closing the plan): new
+  `docs/project_analyzer.md`, a full guided walkthrough against `examples/24_project_analyzer/`
+  covering every mode (`--inventory`, `--dry-run`/`--split`, `--emit`, the notebook and
+  `system.query.history` front-ends, `analyze parity`, `--enrich`), how to read the report and its
+  exit codes, and the "the LLM never decides structure" rule in full — cross-linked with `core.md`'s
+  own quick-reference section and added to `mkdocs.yml`'s nav under "Building pipelines". A stale
+  line in `examples/24_project_analyzer/README.md` claiming DAG-aware partial wiring,
+  fingerprint-sharing and LLM-assisted naming were still "ahead" was corrected — all three shipped in
+  43.3/43.4/43.6, before this line was last touched. `CLAUDE.md`/`AGENTS.md` gained the `analyzer/`
+  package listed under "Package structure" (every module, Plan 43 included, was undocumented there
+  until now) and a prose "Project analyzer (`skifer analyze`) — Plan 43" section matching the style
+  of every other feature section. `mkdocs build --strict` passes cleanly (verified via `uv run
+  --extra docs`, since `[docs]` was not previously installed in this environment — a genuinely new
+  check, not a rerun of a stale pass): the first attempt surfaced one real broken anchor link in the
+  new page (`core.md`'s heading slug drops one hyphen that a naive guess from its Markdown text
+  would keep), fixed before this entry. Closes Plan 43 — all of 43.0 through 43.8 are implemented.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed

@@ -80,5 +80,7 @@ human to curate and promote, not a finished pipeline.
 ## Next
 
 This is the last example in the walkthrough — see [the examples index](../README.md) for the
-full list, or [the Plan 43 roadmap](../../docs/roadmap/43_project_analyzer_plan.md) for what is
-still ahead (DAG-aware partial wiring, fingerprint-sharing across pipelines, LLM-assisted naming).
+full list, [the full walkthrough page](../../docs/project_analyzer.md) for the report shape, exit
+codes and the "LLM never decides structure" rule in detail, or
+[the Plan 43 roadmap](../../docs/roadmap/43_project_analyzer_plan.md) for what is still ahead
+(only 43.8's own documentation sync, by the time this line was last updated).
