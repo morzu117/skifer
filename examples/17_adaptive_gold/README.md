@@ -33,8 +33,6 @@ Existing-output exit code: 4
 Human rejection recorded: status=rejected
 Stale refusal: [adaptive] Proposal 'proposal:v1:...
 Stale exit code: 3
-Deployment performed: no; schemas/ and Git were never touched.
-Temporary workspace removed: True
 ```
 
 Every threshold line is the rule's own `expected_benefit` or refusal reason. A rule below its event

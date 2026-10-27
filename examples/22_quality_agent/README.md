@@ -11,8 +11,7 @@ python examples/22_quality_agent/run.py
 ```
 
 The script overwrites its table in the engine's sandboxed `gold` schema on every run, so it is
-idempotent. The SQLite store lives in a `TemporaryDirectory`, is closed explicitly, and is removed
-before the script exits.
+idempotent. The SQLite history lives in a fresh temporary directory.
 
 Always construct these contract dataclasses with `column=` or `columns=`. Their second positional
 field is `severity`; passing a column there silently leaves the column name empty.
@@ -38,7 +37,6 @@ History after two runs:
   mode: history
   reports recorded: 2
   checks per run (newest first): 1, 2
-Temporary history directory removed: True
 ```
 
 `QualityResponse.passed` means **no critical failure**, not “every check passed.” The first response

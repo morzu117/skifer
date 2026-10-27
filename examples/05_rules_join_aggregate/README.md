@@ -20,15 +20,13 @@ business_rules:
   - classify_order
 ```
 
-`run.py` defines it, and nothing else about the pipeline:
+[`rules.py`](rules.py) defines it, and nothing else about the pipeline; `run.py` only imports it:
 
 ```python
 @RuleRegistry.register_rule()
 def classify_order(df):
     return {
-        "order_class": F.when(F.col("amount") >= 500, F.lit("priority")).otherwise(
-            F.lit("standard")
-        )
+        "order_class": F.when(F.col("amount") >= 500, "priority").otherwise("standard")
     }
 ```
 

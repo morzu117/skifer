@@ -1,0 +1,36 @@
+data_product:
+  id: sales.customer_orders
+  version: 1.0.0
+  owner: data-platform
+contract:
+  grain: [order_id]
+  output:
+    order_id:
+      logical_type: identifier
+      classification: internal
+      description: Order identifier
+    customer_email:
+      logical_type: string
+      classification: pii
+      description: Customer email address
+    amount_eur:
+      logical_type: double
+      classification: internal
+      description: Order amount in EUR
+tables:
+  - name: silver.orders
+    alias: ord
+  - name: silver.customers
+    alias: cust
+join:
+  - table_from: [ord, customer_id]
+    table_to: [cust, id]
+    type: left
+select_final:
+  - [ord.id, order_id]
+  - [cust.email, customer_email]
+  - [ord.amount, amount_eur, [cast:double]]
+sink:
+  type: delta
+  schema: gold
+  table: customer_orders
