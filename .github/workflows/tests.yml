@@ -39,8 +39,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # sqlglot lives in the optional [analyzer] extra (lazy import). The analyzer
+      # tests call parse_script() and raise AnalyzerDependencyError without it.
       - name: Install
-        run: pip install -e ".[dev,spark]"
+        run: pip install -e ".[dev,spark,analyzer]"
 
       - name: Import on the declared minimum
         run: python -c "import skifer; print(skifer.__version__)"
