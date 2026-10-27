@@ -102,5 +102,11 @@ the executor call count is still zero. There is no rollback because nothing ran.
 | Expose governed reads to external agents through MCP | [Read-only MCP](mcp.md) | `examples/16_mcp_readonly/` |
 | Turn usage patterns into human-reviewed optimization proposals | [Supervised adaptive Gold](adaptive.md) | `examples/17_adaptive_gold/` |
 | Govern external write-back approvals, idempotency, and compensation | [Governed capabilities](capabilities.md) | `examples/18_capability_execution/` |
+| Spot redundant or Photon-breaking rule work without running Spark | [Business Rules](rules.md) | `examples/19_rule_optimizer/` |
+| Draft pipeline YAML offline and export it to Airflow or runner scripts | [Agentic Layer](agentic.md#builderagent-etl-pipeline-generation) | `examples/20_builder_and_orchestration/` |
+| Route a natural-language question to a specialist agent | [Agentic Layer](agentic.md#agentichub-unified-conversational-router) | `examples/21_hub_routing/` |
+| Run data-quality checks against a real table through an agent | [Agentic Layer](agentic.md#qualityagent-conversational-data-quality) | `examples/22_quality_agent/` |
+| Emit lineage events to an external catalog without leaking data | [Data Observability](observability.md#openlineage) | `examples/23_openlineage/` |
+| Turn existing SQL into a first-draft Skifer pipeline | [Project Analyzer](project_analyzer.md) | `examples/24_project_analyzer/` |
 | Look up exact Python classes, methods, and return types | [API Reference](api_reference.md) | — |
 | Install on Databricks instead of running locally | [Databricks installation](install_databricks.md) | — |

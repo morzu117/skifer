@@ -24,6 +24,7 @@ human approved. **Governance is not a layer on top — it runs through all of th
 - **Business Logic Isolation** — register pure Python/PySpark rules with `@RuleRegistry.register_rule()`.
 - **Streaming tables & materialized views** — incremental writes and native compiled SQL views, declared the same way.
 - **Direct Query Optimized** — pre-calculate OBT, YoY shifts and distinct counts in Gold to keep Power BI DAX light.
+- **Project Analyzer** — turn existing SQL (scripts, notebooks, `system.query.history`) into a first-draft pipeline YAML, deterministically, with a round-trip oracle and a named residue for anything it can't safely translate.
 
 ### Ask questions in natural language
 
@@ -598,6 +599,33 @@ engine.describe_schema(schema)
 RuleRegistry.list_rules()
 RuleRegistry.list_loaders()
 ```
+
+---
+
+## Project Analyzer — existing SQL to a Skifer pipeline draft
+
+`skifer analyze` turns SQL you already have — scripts, Databricks/Jupyter notebooks, or
+`system.query.history` — into a first draft of Skifer pipeline YAML, shared `RuleRegistry` rule
+stubs, and a report of exactly what it could convert and what it left for a human. Every structural
+decision is **deterministic**: parsed with `sqlglot` against the same closed vocabulary the engine
+itself uses, then proven by recompiling the draft back to SQL and comparing it to the source. An
+LLM, when configured, only ever proposes names and descriptions afterward — never structure.
+
+```bash
+skifer analyze "legacy/*.sql" --inventory              # raw AST node-type counts
+skifer analyze "legacy/*.sql" --dry-run [--split]       # map + round-trip-verify; writes nothing
+skifer analyze "legacy/*.sql" --emit --out DIR [--enrich]  # write validated drafts + rule stubs
+skifer analyze parity DRAFT.yaml --against FQN --target-layer LAYER   # disposable-table vs. legacy
+skifer analyze history --warehouse-id ID --days N       # from system.query.history instead of files
+```
+
+A construct the analyzer cannot safely translate — an unsupported window function, two scripts
+computing the same output with different formulas — is always a named residue in the report, never
+a silent drop or a guess. `analyze parity` runs a draft into a disposable table (never the draft's
+own eventual target, never the legacy table) to prove row-level equivalence on real data before a
+cutover.
+
+See [Project Analyzer](docs/project_analyzer.md) for the full walkthrough, report shape, and exit codes.
 
 ---
 

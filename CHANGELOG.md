@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Post-Plan-43 documentation sync: `docs/index.md` still said "Eighteen runnable examples" (24
+  exist now); `docs/getting_started.md`'s "Where to go next" table stopped at example 18 and never
+  listed examples 19–24 (`rule_optimizer`, `builder_and_orchestration`, `hub_routing`,
+  `quality_agent`, `openlineage`, `project_analyzer`), a pre-existing gap unrelated to Plan 43 that
+  made those six examples unreachable from that one navigation table (they were still reachable
+  elsewhere, so `tests/test_examples.py`'s reachability test never caught it); top-level `README.md`
+  never mentioned the project analyzer at all, unlike comparably major features (Governed
+  Capabilities, Supervised Adaptive Gold) which each get their own section there. Added a "Project
+  Analyzer" `README.md` section and `Key Capabilities` bullet, six new rows to the
+  `getting_started.md` table, and corrected the example count in `docs/index.md`. `mkdocs build
+  --strict` and the full test suite (including `tests/test_docs_navigation.py`) pass with no new
+  failures.
+
 ## [4.0.0] - 2026-10-27
 
 ### Added

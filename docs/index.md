@@ -9,7 +9,7 @@ What makes it usable by agents rather than only by people is the governance runn
 dataset that is not certified is not queryable, every answer carries the evidence it relied on, and
 the only way to act on a system outside the lakehouse is a declared capability a human approved.
 The stabilized runtime target is Databricks plus local PySpark/Delta for development.
-Eighteen runnable examples cover the feature surface, and the test suite executes every one so readers can trust that they stay current.
+Twenty-four runnable examples cover the feature surface, and the test suite executes every one so readers can trust that they stay current.
 
 ---
 
