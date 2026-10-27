@@ -18,9 +18,11 @@ import pytest
 
 import yaml
 
+from skifer.analyzer.parity import ParityReport
 from skifer.cli import (
     ANALYZE_EXIT_ERROR,
     ANALYZE_EXIT_OK,
+    ANALYZE_EXIT_PARITY_MISMATCH,
     API_LOOPBACK_HOST,
     AUDIT_EXIT_BELOW_THRESHOLD,
     AUDIT_EXIT_OK,
@@ -31,6 +33,7 @@ from skifer.cli import (
     SEMANTIC_EXIT_ERROR,
     SEMANTIC_EXIT_OK,
     run_analyze_command,
+    run_analyze_parity_command,
     run_contract_command,
     run_audit,
     run_semantic_metric_views,
@@ -1251,6 +1254,107 @@ def test_analyze_help_mentions_emit_flags():
     assert "--out" in result.stdout
     assert "--min-occurrences" in result.stdout
     assert "--strict" in result.stdout
+
+
+def test_analyze_parity_help_shows_required_flags():
+    result = _run_cli("analyze", "parity", "--help")
+
+    assert result.returncode == 0
+    assert "--against" in result.stdout
+    assert "--target-layer" in result.stdout
+    assert "--key" in result.stdout
+
+
+def test_analyze_parity_missing_required_flag_is_a_usage_error(tmp_path):
+    draft_path = tmp_path / "draft.yaml"
+    draft_path.write_text("tables: []\n")
+
+    result = _run_cli("analyze", "parity", str(draft_path), "--against", "cat.silver.legacy")
+
+    assert result.returncode == 2  # argparse's own usage-error code
+    assert "--target-layer" in result.stderr
+
+
+def test_analyze_plain_usage_is_unaffected_by_the_parity_interception(tmp_path):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+
+    result = _run_cli("analyze", str(sql_path), "--dry-run")
+
+    assert result.returncode == ANALYZE_EXIT_OK
+
+
+def _fake_parity_report(*, identical: bool) -> ParityReport:
+    same_or_different = ("same", "same") if identical else ("a", "b")
+    return ParityReport(
+        draft_fqn="cat.silver._skifer_parity_x",
+        legacy_fqn="cat.silver.legacy",
+        key=("id",),
+        draft_row_count=3,
+        legacy_row_count=3,
+        draft_columns=("id",),
+        legacy_columns=("id",),
+        draft_row_hash=f"sha256:v1:{same_or_different[0]}",
+        legacy_row_hash=f"sha256:v1:{same_or_different[1]}",
+        rows_only_in_draft=0,
+        rows_only_in_legacy=0,
+    )
+
+
+def _parity_args(draft_path, *, key="id"):
+    return argparse.Namespace(
+        draft=str(draft_path), against="cat.silver.legacy", target_layer="silver",
+        key=key, config=None,
+    )
+
+
+def test_run_analyze_parity_command_exits_ok_when_identical(tmp_path, mocker, capsys):
+    draft_path = tmp_path / "draft.yaml"
+    draft_path.write_text("tables:\n  - name: bronze.t\n    alias: t\nkeep_all_columns: true\n")
+    mock_runner = mocker.patch("skifer.analyzer.parity.ParityRunner")
+    mock_runner.return_value.run.return_value = _fake_parity_report(identical=True)
+
+    exit_code = run_analyze_parity_command(_parity_args(draft_path), engine=SimpleNamespace(default_params={}))
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert '"identical": true' in capsys.readouterr().out
+    _, kwargs = mock_runner.return_value.run.call_args
+    assert kwargs["key"] == ["id"]
+    assert kwargs["against"] == "cat.silver.legacy"
+
+
+def test_run_analyze_parity_command_exits_mismatch_when_not_identical(tmp_path, mocker, capsys):
+    draft_path = tmp_path / "draft.yaml"
+    draft_path.write_text("tables:\n  - name: bronze.t\n    alias: t\nkeep_all_columns: true\n")
+    mocker.patch("skifer.analyzer.parity.ParityRunner").return_value.run.return_value = _fake_parity_report(
+        identical=False
+    )
+
+    exit_code = run_analyze_parity_command(_parity_args(draft_path), engine=SimpleNamespace(default_params={}))
+
+    assert exit_code == ANALYZE_EXIT_PARITY_MISMATCH
+    assert '"identical": false' in capsys.readouterr().out
+
+
+def test_run_analyze_parity_command_exits_error_on_missing_draft(tmp_path, capsys):
+    exit_code = run_analyze_parity_command(
+        _parity_args(tmp_path / "missing.yaml"), engine=SimpleNamespace(default_params={}),
+    )
+
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "failed" in capsys.readouterr().err
+
+
+def test_run_analyze_parity_command_without_key_passes_none(tmp_path, mocker):
+    draft_path = tmp_path / "draft.yaml"
+    draft_path.write_text("tables:\n  - name: bronze.t\n    alias: t\nkeep_all_columns: true\n")
+    mock_runner = mocker.patch("skifer.analyzer.parity.ParityRunner")
+    mock_runner.return_value.run.return_value = _fake_parity_report(identical=True)
+
+    run_analyze_parity_command(_parity_args(draft_path, key=None), engine=SimpleNamespace(default_params={}))
+
+    _, kwargs = mock_runner.return_value.run.call_args
+    assert kwargs["key"] is None
 
 
 def test_core_cli_help_does_not_import_optional_sqlglot():

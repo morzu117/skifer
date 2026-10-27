@@ -182,6 +182,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `examples/24_project_analyzer/` (`README.md` + `run.py`) runs `--dry-run`, `--dry-run --split`
   and `--emit` end to end against the corpus, Spark-free.
 
+- Data-level parity run (Plan 43 — 43.5), in a new `skifer.analyzer.parity` module plus a new
+  `skifer analyze parity` CLI subcommand — the first part of the project analyzer that touches
+  Spark: proof on real data before a cutover, instead of trusting the SQL mapping alone.
+  `ParityRunner(engine).run(draft_schema_dict, target_layer, against=fqn, key=[...])` runs the
+  draft via `engine.run_process_to_table()` into a disposable `_skifer_parity_<uuid>` table —
+  never the draft's own eventual target, never the legacy table itself — then drops it once
+  compared, even on failure. `compare_tables()` measures row counts, columns (names and declared
+  types), a `sha256:v1:…` hash of rows sorted by the declared key (or by every common column when
+  none is given), and, with a key, a per-column count of rows that differ among matched keys (via
+  a full outer join on the key, never on a positional zip). `ParityReport.to_dict()` is an explicit
+  field-by-field allowlist, the same discipline as `SemanticEvidence.to_dict()` and the incident
+  alert payload in `observability/alerts.py`: no field on the dataclass can hold a raw cell value —
+  only counts, booleans, hashes and column names, so the report is safe to paste into a ticket.
+  `skifer analyze parity <draft.yaml> --against <fqn> --target-layer <layer> [--key col,…]
+  [--config PATH]` — exit `0` identical, `5` a measured discrepancy, `1` a technical error.
+  `--target-layer` is a necessary addition beyond the plan's own abbreviated CLI sketch:
+  `run_process_to_table()` requires it explicitly (same as every other engine caller — there is no
+  existing convention in this codebase for inferring it from a bare schema dict), and it is only
+  ever used to resolve the disposable table's sandboxed schema, never the draft's real target.
+  `analyze_parser`'s existing `paths` positional is `nargs="+"` and greedy, so nesting a subparser
+  under it for `parity` would have swallowed the first legacy-SQL path as a command name instead —
+  breaking every existing flat `skifer analyze <paths>…` invocation. `skifer analyze parity …` is
+  instead intercepted in `main()` before argparse ever sees it and routed to its own parser, so the
+  flat `analyze` parser is untouched byte-for-byte. New tests in `tests/test_analyzer_parity.py`
+  (`ParityReport`/`ColumnDifference`/the row-hash helper are pure Python and need no Spark; two
+  Spark-fixture tests prove a faithful draft reports `identical=True` against a legacy table built
+  from the same rows, and a draft with a wrongly-pushed filter is caught via `rows_only_in_legacy`)
+  and `tests/test_cli.py` (the new subcommand's argument wiring and exit codes, with the engine and
+  `ParityRunner` both mocked). The two Spark-fixture tests in `test_analyzer_parity.py` could not be
+  executed on this machine — no local JRE, the same pre-existing gap already noted for the rest of
+  the Spark-backed suite — so they are verified by inspection only; every Spark-free test above,
+  `ruff check src/`, and the full non-Spark suite (no new failures beyond that same pre-existing
+  JRE gap) all pass.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed

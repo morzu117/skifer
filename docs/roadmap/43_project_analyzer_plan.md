@@ -384,6 +384,38 @@ de `--strict`.
   reproduit la table legacy construite par le SQL source ; un draft volontairement faux (filtre
   poussé à tort) est détecté.
 
+**Statut : implémenté, non vérifié par exécution Spark locale (voir plus bas).**
+`ParityRunner.run()` écrit toujours dans une table jetable `_skifer_parity_<uuid>` — jamais la
+cible finale du draft, jamais la table legacy — et la droppe même en cas d'échec de la comparaison
+(`finally`). `compare_tables()` traite la jointure sur clé via un `full_outer` avec des colonnes
+non-clé renommées `__d_<col>`/`__l_<col>` et un marqueur `__in_draft`/`__in_legacy`, pour éviter
+l'ambiguïté de colonnes homonymes après jointure et pour distinguer sans équivoque une ligne
+présente d'un seul côté — pas de zip positionnel, qui aurait fait dépendre le résultat de l'ordre
+des lignes avant la jointure. `ParityReport.to_dict()` est une allowlist champ par champ, jamais
+`asdict` : aucun champ du dataclass ne peut porter une valeur de cellule brute.
+
+Déviation assumée par rapport à l'esquisse CLI du plan : `skifer analyze parity` exige aussi
+`--target-layer`. `run_process_to_table()` le requiert explicitement (comme tout autre appelant
+du moteur dans ce code — il n'existe aucune convention pour l'inférer d'un schema dict nu), et il
+ne sert qu'à résoudre le schema sandboxé de la table jetable, jamais la cible réelle du draft.
+
+Câblage CLI : `analyze_parser` garde son positional `paths` (`nargs="+"`, glouton) intact — y
+nicher un sous-parser `parity` aurait avalé le premier chemin SQL comme nom de commande et cassé
+tout appel `skifer analyze <chemins>…` existant. `skifer analyze parity …` est donc intercepté
+dans `main()` avant qu'argparse ne le voie, et routé vers son propre parser ; le parser `analyze`
+plat n'est touché d'aucun octet (confirmé : `skifer analyze <chemins> --dry-run` et les 75 tests de
+`test_cli.py` passent inchangés après l'ajout).
+
+**Limite de vérification locale, signalée et non contournée.** Les deux tests Spark de
+`tests/test_analyzer_parity.py` (le draft fidèle reproduit la table legacy ; le filtre poussé à
+tort est détecté) n'ont pas pu être exécutés sur cette machine — aucun JRE local, le même manque
+déjà documenté pour tout le reste de la suite Spark (`[JAVA_GATEWAY_EXITED]`, identique à chaque
+test utilisant la fixture `spark`). Ils sont vérifiés par relecture seulement. Les tests Python
+purs du même fichier (`ParityReport`/`ColumnDifference`/le hash de lignes, 5 tests), les 6 tests
+CLI de `test_cli.py` (moteur et `ParityRunner` mockés), `ruff check src/`, et la suite complète
+hors Spark passent sans régression nouvelle au-delà de ce manque préexistant (mêmes 20 échecs
+`test_examples.py` déjà documentés en 43.4, mêmes ~188 erreurs `JAVA_GATEWAY_EXITED`).
+
 ### 43.6 — Enrichissement LLM contraint (optionnel)
 
 **But** : noms et descriptions lisibles, sans jamais toucher à la structure.

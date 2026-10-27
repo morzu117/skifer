@@ -66,6 +66,15 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 def main() -> None:
     """Point d'entrée principal de la CLI skifer."""
+    # `skifer analyze parity ...` is intercepted before argparse ever sees it:
+    # `analyze`'s own `paths` positional is `nargs="+"` and greedy, so nesting
+    # a subparser under it would swallow the first legacy-SQL path as a
+    # command name instead (breaking every existing flat `analyze` call).
+    # A dedicated parser for the rest of argv keeps the flat parser untouched.
+    if len(sys.argv) >= 3 and sys.argv[1] == "analyze" and sys.argv[2] == "parity":
+        _run_analyze_parity(sys.argv[3:])
+        return
+
     parser = argparse.ArgumentParser(
         prog="skifer",
         description="Skifer — framework déclaratif de data engineering.",
@@ -573,6 +582,84 @@ def _run_analyze(args: argparse.Namespace) -> None:
 
 ANALYZE_EXIT_RESIDUE = 2
 ANALYZE_EXIT_EXISTING_OUTPUT = 4
+ANALYZE_EXIT_PARITY_MISMATCH = 5
+
+
+def _build_analyze_parity_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="skifer analyze parity",
+        description=(
+            "Run a pipeline draft into a disposable table and compare it to "
+            "a legacy table (Plan 43 — 43.5): proof on data before a cutover."
+        ),
+    )
+    parser.add_argument(
+        "draft",
+        metavar="DRAFT_YAML",
+        help="Path to a pipeline draft YAML (e.g. a schemas/.drafts/... file).",
+    )
+    parser.add_argument(
+        "--against",
+        required=True,
+        metavar="FQN",
+        help="Fully-qualified legacy table to compare the draft's output against.",
+    )
+    parser.add_argument(
+        "--target-layer",
+        required=True,
+        metavar="LAYER",
+        help=(
+            "Base target layer the draft is run into (e.g. silver) — only "
+            "used to resolve the disposable comparison table's schema; the "
+            "draft's own eventual target table name is never written to."
+        ),
+    )
+    parser.add_argument(
+        "--key",
+        default=None,
+        metavar="COL,COL,...",
+        help="Comma-separated key column(s) to join draft and legacy rows on; default: every common column.",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help="Path to config.yaml (default: auto-detected from the current directory).",
+    )
+    return parser
+
+
+def _run_analyze_parity(argv: list[str]) -> None:
+    """Run ``skifer analyze parity`` with stable exit codes (Plan 43 — 43.5)."""
+    args = _build_analyze_parity_parser().parse_args(argv)
+    sys.exit(run_analyze_parity_command(args))
+
+
+def run_analyze_parity_command(args: argparse.Namespace, *, engine=None) -> int:
+    """``skifer analyze parity``: run *draft* into a disposable table via the
+    real engine and compare it to ``--against``. Exit codes: ``0`` identical,
+    ``1`` a technical error, ``5`` a measured discrepancy — no exception
+    means the comparison itself completed, whatever it found.
+    """
+    from skifer.analyzer.parity import ParityRunner
+    from skifer.core.schema_loader import load_schema
+
+    try:
+        if engine is None:
+            from skifer.core.core import SkiferEngine
+
+            engine = SkiferEngine(config_path=args.config)
+        draft_schema = load_schema(args.draft, params=engine.default_params)
+        key = [c.strip() for c in args.key.split(",")] if args.key else None
+        report = ParityRunner(engine).run(
+            draft_schema, args.target_layer, against=args.against, key=key,
+        )
+    except Exception as exc:
+        print(f"[analyze parity] failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    print(json.dumps(report.to_dict(), indent=2, sort_keys=False))
+    return ANALYZE_EXIT_OK if report.identical else ANALYZE_EXIT_PARITY_MISMATCH
 
 
 def run_analyze_command(args: argparse.Namespace) -> int:

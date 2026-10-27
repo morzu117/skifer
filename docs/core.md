@@ -505,6 +505,14 @@ refused outright before any write) · `4` an existing file without the marker bl
 `examples/24_project_analyzer/` runs all three modes end to end against a synthetic 8-script
 corpus.
 
+`skifer analyze parity <draft.yaml> --against <fqn_legacy> --target-layer <layer> [--key col,…]`
+proves data-level equivalence before a cutover (Plan 43 — 43.5): it runs the draft through the
+real engine into a disposable table — never the draft's own eventual target, never the legacy
+table — compares row counts, columns, a row hash, and (with `--key`) a per-column count of rows
+that differ for matched keys, then drops the disposable table. The report never carries a data
+value, only counts and column names. Exit codes: `0` identical · `5` a measured discrepancy · `1`
+a technical error. This is the only `analyze` mode that needs a real Spark session.
+
 ---
 
 ## Semantic projection metadata (`data_product`, `contract`, `semantic`) — Plan 29
