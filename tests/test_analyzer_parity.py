@@ -100,12 +100,10 @@ def _engine(spark, mocker):
 
 
 def _draft_schema_dict(engine, *, filter_fr_only: bool) -> dict:
-    payload = {
-        "tables": [{"name": "bronze_customers_parity", "alias": "c"}],
-        "keep_all_columns": True,
-    }
+    table = {"name": "bronze_customers_parity", "alias": "c"}
     if filter_fr_only:
-        payload["filter"] = ["country:equals:FR"]
+        table["filter"] = ["country:equals:FR"]
+    payload = {"tables": [table], "keep_all_columns": True}
     return parse_schema(json.dumps(payload), params=engine.default_params)
 
 

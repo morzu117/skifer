@@ -323,6 +323,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new page (`core.md`'s heading slug drops one hyphen that a naive guess from its Markdown text
   would keep), fixed before this entry. Closes Plan 43 — all of 43.0 through 43.8 are implemented.
 
+### Fixed
+
+- `tests/test_analyzer_parity.py::test_parity_runner_detects_a_wrongly_pushed_filter` (Plan 43 —
+  43.5) put `filter:` on the draft schema dict's top level instead of inside its `tables:` entry —
+  an invalid placement the loader silently ignores, so the draft ran unfiltered and the test's own
+  assertions (`identical is False`, a dropped row) passed against an unfiltered result for the
+  wrong reason. This test needs a real local Spark/Delta session and could not run on this machine
+  until now (no local JRE — see the `docs: note the local JRE prerequisite` entry below); it was
+  previously verified by inspection only, which missed the misplaced key. Installing a local JRE
+  (Homebrew `openjdk@17`) made it possible to actually run this test for the first time, which
+  surfaced the failure; fixed by moving `filter:` onto the table entry, where `schema_loader.py`
+  actually reads it. No production code changed — this was a test-fixture bug, not a
+  `ParityRunner`/`compare_tables` defect.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed

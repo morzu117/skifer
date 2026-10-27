@@ -406,15 +406,22 @@ dans `main()` avant qu'argparse ne le voie, et routé vers son propre parser ; l
 plat n'est touché d'aucun octet (confirmé : `skifer analyze <chemins> --dry-run` et les 75 tests de
 `test_cli.py` passent inchangés après l'ajout).
 
-**Limite de vérification locale, signalée et non contournée.** Les deux tests Spark de
-`tests/test_analyzer_parity.py` (le draft fidèle reproduit la table legacy ; le filtre poussé à
-tort est détecté) n'ont pas pu être exécutés sur cette machine — aucun JRE local, le même manque
-déjà documenté pour tout le reste de la suite Spark (`[JAVA_GATEWAY_EXITED]`, identique à chaque
-test utilisant la fixture `spark`). Ils sont vérifiés par relecture seulement. Les tests Python
-purs du même fichier (`ParityReport`/`ColumnDifference`/le hash de lignes, 5 tests), les 6 tests
-CLI de `test_cli.py` (moteur et `ParityRunner` mockés), `ruff check src/`, et la suite complète
-hors Spark passent sans régression nouvelle au-delà de ce manque préexistant (mêmes 20 échecs
-`test_examples.py` déjà documentés en 43.4, mêmes ~188 erreurs `JAVA_GATEWAY_EXITED`).
+**Limite de vérification locale, signalée et non contournée — depuis levée.** Les deux tests Spark
+de `tests/test_analyzer_parity.py` (le draft fidèle reproduit la table legacy ; le filtre poussé à
+tort est détecté) n'ont initialement pas pu être exécutés sur cette machine — aucun JRE local, le
+même manque déjà documenté pour tout le reste de la suite Spark (`[JAVA_GATEWAY_EXITED]`,
+identique à chaque test utilisant la fixture `spark`) — et n'avaient été vérifiés que par
+relecture. Un JRE local (Homebrew `openjdk@17`) a depuis été installé pour lever ce manque sur
+cette machine, ce qui a permis d'exécuter réellement toute la suite Spark pour la première fois —
+et a immédiatement révélé que la relecture seule avait raté un vrai défaut : le fixture
+`_draft_schema_dict` du second test plaçait `filter:` au niveau racine du schema dict au lieu de
+l'entrée `tables:`, un emplacement invalide que le loader ignore silencieusement, si bien que le
+draft tournait sans filtre et que le test passait pour la mauvaise raison avant même d'être
+exécuté. Corrigé en déplaçant `filter:` sur l'entrée de table ; aucun code de production n'était en
+cause (`ParityRunner`/`compare_tables` eux-mêmes sont corrects). Les tests Python purs du même
+fichier (`ParityReport`/`ColumnDifference`/le hash de lignes, 5 tests), les 6 tests CLI de
+`test_cli.py` (moteur et `ParityRunner` mockés), `ruff check src/`, et désormais la suite complète
+**avec** Spark passent sans aucune régression (3537 passed, 56 skipped, 0 failed, 0 error).
 
 ### 43.6 — Enrichissement LLM contraint (optionnel)
 
