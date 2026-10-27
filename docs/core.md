@@ -513,6 +513,16 @@ that differ for matched keys, then drops the disposable table. The report never 
 value, only counts and column names. Exit codes: `0` identical · `5` a measured discrepancy · `1`
 a technical error. This is the only `analyze` mode that needs a real Spark session.
 
+`--enrich` on `--emit` (Plan 43 — 43.6, optional) proposes, via an `LLMProvider`, an advisory
+rule name and a one-sentence docstring per shared-rule candidate, a one-sentence description per
+draft, and fingerprint-grouping proposals — added as an `"enrichment"` key on the printed report,
+never written to a draft or stub on disk. Every call sends the LLM only what is already proven
+safe: a candidate's canonical, qualifier-stripped expression shape or a draft's declared output
+column names — never a table name, a join condition, or a filter value. A proposed rule name is
+purely advisory: it is validated as a Python identifier but never used to rename the generated
+function or its `business_rules:` wiring. No configured provider is a silent no-op (empty result,
+exit code unaffected).
+
 ---
 
 ## Semantic projection metadata (`data_product`, `contract`, `semantic`) — Plan 29

@@ -192,6 +192,26 @@ def _collect_draftable(statements: list[Statement]):
     return drafts, skipped
 
 
+def list_draft_output_columns(statements: list[Statement]) -> dict[str, list[str]]:
+    """Output column names per draft relative path, best-effort (Plan 43 —
+    43.6): read directly off ``select_final``'s target aliases when present;
+    empty for a ``keep_all_columns`` draft, whose real output columns aren't
+    known without executing Spark. Never a table name, a join condition or a
+    filter value — only the final output aliases a human already chose,
+    which is what makes this safe to hand to an LLM enrichment call.
+    """
+    drafts, _skipped = _collect_draftable(statements)
+    result: dict[str, list[str]] = {}
+    for rel_path, (schema_dict, _script, _residues) in drafts.items():
+        select_final = schema_dict.get("select_final") or []
+        columns = [
+            entry[1] if isinstance(entry, list) else entry.get("target")
+            for entry in select_final
+        ]
+        result[rel_path] = [c for c in columns if isinstance(c, str)]
+    return result
+
+
 def _sql_sha256(statements: list[Statement], script: str) -> str:
     texts = sorted(s.text for s in statements if s.source_path == script)
     return hashlib.sha256("\n".join(texts).encode("utf-8")).hexdigest()

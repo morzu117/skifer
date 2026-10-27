@@ -200,6 +200,17 @@ def main() -> None:
         action="store_true",
         help="With --emit, exit 2 on any residue (skipped unit, refused or invalid artifact).",
     )
+    analyze_parser.add_argument(
+        "--enrich",
+        action="store_true",
+        help=(
+            "With --emit, also propose rule names/docstrings, draft "
+            "descriptions and fingerprint-grouping via an LLM (Plan 43 — "
+            "43.6, optional) — added to the printed report only, never "
+            "written to disk in this slice. No configured provider: "
+            "silent no-op, exit code unaffected."
+        ),
+    )
 
     index_parser = subparsers.add_parser(
         "index",
@@ -791,7 +802,11 @@ def _run_analyze_emit(args: argparse.Namespace, all_statements: list) -> int:
         print(f"[analyze] --emit failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return ANALYZE_EXIT_ERROR
 
-    print(json.dumps(report.to_dict(), indent=2, sort_keys=False))
+    payload = report.to_dict()
+    if getattr(args, "enrich", False):
+        payload["enrichment"] = _run_analyze_enrich(fresh_statements, thresholds).to_dict()
+
+    print(json.dumps(payload, indent=2, sort_keys=False))
 
     if any(a.status == "refused_exists" for a in report.artifacts):
         print("[analyze] Some files already exist without the project_analyzer marker; left untouched.", file=sys.stderr)
@@ -801,6 +816,29 @@ def _run_analyze_emit(args: argparse.Namespace, all_statements: list) -> int:
         return ANALYZE_EXIT_RESIDUE
 
     return ANALYZE_EXIT_OK
+
+
+def _run_analyze_enrich(statements: list, thresholds):
+    """``--enrich`` on ``--emit`` (Plan 43 — 43.6, optional): propose rule
+    names/docstrings, draft descriptions and fingerprint groupings via an
+    LLM, additive to the printed report only — nothing here is written to
+    the drafts or stubs on disk in this slice. No configured provider is a
+    silent no-op, matching the plan's own stated behaviour.
+    """
+    from skifer.analyzer.emitter import list_draft_output_columns
+    from skifer.analyzer.llm_enrichment import enrich
+    from skifer.analyzer.patterns import find_patterns
+
+    try:
+        from skifer.semantic.llm_provider import get_llm_provider
+
+        provider = get_llm_provider()
+    except Exception:
+        provider = None
+
+    report = find_patterns(statements, thresholds=thresholds)
+    draft_output_columns = list_draft_output_columns(statements)
+    return enrich(report, draft_output_columns, provider=provider)
 
 
 def _print_analyze_inventory(corpus) -> None:

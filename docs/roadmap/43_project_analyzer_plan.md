@@ -432,6 +432,53 @@ hors Spark passent sans régression nouvelle au-delà de ce manque préexistant 
 - Tests : LLM mocké ; une réponse qui tente de renommer une table ou d'ajouter une jointure
   est rejetée avec sa raison.
 
+**Statut : implémenté pour les noms/docstrings de règles, les descriptions de drafts et les
+regroupements de fingerprints ; le corps de règle pour un fragment `needs_curation` est un
+report explicite de scope, pas une implémentation partielle devinée.**
+
+`analyzer/llm_enrichment.py` prend un `PatternReport` (le vrai nom du type que ce point
+appelait `AnalysisReport`) et une table `rel_path -> output columns` (nouvel export public
+`emitter.list_draft_output_columns()`, qui lit les alias de `select_final` déjà collectés par
+`emitter._collect_draftable()` — vide pour un draft `keep_all_columns`, dont les colonnes
+réelles ne sont connues qu'à l'exécution Spark). `enrich(report, draft_output_columns,
+provider=…)` appelle le provider une fois par candidat de règle (nom + docstring), une fois
+par draft (description), puis une fois pour les regroupements — jamais pour moins de deux
+candidats. Chaque appel reçoit un prompt système dédié et n'envoie que ce qui est déjà prouvé
+sûr : la forme canonique qualifiée-neutre de `fingerprint.py` (`candidate.occurrences[0].sql_text`)
+ou les alias de sortie — jamais un nom de table, une condition de jointure ou une valeur de
+filtre. La réponse est un JSON fermé : toute clé hors de l'allowlist de cet appel rejette la
+réponse entière avec une raison nommée, même discipline que
+`SemanticBuilder.build_from_projection()`'s `_ALLOWED_NEW_METRIC_KEYS`. Un nom de règle proposé
+est validé contre `^[A-Za-z_][A-Za-z0-9_]*$` mais reste **purement consultatif** : il n'est
+jamais utilisé pour renommer la fonction générée ni son câblage `business_rules:` — un
+renommage là franchirait la frontière entre nommage et structure, que ce module ne franchit
+jamais. Un regroupement de fingerprints proches est une proposition pure, jamais appliquée —
+ce slice ne câble aucun `--accept-groups` car il n'y a encore rien à accepter dedans.
+
+**Déviation assumée par rapport au CLI esquissé par le plan** : `--enrich` ajoute une clé
+`"enrichment"` au rapport JSON déjà imprimé par `--emit`, mais n'écrit rien de nouveau sur
+`--out` dans ce slice — ni dans les YAML de draft, ni dans les stubs de règles. Le chemin
+`emit_corpus()` existant (43.4), déjà testé et livré, reste inchangé au caractère près ; la
+proposition d'enrichissement reste un texte à relire et à reporter à la main. Sans provider
+configuré (`get_llm_provider()` lève), `--enrich` est un no-op silencieux conforme au texte du
+plan : résultat vide, rapport inchangé sinon, code de sortie inchangé.
+
+**Scope cut, assumé et documenté dans le module et le CHANGELOG** : le corps de règle Python
+pour un fragment `needs_curation` (troisième puce de ce point) n'est pas proposé dans ce
+slice. Le mapper (43.2) ne conserve qu'un message de résidu abstrait pour un tel fragment, pas
+un nœud d'expression isolé et qualifié-neutre comme le fait `fingerprint.py` pour une
+expression scalaire ; envoyer le texte SQL complet de l'instruction à la place fuiterait
+exactement les noms de table, conditions de jointure et valeurs littérales que ce module existe
+pour tenir à l'écart du LLM. Isoler un fragment sûr pour une fonction fenêtrée (le seul cas
+résiduel du corpus, le `LAG()` de `08_kpi_monthly.sql`) demande un travail côté mapper, reporté
+plutôt que deviné.
+
+Tests : `tests/test_analyzer_llm_enrichment.py` (un `FakeProvider` tient lieu de `LLMProvider` —
+aucun appel réseau, aucun Spark) et des assertions nouvelles dans `tests/test_cli.py` pour le
+câblage `--enrich` (no-op sans provider, rapport inchangé sans le flag, rapport enrichi avec un
+provider mocké). `ruff check src/` et la suite non-Spark passent sans régression au-delà du
+déficit JRE déjà connu.
+
 ### 43.7 — Front-ends notebooks et historique de requêtes
 
 - `frontends.py` : notebooks Databricks `.py` (cellules `# MAGIC %sql`, littéraux dans

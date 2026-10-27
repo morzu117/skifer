@@ -216,6 +216,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ruff check src/`, and the full non-Spark suite (no new failures beyond that same pre-existing
   JRE gap) all pass.
 
+- Constrained, optional LLM enrichment of the project analyzer's output (Plan 43 — 43.6), in a new
+  `skifer.analyzer.llm_enrichment` module wired to a new `--enrich` flag on `skifer analyze --emit`.
+  `enrich(report, draft_output_columns, provider=…)` proposes, per `SharedRuleCandidate`, an advisory
+  rule name and a one-sentence docstring from its canonical, qualifier-stripped expression shape
+  alone (never a table name, join condition or filter value); per draft, a one-sentence description
+  from its `select_final` output column names alone (new `emitter.list_draft_output_columns()`, a
+  small additive export reusing the existing internal draft collection); and fingerprint-grouping
+  proposals across candidates, never auto-applied. Every LLM response is parsed as closed JSON —
+  any key outside that call's allowlist rejects the whole response with a named reason, mirroring
+  `SemanticBuilder.build_from_projection()`'s own `_ALLOWED_NEW_METRIC_KEYS` discipline — and a
+  proposed rule name is validated against `^[A-Za-z_][A-Za-z0-9_]*$` but never used to rename the
+  generated function or its `business_rules:` wiring: renaming there would cross from naming into
+  structure, which an LLM never decides in this codebase. `--enrich` adds an `"enrichment"` key to
+  the existing `--emit` JSON report; it changes nothing written to `--out` in this slice, and with no
+  LLM provider configured it is a silent no-op (empty result, report otherwise unchanged, exit code
+  unaffected) — the existing `emit_corpus()` call path and its own tests are untouched. **Scope cut,
+  stated plainly:** a `needs_curation` fragment's proposed rule body (the plan's third 43.6 bullet)
+  is not enriched in this slice — the mapper (43.2) records only an abstract residue message for
+  such a fragment, not an isolated, qualifier-stripped expression node the way `fingerprint.py`
+  produces for a scalar expression, and sending the statement's full SQL text instead would leak
+  exactly the table names, join conditions and literal values this module exists to keep away from
+  the LLM; deferred rather than guessed at. New `tests/test_analyzer_llm_enrichment.py` (a
+  `FakeProvider` stands in for `LLMProvider`, fully Spark-free, no mocked network call needed) and
+  new assertions in `tests/test_cli.py` for the `--enrich` wiring. `ruff check src/` and the full
+  non-Spark suite pass with no new failures beyond the same pre-existing JRE gap.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed

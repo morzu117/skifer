@@ -1168,10 +1168,11 @@ def test_analyze_without_sqlglot_reports_install_hint(tmp_path, capsys):
     assert "Traceback" not in result.stderr
 
 
-def _emit_args(tmp_path, paths, *, out, strict=False, min_occurrences=3, min_scripts=2):
+def _emit_args(tmp_path, paths, *, out, strict=False, min_occurrences=3, min_scripts=2, enrich=False):
     return argparse.Namespace(
         paths=paths, inventory=False, dry_run=False, emit=True, dialect="databricks",
         out=str(out), strict=strict, min_occurrences=min_occurrences, min_scripts=min_scripts,
+        enrich=enrich,
     )
 
 
@@ -1254,6 +1255,62 @@ def test_analyze_help_mentions_emit_flags():
     assert "--out" in result.stdout
     assert "--min-occurrences" in result.stdout
     assert "--strict" in result.stdout
+    assert "--enrich" in result.stdout
+
+
+def test_analyze_emit_enrich_without_a_configured_provider_is_a_silent_noop(tmp_path, monkeypatch, capsys):
+    """No LLM_PROVIDER / API keys in this test's environment -> get_llm_provider()
+    raises -> _run_analyze_enrich falls back to provider=None -> empty result,
+    same exit code as without --enrich."""
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir, enrich=True))
+
+    stdout = capsys.readouterr().out
+    output = json.loads(stdout[stdout.index("{"):])
+    assert exit_code == ANALYZE_EXIT_OK
+    assert output["enrichment"] == {"rules": [], "drafts": [], "groupings": []}
+
+
+def test_analyze_emit_without_enrich_flag_has_no_enrichment_key(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir, enrich=False))
+
+    stdout = capsys.readouterr().out
+    output = json.loads(stdout[stdout.index("{"):])
+    assert "enrichment" not in output
+
+
+def test_analyze_emit_enrich_with_a_configured_provider_populates_the_report(tmp_path, monkeypatch, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    class _FakeProvider:
+        def complete(self, *, system_prompt, user_message, temperature=0.0, **kwargs):
+            if "Output columns" in user_message:
+                return json.dumps({"description": "Raw ids promoted to silver."})
+            return json.dumps({"name": "noop", "docstring": "d"})
+
+    monkeypatch.setattr("skifer.semantic.llm_provider.get_llm_provider", lambda *a, **k: _FakeProvider())
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir, enrich=True))
+
+    stdout = capsys.readouterr().out
+    output = json.loads(stdout[stdout.index("{"):])
+    assert exit_code == ANALYZE_EXIT_OK
+    assert output["enrichment"]["drafts"][0]["description"] == "Raw ids promoted to silver."
 
 
 def test_analyze_parity_help_shows_required_flags():
