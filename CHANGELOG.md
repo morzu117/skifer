@@ -270,6 +270,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `system.query.history`) is tracked separately, as the plan itself calls it out as its own
   sub-point.
 
+- Query-history front-end for the project analyzer (Plan 43 — 43.7, second sub-point): new
+  `analyzer/history.py` and `skifer analyze history --warehouse-id ID --days N [--schema CAT.SCHEMA]
+  [--profile NAME]`, feeding `system.query.history` statement text through the exact same
+  `--inventory`/`--dry-run`/`--emit` pipeline a `.sql` file or notebook already goes through.
+  `fetch_query_history()` runs a single `SELECT statement_id, statement_text, start_time FROM
+  system.query.history WHERE start_time >= current_timestamp() - INTERVAL N DAYS` through the
+  Databricks SDK's Statement Execution API (the same SDK surface
+  `SparkBackend.execute_sql_on_warehouse` already uses for a materialized view's DDL — Plan 28) and
+  polls it to completion with a standalone copy of that poller's loop, not an import from
+  `spark_backend.py`: that module imports `pyspark` at module level, which would make the analyzer
+  package — deliberately Spark-free everywhere else — require a JRE just to fetch query text.
+  **Never selects an author/user column**: the fetch statement reads only `statement_id`,
+  `statement_text` and `start_time`, so there is no identity to omit from a later report — it is
+  never read in the first place, a stronger guarantee than redacting it afterwards. **Never reads a
+  query's result data**, only its text. `--schema`, when given, filters the *fetched statement text*
+  (a case-insensitive substring check) rather than a `WHERE` clause pushed into
+  `system.query.history`: `statement_text`/`start_time`/`statement_id` are that system table's
+  documented stable columns, and this module does not assume a particular lineage-column name for
+  which schema or table a statement touched, since that is not part of the same stable contract —
+  a deliberately conservative choice over guessing at an unverified column name. Deduplication is by
+  a versioned content fingerprint (`sha256:v1:`, whitespace- and case-normalized) over the statement
+  text, the same discipline `fingerprint.py` already uses for a recurring expression (Plan 43 —
+  43.4). `_run_analyze_emit`'s own fresh-reparse step (used by both the flat `skifer analyze` and
+  this new subcommand) was changed to re-parse directly from each already-held `Statement.text`
+  rather than re-reading the original file from disk — `Statement.text` is immutable (only the
+  sqlglot AST is mutated in place by `split_corpus`/`map_statement`), so this gives the same fresh,
+  unmutated AST without a second disk read, and, as a side effect, without assuming `source_path` is
+  a real file at all; a query-history statement's `source_path` (`system.query.history::<id>`) never
+  was one. `run_analyze_command`'s own `--inventory`/`--dry-run`/`--emit` dispatch was factored out
+  into a shared `_run_analyze_modes()` so the new subcommand runs the identical mode logic rather
+  than a parallel copy. New `tests/test_analyzer_history.py` (a fake Databricks SDK `WorkspaceClient`
+  stands in — fetch, dedup, schema filter, author/result-column omission, and a PENDING→RUNNING→
+  SUCCEEDED poll, all without a live workspace) and new CLI-level tests in `tests/test_cli.py`.
+  `ruff check src/` and the full non-Spark suite pass with no new failures beyond the pre-existing
+  JRE gap.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed

@@ -74,6 +74,9 @@ def main() -> None:
     if len(sys.argv) >= 3 and sys.argv[1] == "analyze" and sys.argv[2] == "parity":
         _run_analyze_parity(sys.argv[3:])
         return
+    if len(sys.argv) >= 3 and sys.argv[1] == "analyze" and sys.argv[2] == "history":
+        _run_analyze_history(sys.argv[3:])
+        return
 
     parser = argparse.ArgumentParser(
         prog="skifer",
@@ -673,6 +676,88 @@ def run_analyze_parity_command(args: argparse.Namespace, *, engine=None) -> int:
     return ANALYZE_EXIT_OK if report.identical else ANALYZE_EXIT_PARITY_MISMATCH
 
 
+def _build_analyze_history_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="skifer analyze history",
+        description=(
+            "Fetch recent statement text from system.query.history via a "
+            "Databricks SQL warehouse and feed it through the same "
+            "--inventory/--dry-run/--emit pipeline as a .sql file (Plan 43 "
+            "— 43.7's second sub-point). Needs the optional [databricks] "
+            "extra. Never reads a query's result data or who ran it."
+        ),
+    )
+    parser.add_argument("--warehouse-id", required=True, metavar="ID", help="SQL warehouse to query against.")
+    parser.add_argument("--days", type=int, default=7, metavar="N", help="Look back this many days (default: 7).")
+    parser.add_argument(
+        "--schema",
+        default=None,
+        metavar="CAT.SCHEMA",
+        help="Case-insensitive substring filter on fetched statement text (best-effort, not exact lineage).",
+    )
+    parser.add_argument("--profile", default=None, metavar="NAME", help="Databricks CLI config profile to use.")
+    parser.add_argument("--dialect", default="spark", help="sqlglot source dialect (default: spark).")
+    parser.add_argument("--inventory", action="store_true", help="Print a raw AST node-type inventory.")
+    parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Map to drafts and report; write nothing.")
+    parser.add_argument("--split", action="store_true", help="With --dry-run: also report a CTE/subquery split.")
+    parser.add_argument("--emit", action="store_true", help="Find recurring patterns and write validated drafts.")
+    parser.add_argument("--out", default=".", metavar="DIR", help="With --emit: output directory.")
+    parser.add_argument("--format", default="json", choices=["json", "markdown"], help="With --dry-run: output format.")
+    parser.add_argument("--min-occurrences", dest="min_occurrences", type=int, default=3, metavar="N")
+    parser.add_argument("--min-scripts", dest="min_scripts", type=int, default=2, metavar="N")
+    parser.add_argument("--strict", action="store_true", help="With --emit: refuse to write on any residue.")
+    parser.add_argument("--enrich", action="store_true", help="With --emit: add constrained LLM naming/descriptions.")
+    return parser
+
+
+def _run_analyze_history(argv: list[str]) -> None:
+    """Run ``skifer analyze history`` with stable exit codes (Plan 43 — 43.7)."""
+    args = _build_analyze_history_parser().parse_args(argv)
+    sys.exit(run_analyze_history_command(args))
+
+
+def run_analyze_history_command(args: argparse.Namespace, *, workspace_client=None) -> int:
+    """``skifer analyze history``: fetch ``system.query.history``, dedupe by
+    content fingerprint, and run the same corpus through
+    :func:`_run_analyze_modes` as any other front-end's statements.
+    """
+    inventory = getattr(args, "inventory", False)
+    dry_run = getattr(args, "dry_run", False)
+    emit = getattr(args, "emit", False)
+    if not inventory and not dry_run and not emit:
+        print("[analyze history] Nothing to do: pass --inventory, --dry-run or --emit.")
+        return ANALYZE_EXIT_OK
+
+    from skifer.analyzer.history import build_workspace_client, fetch_query_history
+    from skifer.analyzer.parser import _parse_raw_statements
+
+    try:
+        client = workspace_client if workspace_client is not None else build_workspace_client(profile=args.profile)
+        fetch_result = fetch_query_history(
+            client, warehouse_id=args.warehouse_id, days=args.days, schema=args.schema,
+        )
+    except ImportError as exc:
+        print(f"[analyze history] {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+    except Exception as exc:
+        print(f"[analyze history] fetch failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    print(
+        f"[analyze history] fetched {fetch_result.total_fetched}, "
+        f"{fetch_result.duplicate_count} duplicate(s), "
+        f"{len(fetch_result.raw_statements)} distinct statement(s)"
+    )
+
+    try:
+        all_statements = _parse_raw_statements(list(fetch_result.raw_statements), dialect=args.dialect)
+    except Exception as exc:
+        print(f"[analyze history] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    return _run_analyze_modes(args, all_statements, dry_run=dry_run, emit=emit)
+
+
 def _parse_source_file(path: str, *, dialect: str):
     """Parse one source file into statements, dispatching on its extension
     (Plan 43 — 43.7): ``.py``/``.ipynb`` through ``parse_notebook`` (which
@@ -744,6 +829,14 @@ def run_analyze_command(args: argparse.Namespace) -> int:
     if had_error:
         return ANALYZE_EXIT_ERROR
 
+    return _run_analyze_modes(args, all_statements, dry_run=dry_run, emit=emit)
+
+
+def _run_analyze_modes(args: argparse.Namespace, all_statements: list, *, dry_run: bool, emit: bool) -> int:
+    """Shared ``--inventory``/``--dry-run``/``--emit`` dispatch over an
+    already-built statement corpus — used by the flat ``skifer analyze``
+    path and, since 43.7's second sub-point, by ``skifer analyze history``
+    once it has fetched and deduplicated its own corpus."""
     if dry_run:
         from skifer.analyzer.report import build_report
 
@@ -808,13 +901,19 @@ def _run_analyze_emit(args: argparse.Namespace, all_statements: list) -> int:
 
     # Re-parse fresh: split_corpus/map_statement rewrite the AST in place
     # (43.3), so the preflight's statements are no longer safe to reuse.
-    # A notebook statement's source_path may carry a 43.7 `::cell:N` suffix
-    # (not a real file path) — strip it to recover the file to re-parse,
-    # same convention `_original_script_path` uses elsewhere in this package.
-    fresh_statements = []
-    for path in sorted({s.source_path.split("::", 1)[0] for s in all_statements}):
-        statements, _residues = _parse_source_file(path, dialect=args.dialect)
-        fresh_statements.extend(statements)
+    # Re-parsed directly from each Statement's own already-held text rather
+    # than re-read from disk: `Statement.text` is immutable (only the AST is
+    # mutated in place), so this gives a fresh, unmutated AST without a
+    # second disk read — and, since 43.7's second sub-point, without
+    # assuming `source_path` is a real file at all (a query-history
+    # statement's `source_path` is a synthetic `system.query.history::<id>`).
+    from skifer.analyzer.frontends import RawStatement
+    from skifer.analyzer.parser import _parse_raw_statements
+
+    fresh_statements = _parse_raw_statements(
+        [RawStatement(source_path=s.source_path, line=s.line, text=s.text) for s in all_statements],
+        dialect=args.dialect,
+    )
 
     try:
         report = emit_corpus(fresh_statements, out_dir=args.out, thresholds=thresholds)

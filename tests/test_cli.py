@@ -33,6 +33,7 @@ from skifer.cli import (
     SEMANTIC_EXIT_ERROR,
     SEMANTIC_EXIT_OK,
     run_analyze_command,
+    run_analyze_history_command,
     run_analyze_parity_command,
     run_contract_command,
     run_audit,
@@ -1412,6 +1413,104 @@ def test_run_analyze_parity_command_without_key_passes_none(tmp_path, mocker):
 
     _, kwargs = mock_runner.return_value.run.call_args
     assert kwargs["key"] is None
+
+
+def test_analyze_history_help_shows_required_flags():
+    result = _run_cli("analyze", "history", "--help")
+
+    assert result.returncode == 0
+    assert "--warehouse-id" in result.stdout
+    assert "--days" in result.stdout
+    assert "--schema" in result.stdout
+
+
+def test_analyze_history_missing_required_flag_is_a_usage_error():
+    result = _run_cli("analyze", "history", "--days", "7")
+
+    assert result.returncode == 2  # argparse's own usage-error code
+    assert "--warehouse-id" in result.stderr
+
+
+def test_analyze_plain_usage_is_unaffected_by_the_history_interception(tmp_path):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+
+    result = _run_cli("analyze", str(sql_path), "--dry-run")
+
+    assert result.returncode == ANALYZE_EXIT_OK
+
+
+class _FakeStatementExecutionForHistory:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def execute_statement(self, *, statement, warehouse_id, wait_timeout):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            statement_id="stmt-1",
+            status=SimpleNamespace(state=SimpleNamespace(value="SUCCEEDED"), error=None),
+            result=SimpleNamespace(data_array=self.rows),
+        )
+
+
+def _history_args(*, inventory=False, dry_run=False, emit=False, out=".", schema=None, days=7):
+    return argparse.Namespace(
+        warehouse_id="wh1", days=days, schema=schema, profile=None, dialect="databricks",
+        inventory=inventory, dry_run=dry_run, split=False, emit=emit, out=out, format="json",
+        min_occurrences=3, min_scripts=2, strict=False, enrich=False,
+    )
+
+
+def test_run_analyze_history_command_nothing_to_do_is_ok(capsys):
+    exit_code = run_analyze_history_command(_history_args(), workspace_client=None)
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "Nothing to do" in capsys.readouterr().out
+
+
+def test_run_analyze_history_command_dry_run_reports_the_fetched_statement(capsys):
+    from types import SimpleNamespace
+
+    client = SimpleNamespace(
+        statement_execution=_FakeStatementExecutionForHistory(
+            [["id1", "SELECT id FROM silver.orders", "2026-01-01"]]
+        )
+    )
+
+    exit_code = run_analyze_history_command(_history_args(dry_run=True), workspace_client=client)
+
+    stdout = capsys.readouterr().out
+    payload = json.loads(stdout[stdout.index("{"):])
+    assert exit_code == ANALYZE_EXIT_OK
+    assert payload["statement_count"] == 1
+
+
+def test_run_analyze_history_command_fetch_failure_is_an_error(capsys):
+    class _FailingStatementExecution:
+        def execute_statement(self, **kwargs):
+            raise RuntimeError("warehouse unreachable")
+
+    from types import SimpleNamespace
+
+    client = SimpleNamespace(statement_execution=_FailingStatementExecution())
+
+    exit_code = run_analyze_history_command(_history_args(dry_run=True), workspace_client=client)
+
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "fetch failed" in capsys.readouterr().err
+
+
+def test_run_analyze_history_command_missing_sdk_without_an_injected_client_is_an_error(capsys, monkeypatch):
+    def _raise_import_error(*, profile):
+        raise ImportError('simulated: `pip install -e ".[databricks]"`')
+
+    monkeypatch.setattr("skifer.analyzer.history.build_workspace_client", _raise_import_error)
+
+    exit_code = run_analyze_history_command(_history_args(dry_run=True))
+
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "databricks" in capsys.readouterr().err
 
 
 def test_core_cli_help_does_not_import_optional_sqlglot():

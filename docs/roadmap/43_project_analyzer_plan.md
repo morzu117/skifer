@@ -519,8 +519,31 @@ fonctionnent sans changement sur un chemin de notebook, exactement comme sur un 
 déjà établie dans le reste des tests de ce plan, écrit comme déviation assumée plutôt que silencieuse).
 `ruff check src/` et la suite non-Spark passent sans régression au-delà du déficit JRE déjà connu.
 
-**Statut du second sous-point (historique de requêtes) : non commencé** — tracké séparément, le plan
-lui-même le désignant comme un sous-point à part.
+**Statut du second sous-point (historique de requêtes) : implémenté.** Nouveau `analyzer/history.py`
+et `skifer analyze history --warehouse-id ID --days N [--schema CAT.SCHEMA] [--profile NAME]` :
+`fetch_query_history()` exécute un unique `SELECT statement_id, statement_text, start_time FROM
+system.query.history WHERE start_time >= current_timestamp() - INTERVAL N DAYS` via l'API Statement
+Execution du SDK Databricks (la même surface que `SparkBackend.execute_sql_on_warehouse` pour le DDL
+d'une vue matérialisée — Plan 28), interrogée par une copie autonome de sa boucle de polling plutôt
+qu'un import de `spark_backend.py` (qui importe `pyspark` au niveau module — l'analyseur reste
+Spark-free). Ne sélectionne **jamais** de colonne auteur/utilisateur — l'identité n'est jamais lue,
+pas seulement omise du rapport ensuite. Ne lit **jamais** les données de résultat, uniquement le
+texte. `--schema` filtre le texte de statement déjà récupéré (sous-chaîne insensible à la casse),
+pas une clause `WHERE` poussée dans `system.query.history` : seules `statement_text`/`start_time`/
+`statement_id` sont le contrat stable documenté de cette table système, et ce module ne suppose
+aucun nom de colonne de lineage pour filtrer par schéma/table, ce choix étant assumé comme
+conservateur plutôt que de deviner une colonne non vérifiée. Dédoublonnage par fingerprint versionné
+(`sha256:v1:`, texte normalisé) — même discipline que `fingerprint.py` (43.4). L'étape de réanalyse
+fraîche de `_run_analyze_emit` a été changée pour repartir du `Statement.text` déjà en main plutôt
+que de relire le fichier d'origine sur disque (`Statement.text` est immuable ; seul l'AST sqlglot est
+muté en place) — un AST frais sans second accès disque, et sans supposer que `source_path` est un
+vrai fichier, ce qu'il n'est jamais pour un statement issu de l'historique
+(`system.query.history::<id>`). Le dispatch `--inventory`/`--dry-run`/`--emit` de
+`run_analyze_command` a été factorisé dans un `_run_analyze_modes()` partagé plutôt que dupliqué.
+Tests : `tests/test_analyzer_history.py` (un faux `WorkspaceClient` du SDK Databricks — fetch, dédup,
+filtre schéma, omission des colonnes auteur/résultat, polling PENDING→RUNNING→SUCCEEDED, sans
+workspace réel) et des tests CLI nouveaux dans `tests/test_cli.py`. `ruff check src/` et la suite
+non-Spark passent sans régression au-delà du déficit JRE déjà connu.
 
 ### 43.8 — Documentation et synchronisation
 

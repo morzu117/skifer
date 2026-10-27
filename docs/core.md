@@ -494,6 +494,18 @@ follows. Each statement keeps its origin: file and line for a `.py` export (rela
 file, not the cell), file and cell index (`path.ipynb::cell:N`) for a `.ipynb`, since a notebook has
 no line numbers spanning cells.
 
+A third front-end reads recent statement text straight from a Databricks workspace (Plan 43 —
+43.7's second sub-point, extra `[databricks]`):
+
+```bash
+skifer analyze history --warehouse-id ID --days 7 [--schema CAT.SCHEMA] [--profile NAME] --dry-run
+```
+
+fetches `system.query.history` via the Databricks SDK's Statement Execution API, deduplicates by a
+content fingerprint, and feeds the result into the same `--inventory`/`--dry-run`/`--emit` pipeline.
+It never selects an author/user column — there is no identity to omit from the report, because it
+is never read — and never reads a query's result data, only its text.
+
 `--dry-run` maps each statement to a schema draft and round-trip-verifies it against the source
 SQL via `compile_select`; a statement it cannot map (a window function, a `UNION`, …) is reported
 `needs_curation` with the reason, never silently dropped. `--split` additionally classifies every
