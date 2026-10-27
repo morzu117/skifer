@@ -484,6 +484,16 @@ skifer analyze "legacy_sql/*.sql" --dry-run [--split]        # map + round-trip-
 skifer analyze "legacy_sql/*.sql" --emit --out PROJECT_ROOT  # write validated drafts + rule stubs
 ```
 
+Any of the three modes also accepts a Databricks `.py` notebook export or a Jupyter `.ipynb`
+notebook in place of a `.sql` path (Plan 43 — 43.7): a `%sql` magic cell (or `%%sql` in `.ipynb`) is
+extracted the same way as a `.sql` file's statements, and a plain code cell is scanned for a
+`spark.sql(...)` call via Python's own `ast` module. Only a single positional literal string
+argument is accepted — an f-string, a variable, a concatenation or a keyword argument is reported
+instead of guessed at, the same "report, never silently drop" discipline a mapper residue already
+follows. Each statement keeps its origin: file and line for a `.py` export (relative to the real
+file, not the cell), file and cell index (`path.ipynb::cell:N`) for a `.ipynb`, since a notebook has
+no line numbers spanning cells.
+
 `--dry-run` maps each statement to a schema draft and round-trip-verifies it against the source
 SQL via `compile_select`; a statement it cannot map (a window function, a `UNION`, …) is reported
 `needs_curation` with the reason, never silently dropped. `--split` additionally classifies every

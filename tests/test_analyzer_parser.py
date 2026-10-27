@@ -11,6 +11,7 @@ from skifer.analyzer.parser import (
     ANALYZER_EXTRA,
     AnalyzerDependencyError,
     StatementParseError,
+    parse_notebook,
     parse_script,
 )
 
@@ -219,3 +220,55 @@ def test_parse_script_without_sqlglot_raises_analyzer_dependency_error(tmp_path,
         parse_script(path)
 
     assert ANALYZER_EXTRA in str(caught.value)
+
+
+class TestParseNotebook:
+    """Plan 43 — 43.7: parse_notebook dispatches on extension, then reuses
+    the exact same sqlglot parsing as parse_script."""
+
+    def test_py_notebook_sql_cell_is_parsed(self, tmp_path):
+        path = tmp_path / "nb.py"
+        path.write_text(
+            "# Databricks notebook source\n"
+            "# MAGIC %sql\n"
+            "# MAGIC CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw\n"
+        )
+
+        statements, residues = parse_notebook(path)
+
+        assert residues == []
+        assert len(statements) == 1
+        assert statements[0].ast is not None
+
+    def test_ipynb_notebook_sql_cell_is_parsed(self, tmp_path):
+        import json
+
+        path = tmp_path / "nb.ipynb"
+        path.write_text(json.dumps({
+            "cells": [
+                {"cell_type": "code", "source": ["%%sql\n", "SELECT id FROM silver.t\n"]},
+            ],
+        }))
+
+        statements, residues = parse_notebook(path)
+
+        assert residues == []
+        assert len(statements) == 1
+
+    def test_unsupported_extension_raises_value_error(self, tmp_path):
+        path = tmp_path / "nb.txt"
+        path.write_text("SELECT 1\n")
+
+        with pytest.raises(ValueError, match="Not a supported notebook extension"):
+            parse_notebook(path)
+
+    def test_a_statement_parse_error_names_the_file_and_line(self, tmp_path):
+        path = tmp_path / "nb.py"
+        path.write_text(
+            "# Databricks notebook source\n"
+            "# MAGIC %sql\n"
+            "# MAGIC NOT EVEN REMOTELY SQL (((\n"
+        )
+
+        with pytest.raises(StatementParseError):
+            parse_notebook(path)

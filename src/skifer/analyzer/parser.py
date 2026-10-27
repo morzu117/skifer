@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from skifer.analyzer.frontends import RawStatement, split_sql_file
+from skifer.analyzer.frontends import (
+    ExtractionResidue,
+    RawStatement,
+    split_ipynb_notebook,
+    split_py_notebook,
+    split_sql_file,
+)
 
 ANALYZER_EXTRA = 'pip install -e ".[analyzer]"'
 
@@ -51,6 +57,18 @@ def _sqlglot():
     return sqlglot
 
 
+def _parse_raw_statements(raws: list[RawStatement], *, dialect: str) -> list[Statement]:
+    sqlglot = _sqlglot()
+    statements: list[Statement] = []
+    for raw in raws:
+        try:
+            ast = sqlglot.parse_one(raw.text, dialect=dialect)
+        except Exception as exc:  # sqlglot's own ParseError/TokenizeError
+            raise StatementParseError(raw, exc) from exc
+        statements.append(Statement(source_path=raw.source_path, line=raw.line, text=raw.text, ast=ast))
+    return statements
+
+
 def parse_script(path: str | Path, *, dialect: str = DEFAULT_DIALECT) -> list[Statement]:
     """Split *path* into statements and parse each with sqlglot.
 
@@ -59,12 +77,28 @@ def parse_script(path: str | Path, *, dialect: str = DEFAULT_DIALECT) -> list[St
         StatementParseError: a statement fails to parse; names the file, line
             and underlying sqlglot error.
     """
-    sqlglot = _sqlglot()
-    statements: list[Statement] = []
-    for raw in split_sql_file(path):
-        try:
-            ast = sqlglot.parse_one(raw.text, dialect=dialect)
-        except Exception as exc:  # sqlglot's own ParseError/TokenizeError
-            raise StatementParseError(raw, exc) from exc
-        statements.append(Statement(source_path=raw.source_path, line=raw.line, text=raw.text, ast=ast))
-    return statements
+    return _parse_raw_statements(split_sql_file(path), dialect=dialect)
+
+
+def parse_notebook(
+    path: str | Path, *, dialect: str = DEFAULT_DIALECT
+) -> tuple[list[Statement], list[ExtractionResidue]]:
+    """Extract embedded SQL from a Databricks ``.py`` export or a Jupyter
+    ``.ipynb`` notebook (Plan 43 — 43.7) and parse each with sqlglot, exactly
+    like :func:`parse_script`. A cell this front-end could not safely read as
+    SQL (an f-string argument, a non-literal ``spark.sql(...)`` call) comes
+    back as an :class:`ExtractionResidue`, never silently dropped.
+
+    Raises:
+        AnalyzerDependencyError: sqlglot is not installed.
+        StatementParseError: an extracted statement fails to parse.
+        ValueError: *path*'s extension is neither ``.py`` nor ``.ipynb``.
+    """
+    path = Path(path)
+    if path.suffix == ".py":
+        raws, residues = split_py_notebook(path)
+    elif path.suffix == ".ipynb":
+        raws, residues = split_ipynb_notebook(path)
+    else:
+        raise ValueError(f"Not a supported notebook extension (.py or .ipynb): {path}")
+    return _parse_raw_statements(raws, dialect=dialect), residues

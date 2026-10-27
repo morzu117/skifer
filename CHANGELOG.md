@@ -242,6 +242,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new assertions in `tests/test_cli.py` for the `--enrich` wiring. `ruff check src/` and the full
   non-Spark suite pass with no new failures beyond the same pre-existing JRE gap.
 
+- Notebook front-ends for the project analyzer (Plan 43 — 43.7, first sub-point): `skifer analyze`
+  now also accepts a Databricks `.py` notebook export or a Jupyter `.ipynb` notebook, dispatching on
+  extension to a new `parser.parse_notebook()` that reuses the exact same sqlglot parsing as
+  `parse_script()`. `frontends.split_py_notebook()` splits a `.py` export on its `# COMMAND
+  ----------` cell separator, recognizes a `%sql` magic cell (every line prefixed `# MAGIC`) and
+  feeds its content through a newly extracted `split_sql_text()` (the text-based core
+  `split_sql_file()` already had, now reusable with a `line_offset` so a reported line stays
+  relative to the real file, not the cell); any other magic (`%md`, `%scala`, `%r`, `%sh`, `%run`)
+  has no embedded SQL this front-end extracts and is skipped, not reported — a residue is for a
+  recurring pattern this package could not translate, not every cell in a different language.
+  `frontends.split_ipynb_notebook()` does the same for a `.ipynb`'s `%%sql`-magic code cells, tagging
+  each statement's `source_path` as `<path>::cell:<index>` — the same `::`-suffix convention 43.3's
+  splitter already uses for a synthetic statement, so "distinct scripts" counting elsewhere in the
+  analyzer still groups every cell under the one real notebook file. A plain Python cell (no `%sql`
+  magic) is scanned by new `frontends.extract_spark_sql_calls()` for a `spark.sql(...)` call via the
+  standard library's `ast` module: only a single positional literal string argument is accepted: an
+  f-string, a variable, string concatenation or a keyword argument is reported as a new
+  `ExtractionResidue` (never interpolated, never guessed at — the same "report, never silently drop"
+  discipline the mapper already applies to a construct it cannot map). `run_analyze_command` and
+  `_run_analyze_emit`'s fresh re-parse step both dispatch through a new `_parse_source_file()` helper
+  that resolves a notebook statement's real file (stripping the `::cell:N` suffix) before re-parsing
+  — `--dry-run`, `--emit` and `--inventory` all work unchanged on a notebook path, exactly as they do
+  on a `.sql` file. New `tests/test_analyzer_frontends.py` and new `TestParseNotebook` tests in
+  `tests/test_analyzer_parser.py`; `ruff check src/` and the full non-Spark suite pass with no new
+  failures beyond the pre-existing JRE gap. The query-history sub-point of 43.7 (Databricks SDK,
+  `system.query.history`) is tracked separately, as the plan itself calls it out as its own
+  sub-point.
+
 ## [3.1.2] - 2026-10-19
 
 ### Fixed

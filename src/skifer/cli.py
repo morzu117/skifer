@@ -673,6 +673,22 @@ def run_analyze_parity_command(args: argparse.Namespace, *, engine=None) -> int:
     return ANALYZE_EXIT_OK if report.identical else ANALYZE_EXIT_PARITY_MISMATCH
 
 
+def _parse_source_file(path: str, *, dialect: str):
+    """Parse one source file into statements, dispatching on its extension
+    (Plan 43 — 43.7): ``.py``/``.ipynb`` through ``parse_notebook`` (which
+    also returns any cell this front-end could not safely read as SQL),
+    anything else through ``parse_script``. Returns ``(statements,
+    residues)`` — ``residues`` is always empty for a plain ``.sql`` file.
+    """
+    import os
+
+    from skifer.analyzer.parser import parse_notebook, parse_script
+
+    if os.path.splitext(path)[1] in (".py", ".ipynb"):
+        return parse_notebook(path, dialect=dialect)
+    return parse_script(path, dialect=dialect), []
+
+
 def run_analyze_command(args: argparse.Namespace) -> int:
     """Parse one or more SQL files for ``--inventory`` (43.0), ``--dry-run``
     (43.2), or ``--emit`` (43.4).
@@ -701,13 +717,13 @@ def run_analyze_command(args: argparse.Namespace) -> int:
         print("[analyze] No SQL files found.")
         return ANALYZE_EXIT_OK
 
-    from skifer.analyzer.parser import AnalyzerDependencyError, StatementParseError, parse_script
+    from skifer.analyzer.parser import AnalyzerDependencyError, StatementParseError
 
     all_statements = []
     had_error = False
     for path in paths:
         try:
-            statements = parse_script(path, dialect=args.dialect)
+            statements, residues = _parse_source_file(path, dialect=args.dialect)
         except AnalyzerDependencyError as exc:
             # Missing the optional dependency is global, not per-file: stop immediately.
             print(f"[analyze] {exc}", file=sys.stderr)
@@ -720,6 +736,8 @@ def run_analyze_command(args: argparse.Namespace) -> int:
             print(f"[analyze] Cannot read '{path}': {exc}", file=sys.stderr)
             had_error = True
             continue
+        for residue in residues:
+            print(f"[analyze] {residue.source_path}:{residue.line}: {residue.reason}", file=sys.stderr)
         print(f"[analyze] {path}: {len(statements)} statement(s)")
         all_statements.extend(statements)
 
@@ -788,13 +806,15 @@ def _run_analyze_emit(args: argparse.Namespace, all_statements: list) -> int:
         print("[analyze] --strict: residue detected in preflight, refusing to write anything.", file=sys.stderr)
         return ANALYZE_EXIT_RESIDUE
 
-    from skifer.analyzer.parser import parse_script
-
     # Re-parse fresh: split_corpus/map_statement rewrite the AST in place
     # (43.3), so the preflight's statements are no longer safe to reuse.
+    # A notebook statement's source_path may carry a 43.7 `::cell:N` suffix
+    # (not a real file path) — strip it to recover the file to re-parse,
+    # same convention `_original_script_path` uses elsewhere in this package.
     fresh_statements = []
-    for path in sorted({s.source_path for s in all_statements}):
-        fresh_statements.extend(parse_script(path, dialect=args.dialect))
+    for path in sorted({s.source_path.split("::", 1)[0] for s in all_statements}):
+        statements, _residues = _parse_source_file(path, dialect=args.dialect)
+        fresh_statements.extend(statements)
 
     try:
         report = emit_corpus(fresh_statements, out_dir=args.out, thresholds=thresholds)

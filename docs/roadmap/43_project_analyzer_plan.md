@@ -493,6 +493,35 @@ déficit JRE déjà connu.
 - Tests : `tests/test_analyzer_frontends.py` (fixtures `.py` et `.ipynb` dans `tests/fixtures/`),
   historique mocké.
 
+**Statut du premier sous-point (front-ends notebooks) : implémenté.** `frontends.split_py_notebook()`
+découpe un export `.py` sur son séparateur de cellule `# COMMAND ----------`, reconnaît une cellule
+magique `%sql` (chaque ligne préfixée `# MAGIC`) et en extrait le SQL via un nouveau
+`split_sql_text()` (le cœur déjà textuel de `split_sql_file()`, désormais réutilisable avec un
+`line_offset` pour que la ligne rapportée reste relative au vrai fichier, pas à la cellule) ; toute
+autre magie (`%md`, `%scala`, `%r`, `%sh`, `%run`) n'a aucun SQL que ce front-end extrait et est
+ignorée, pas reportée — un résidu D7 est pour un motif récurrent que le paquet n'a pas su traduire,
+pas pour chaque cellule dans un autre langage. `frontends.split_ipynb_notebook()` fait de même pour
+les cellules de code `%%sql` d'un `.ipynb`, en taguant chaque statement d'un `source_path` au format
+`<path>::cell:<index>` — la même convention de suffixe `::` que le splitter de 43.3 emploie déjà
+pour un statement synthétique, donc le comptage « scripts distincts » ailleurs dans l'analyseur
+continue de regrouper toute cellule sous le seul vrai fichier notebook. Une cellule Python ordinaire
+(sans magie `%sql`) est scannée par un nouveau `frontends.extract_spark_sql_calls()` pour un appel
+`spark.sql(...)` via le module standard `ast` : seul un unique argument positionnel littéral chaîne
+est accepté — une f-string, une variable, une concaténation ou un argument nommé est reporté comme
+un nouveau `ExtractionResidue` (jamais interpolé, jamais deviné — même discipline « reporter, jamais
+faire disparaître silencieusement » que le mapper applique déjà à une construction qu'il ne sait pas
+traduire). `run_analyze_command` et l'étape de réanalyse fraîche de `_run_analyze_emit` passent tous
+deux par un nouveau `_parse_source_file()` qui résout le vrai fichier d'un statement de notebook
+(en retirant le suffixe `::cell:N`) avant de le réanalyser — `--dry-run`, `--emit` et `--inventory`
+fonctionnent sans changement sur un chemin de notebook, exactement comme sur un `.sql`. Tests :
+`tests/test_analyzer_frontends.py` et une nouvelle classe `TestParseNotebook` dans
+`tests/test_analyzer_parser.py` (des fichiers `tmp_path` plutôt que `tests/fixtures/` — convention
+déjà établie dans le reste des tests de ce plan, écrit comme déviation assumée plutôt que silencieuse).
+`ruff check src/` et la suite non-Spark passent sans régression au-delà du déficit JRE déjà connu.
+
+**Statut du second sous-point (historique de requêtes) : non commencé** — tracké séparément, le plan
+lui-même le désignant comme un sous-point à part.
+
 ### 43.8 — Documentation et synchronisation
 
 - `docs/project_analyzer.md` : parcours complet sur l'exemple 24 (inventaire → dry-run → emit →
