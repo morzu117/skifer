@@ -8,6 +8,335 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New optional extra `pip install -e ".[analyzer]"` (`sqlglot>=25`) and a `skifer.analyzer` package —
+  the deterministic front-end of the project analyzer (Plan 43 — 43.0), which turns existing SQL
+  into a first draft of Skifer pipeline YAML. `frontends.split_sql_file()` splits a `.sql` file into
+  statements on top-level `;` without needing `sqlglot` (tracks single-quoted string literals with
+  Spark/Databricks's `\'` escape convention, `--` line comments and `/* ... */` block comments), so
+  the core package reports *where* a statement starts even without the optional dependency installed.
+  `parser.parse_script()` lazily imports `sqlglot` (dialect `databricks` by default) to parse each
+  statement, raising `AnalyzerDependencyError` with an install hint if it's missing and
+  `StatementParseError` naming the offending file/line on a bad statement — `skifer` and
+  `skifer.analyzer` themselves import cleanly without `sqlglot` on the path.
+  `inventory.inventory_corpus()` walks the parsed AST and reports a raw node-type inventory (join
+  types, scalar functions, aggregates, window functions, subqueries, CTEs, unions, `CASE`
+  expressions, `GROUP BY`/`HAVING`) — the coverage baseline the mapper (43.2) will be measured
+  against, with no translation to the Skifer grammar yet. New CLI command
+  `skifer analyze <path-or-glob>... --inventory [--dialect DIALECT]` prints it. New synthetic SQL
+  corpus under `examples/24_project_analyzer/legacy_sql/` (8 scripts) exercising every pattern the
+  plan requires: a recurring expression across 3+ scripts, two business-logic variants of the same
+  metric, a literal-variant divergence, a CTE reused by both branches of a `UNION ALL`, a scalar
+  subquery repeated byte-for-byte across two scripts, a base-table `WHERE` vs. a post-join `WHERE`
+  on an outer-joined table, a `ROW_NUMBER()`/`WHERE rn = 1` dedup, a `LAG()` window residue, and an
+  apostrophe literal escaped the way Spark/Databricks SQL actually parses it (`\'`, not sqlglot's
+  ANSI-only `''` convention — see the project analyzer plan's risk table for the parsing divergence
+  this surfaced between `sqlglot`'s `databricks` dialect and real Spark/Databricks engine behavior).
+
+- New top-level `where:` / `where_groups:` post-join filter block (Plan 43 — 43.1). Unlike a
+  table-level `filter:`/`filter_groups:`, which runs before the join, `where`/`where_groups` runs
+  after every join and before `business_rules`, on the already-joined DataFrame — the only way to
+  express a predicate that collapses an outer join back to an inner join on that condition (e.g.
+  `LEFT JOIN refunds WHERE refunds.status = 'APPROVED'`), which a pre-join `filter:` cannot do.
+  Same grammar as table-level filters (string list, `column:operator:value`, or dict mapping),
+  `where_groups:` is an OR-of-ANDs like `filter_groups:`. Columns are **not** alias-qualified (no
+  `alias.column` form — rename upstream via `fields:` to disambiguate). Compiled into the `WHERE`
+  clause of `compile_select()`'s generated SQL (participates in a materialized view's definition
+  hash) and applied via `SparkBackend.build_filter()` in the DataFrame pipeline. Validated at
+  load time: requires at least one table, operators validated against the same catalog as
+  table-level filters (aliases resolved at IR-parsing time, same as `filter:`).
+
+- Deterministic SQL -> Skifer schema mapper, round-trip oracle and report (Plan 43 — 43.2), in a
+  new `skifer.analyzer.mapper`/`roundtrip`/`report` modules. `map_statement()` turns one parsed SQL
+  statement into a Skifer schema draft with no LLM involved: FROM/JOIN (compact and composite equi-
+  join keys, join-type mapping, non-equi joins rejected), WHERE (push-down to table-level `filter:`/
+  `filter_groups:` vs. the post-join `where:`/`where_groups:` per the outer-join-nullability rule,
+  one bounded OR-of-ANDs group, `IS (NOT) NULL`/`IN`/`BETWEEN`/`LIKE` and their negations, a non-
+  blocking residue flagging `NOT IN`'s NULL tri-valued-logic pitfall), `SELECT` (bare columns,
+  literals, scalar op chains, N-branch `CASE WHEN`, an `expr:` fallback for anything else — non-
+  blocking per D7), `SELECT DISTINCT` (-> `quality_checks.drop_duplicates_on` on the single source
+  table), `GROUP BY`/`HAVING` (-> the declarative `aggregate:` block, `COUNT(*)`/`COUNT(DISTINCT)`
+  special-cased), and the `ROW_NUMBER() OVER (...) ... WHERE rn = 1` dedup pattern (->
+  `preprocess.qualify`). CTEs, `UNION`/`UNION ALL`, subqueries anywhere outside that one recognized
+  dedup shape, and other window functions are out of this module's scope and mark the statement
+  `needs_curation` (not emitted) with a named, non-crashing reason — the DAG/splitting work of 43.3
+  is what resolves them. `roundtrip.verify()` is the oracle: it compiles the mapped draft back to
+  SQL through the same Spark-free `parse_schema -> parse_to_ir -> compile_select` path the
+  materialized-view compiler uses and compares it structurally against the source (output column
+  names/expressions, base tables, join signatures, and the WHERE predicate as a DNF of qualifier-
+  stripped conjuncts, tolerant of push-down placement and of cosmetic paren/operand-order
+  differences) — `verified`, `divergent`, `unverified` (a construct `compile_select` itself refuses,
+  e.g. `preprocess.qualify` or `drop_duplicates_on`, reported with the compiler's own reason, never a
+  crash), or `skipped` (`needs_curation`, not emitted). `report.build_report()` ties both together
+  into an `AnalysisReport` (exit code `0` only when every statement mapped, verified and carries no
+  residue; `2` otherwise), serialized by an explicit field-by-field allowlist — never `asdict` — the
+  same discipline `semantic/evidence.py` uses. New CLI flags on `skifer analyze`: `--dry-run` prints
+  the report (`--format md`, the default, or `--format json`) and exits with its code; writes nothing
+  to disk. Against the 43.0 synthetic corpus: 5/8 statements map and verify cleanly, 3/8
+  (CTE-reuse-across-branches, scalar-subquery reuse, a `UNION ALL`) are `needs_curation`, resolved by
+  43.3's DAG/splitting work.
+  Four real bugs found and fixed while building this against hand-written statements beyond the
+  corpus (none of which the corpus itself exercised): a CTE's `WITH` clause went undetected because
+  sqlglot suffixes an arg key colliding with a Python keyword (`with_`, not `with`), so a `WITH ...
+  SELECT` statement was silently mapped as if the CTE's name were a real physical table, dropping the
+  CTE's own filter and source table entirely; `NOT LIKE` parses as `Like(negate=True)` rather than
+  `Not(Like(...))` (unlike `NOT IN`/`NOT BETWEEN`/`IS NOT NULL`, which do wrap in `Not`), so the
+  mapper silently dropped the negation and mapped it as a plain `LIKE`; the `ROW_NUMBER()=1` dedup
+  pattern re-ran the generic WHERE mapper on its own already-consumed predicate, adding a spurious
+  `filter: [rn:equals:1]` referencing a column that no longer exists post-dedup; and a parenthesized
+  AND branch inside an OR (`(a = 1 AND b = 2) OR c = 3`) wasn't recognized as mappable because the
+  flattening walk didn't see through the wrapping `Paren` node.
+  Also documents (and works around, oracle-side only) a `sqlglot`-`databricks`-dialect-specific
+  limitation: `compile_select()` emits ANSI-standard doubled-quote (`''`) apostrophe escaping, which
+  this sqlglot version's `databricks` dialect misparses as implicit string concatenation rather than
+  one escaped literal (real Spark/Databricks supports `''` correctly) — the oracle rewrites it to a
+  backslash escape before its own internal re-parse so this sqlglot-only quirk doesn't read as a
+  false divergence; the compiled SQL returned to the caller is untouched and remains valid.
+
+- Corpus-wide dependency graph and CTE/subquery splitter (Plan 43 — 43.3), in new
+  `skifer.analyzer.dag`/`splitter` modules. `dag.build_dag()` builds a materialized-table (CREATE/
+  INSERT target) graph, resolving CTE/temp-view names away to the real base tables they ultimately
+  read; a cycle raises `DagCycleError` naming the exact cycle. `dag.infer_layer()` assigns
+  bronze/silver/gold from a target's own schema-name segment (`bronze`/`silver`/`gold`/`stg`/
+  `staging`/`dwh`/`mart`, exact segment match, never a substring) when present, else zero in-degree
+  -> bronze, an aggregate or an exclusively-external consumer -> gold, else silver — always with a
+  `(layer, reason)` pair. `splitter.split_corpus()` classifies every script-level CTE/subquery,
+  deterministically and without an LLM: read by several branches of the *same* script with the same
+  WHERE predicate -> one shared `partials:` child; several branches with *different* predicates ->
+  one partial per branch, each keeping only its own predicate; the same definition (qualifier-
+  stripped canonical SQL) recurring across *different* scripts -> one proposed Silver intermediate
+  table, every consuming script rewritten to read it (deduplicated once per corpus, not once per
+  consuming script); read exactly once -> inlined as a literal derived-table subquery in its one
+  consumer. A recurring scalar subquery (`(SELECT FUNC(col) FROM table)`, one aggregate over one un-
+  joined/un-grouped/un-filtered source) shared across statements becomes its own grand-total
+  intermediate table (`add_columns: [[literal:1, _group]]` + `aggregate:` — Skifer's single-row-
+  without-a-real-key idiom) with consumers rewritten to a `CROSS JOIN`. `report.build_split_report()`
+  ties both together: a `## Découpage` Markdown section (or the JSON equivalent) with a `graph LR`
+  Mermaid rendering of the materialized-table DAG and, per partial/intermediate table, its readers
+  (detected from the final mapped `tables:` of every `main` unit, not a name-match heuristic) and
+  whether it independently maps and round-trip verifies — a corpus cycle is reported, never raised,
+  past this function. New CLI flag `skifer analyze --dry-run --split` appends this section (`--format
+  json` adds a `"split"` key); without it, output is unchanged. Against the 43.0 corpus: statements 05
+  and 07 (previously `needs_curation`) now fully resolve to `verified` once their shared CTE/subquery
+  is split out; 08 partially resolves — `monthly` and `latest_snapshot` correctly classify as a shared
+  partial and an inlined CTE respectively, and the one remaining `LAG()` branch still surfaces its own
+  precise `window_function_unsupported` residue instead of one opaque blocking reason for the whole
+  statement.
+  Two real, pre-existing 43.2 mapper bugs found and fixed while exercising statements the splitter
+  newly makes reachable (neither was caught by 43.2's own tests, since neither shape existed in the
+  corpus before splitting produced it): a `ROW_NUMBER()=1` dedup `FROM` combined with another `JOIN`
+  in the same body silently discarded that join (`return tables, [], set(), True` short-circuited
+  before the join loop ran) instead of surfacing a residue — now an explicit, blocking
+  `qualify_dedup_with_join_unsupported`; and `CROSS JOIN` was never recognized as its own join kind,
+  misclassifying the synthesized intermediate-table `CROSS JOIN` as `non_equi_join_unsupported` (a
+  `CROSS JOIN` carries no `ON`/`USING` to satisfy the equi-join check it fell through to).
+  Deliberately out of scope for this slice, to be picked up by 43.4 (fingerprints/shared rules/
+  emission): `metadata.layer_reason` is not yet threaded onto `SplitUnit` itself (`infer_layer()`
+  works and is tested standalone); nothing is written to `schemas/.drafts/` yet — `--split` only
+  reports.
+
+- Structural fingerprinting, recurring-pattern detection and validated emission (Plan 43 — 43.4),
+  in new `skifer.analyzer.fingerprint`/`patterns`/`emitter` modules, plus a new `skifer analyze
+  --emit` CLI mode. `fingerprint.expression_fingerprint()` hashes a `sha256:v1:…` canonical
+  rendering of one scalar expression (column qualifiers stripped, literals optionally abstracted
+  to a typed `STRLIT`/`NUMLIT` placeholder, commutative `+`/`*` operands sorted by their own
+  canonical text) — insensitive to `PYTHONHASHSEED` and to cosmetic operand order, never to the
+  original AST object identity; `fingerprint.subquery_fingerprint()` does the same for a `SELECT`
+  by `(tables, filters, projection)`. `patterns.find_patterns()` collects every recognized scalar
+  expression (`CASE`, `COALESCE`, `UPPER`/`LOWER`/`TRIM`/`CAST`, arithmetic over columns/literals —
+  a bare column or constant is a passthrough, not a pattern) from every `SELECT` in the corpus and
+  classifies it against named, explainable `PatternThresholds` (`min_occurrences=3`,
+  `min_scripts=2`, same discipline as `adaptive/recommender.py`): a shape recurring often enough
+  becomes a `SharedRuleCandidate` (`is_parameterized` when only its literals vary across
+  occurrences); the same output alias computed by two or more structurally different formulas
+  becomes a `DivergenceFinding` — both named side by side, never arbitrated (D7); anything
+  recurring but short of the threshold is still reported as `BelowThresholdCandidate`, never
+  silently dropped. Grouping abstracts literal *values*, never column *identity* — two expressions
+  over different columns that merely share an operator shape stay independent singletons and are
+  reported nowhere, so unrelated business concepts are never merged into one bogus rule.
+  `emitter.emit_corpus()` stages, validates (`parse_schema` for a draft, `ast.parse` +
+  `RuleAnalyzer.analyze_source` for a rule stub) and publishes drafts under
+  `<out_dir>/schemas/.drafts/…` and shared-rule stubs (always a `F.expr("<fragment>")` body in this
+  slice) under `<out_dir>/rules/_generated/…`, atomically (same tempfile-plus-`os.replace` pattern
+  as `write_yaml_atomic`). Every artifact carries a `_generated_by: project_analyzer` marker and a
+  source hash: re-emitting against an unchanged corpus is a byte-for-byte no-op (`unchanged`), a
+  file that exists without the marker is never overwritten (`refused_exists` — presumed
+  hand-edited), and a draft whose wiring would reference a `partials:` name is skipped rather than
+  rewired (deferred — no statement in the 43.0 corpus needs it). A new `dry_run=True` mode stages
+  and validates everything without reading or writing `out_dir` at all, so a caller can learn
+  whether a residue exists before a single byte is touched. New CLI flags on `skifer analyze`:
+  `--emit [--out DIR] [--min-occurrences N] [--min-scripts N] [--strict]`. `--out` defaults to the
+  current directory (the project root); without `--strict`, residues are reported but whatever
+  validates is still written (exit `2`); with `--strict`, a dry preflight decides every skipped-unit
+  and failed-validation residue *before* any write, so a strict refusal (exit `2`) touches zero
+  files — only a target file that already exists without the marker can't be known without reading
+  the real `--out`, so that one is still checked during the real write and reported with its own
+  exit code (`4`) regardless of `--strict`. Against the 43.0 corpus: `country`
+  (`UPPER(TRIM(country))`, 3 occurrences across 3 scripts) promotes to a shared rule wired into
+  `stg_customers`/`orders_enriched`'s `business_rules:`; `discount` (`COALESCE(discount, 0)`, 2
+  occurrences) stays below threshold; `net_margin` (two different formulas in
+  `06_gold_margin_v1.sql`/`07_gold_margin_v2.sql`) is a divergence; 7 drafts and 1 rule stub are
+  written, 5 units skipped (3 partials not yet rewired, plus `05_silver_customers_geo.sql` and
+  `08_kpi_monthly.sql`, whose bare `SELECT`s have no materialized target to draft). New example
+  `examples/24_project_analyzer/` (`README.md` + `run.py`) runs `--dry-run`, `--dry-run --split`
+  and `--emit` end to end against the corpus, Spark-free.
+
+- Data-level parity run (Plan 43 — 43.5), in a new `skifer.analyzer.parity` module plus a new
+  `skifer analyze parity` CLI subcommand — the first part of the project analyzer that touches
+  Spark: proof on real data before a cutover, instead of trusting the SQL mapping alone.
+  `ParityRunner(engine).run(draft_schema_dict, target_layer, against=fqn, key=[...])` runs the
+  draft via `engine.run_process_to_table()` into a disposable `_skifer_parity_<uuid>` table —
+  never the draft's own eventual target, never the legacy table itself — then drops it once
+  compared, even on failure. `compare_tables()` measures row counts, columns (names and declared
+  types), a `sha256:v1:…` hash of rows sorted by the declared key (or by every common column when
+  none is given), and, with a key, a per-column count of rows that differ among matched keys (via
+  a full outer join on the key, never on a positional zip). `ParityReport.to_dict()` is an explicit
+  field-by-field allowlist, the same discipline as `SemanticEvidence.to_dict()` and the incident
+  alert payload in `observability/alerts.py`: no field on the dataclass can hold a raw cell value —
+  only counts, booleans, hashes and column names, so the report is safe to paste into a ticket.
+  `skifer analyze parity <draft.yaml> --against <fqn> --target-layer <layer> [--key col,…]
+  [--config PATH]` — exit `0` identical, `5` a measured discrepancy, `1` a technical error.
+  `--target-layer` is a necessary addition beyond the plan's own abbreviated CLI sketch:
+  `run_process_to_table()` requires it explicitly (same as every other engine caller — there is no
+  existing convention in this codebase for inferring it from a bare schema dict), and it is only
+  ever used to resolve the disposable table's sandboxed schema, never the draft's real target.
+  `analyze_parser`'s existing `paths` positional is `nargs="+"` and greedy, so nesting a subparser
+  under it for `parity` would have swallowed the first legacy-SQL path as a command name instead —
+  breaking every existing flat `skifer analyze <paths>…` invocation. `skifer analyze parity …` is
+  instead intercepted in `main()` before argparse ever sees it and routed to its own parser, so the
+  flat `analyze` parser is untouched byte-for-byte. New tests in `tests/test_analyzer_parity.py`
+  (`ParityReport`/`ColumnDifference`/the row-hash helper are pure Python and need no Spark; two
+  Spark-fixture tests prove a faithful draft reports `identical=True` against a legacy table built
+  from the same rows, and a draft with a wrongly-pushed filter is caught via `rows_only_in_legacy`)
+  and `tests/test_cli.py` (the new subcommand's argument wiring and exit codes, with the engine and
+  `ParityRunner` both mocked). The two Spark-fixture tests in `test_analyzer_parity.py` could not be
+  executed on this machine — no local JRE, the same pre-existing gap already noted for the rest of
+  the Spark-backed suite — so they are verified by inspection only; every Spark-free test above,
+  `ruff check src/`, and the full non-Spark suite (no new failures beyond that same pre-existing
+  JRE gap) all pass.
+
+- Constrained, optional LLM enrichment of the project analyzer's output (Plan 43 — 43.6), in a new
+  `skifer.analyzer.llm_enrichment` module wired to a new `--enrich` flag on `skifer analyze --emit`.
+  `enrich(report, draft_output_columns, provider=…)` proposes, per `SharedRuleCandidate`, an advisory
+  rule name and a one-sentence docstring from its canonical, qualifier-stripped expression shape
+  alone (never a table name, join condition or filter value); per draft, a one-sentence description
+  from its `select_final` output column names alone (new `emitter.list_draft_output_columns()`, a
+  small additive export reusing the existing internal draft collection); and fingerprint-grouping
+  proposals across candidates, never auto-applied. Every LLM response is parsed as closed JSON —
+  any key outside that call's allowlist rejects the whole response with a named reason, mirroring
+  `SemanticBuilder.build_from_projection()`'s own `_ALLOWED_NEW_METRIC_KEYS` discipline — and a
+  proposed rule name is validated against `^[A-Za-z_][A-Za-z0-9_]*$` but never used to rename the
+  generated function or its `business_rules:` wiring: renaming there would cross from naming into
+  structure, which an LLM never decides in this codebase. `--enrich` adds an `"enrichment"` key to
+  the existing `--emit` JSON report; it changes nothing written to `--out` in this slice, and with no
+  LLM provider configured it is a silent no-op (empty result, report otherwise unchanged, exit code
+  unaffected) — the existing `emit_corpus()` call path and its own tests are untouched. **Scope cut,
+  stated plainly:** a `needs_curation` fragment's proposed rule body (the plan's third 43.6 bullet)
+  is not enriched in this slice — the mapper (43.2) records only an abstract residue message for
+  such a fragment, not an isolated, qualifier-stripped expression node the way `fingerprint.py`
+  produces for a scalar expression, and sending the statement's full SQL text instead would leak
+  exactly the table names, join conditions and literal values this module exists to keep away from
+  the LLM; deferred rather than guessed at. New `tests/test_analyzer_llm_enrichment.py` (a
+  `FakeProvider` stands in for `LLMProvider`, fully Spark-free, no mocked network call needed) and
+  new assertions in `tests/test_cli.py` for the `--enrich` wiring. `ruff check src/` and the full
+  non-Spark suite pass with no new failures beyond the same pre-existing JRE gap.
+
+- Notebook front-ends for the project analyzer (Plan 43 — 43.7, first sub-point): `skifer analyze`
+  now also accepts a Databricks `.py` notebook export or a Jupyter `.ipynb` notebook, dispatching on
+  extension to a new `parser.parse_notebook()` that reuses the exact same sqlglot parsing as
+  `parse_script()`. `frontends.split_py_notebook()` splits a `.py` export on its `# COMMAND
+  ----------` cell separator, recognizes a `%sql` magic cell (every line prefixed `# MAGIC`) and
+  feeds its content through a newly extracted `split_sql_text()` (the text-based core
+  `split_sql_file()` already had, now reusable with a `line_offset` so a reported line stays
+  relative to the real file, not the cell); any other magic (`%md`, `%scala`, `%r`, `%sh`, `%run`)
+  has no embedded SQL this front-end extracts and is skipped, not reported — a residue is for a
+  recurring pattern this package could not translate, not every cell in a different language.
+  `frontends.split_ipynb_notebook()` does the same for a `.ipynb`'s `%%sql`-magic code cells, tagging
+  each statement's `source_path` as `<path>::cell:<index>` — the same `::`-suffix convention 43.3's
+  splitter already uses for a synthetic statement, so "distinct scripts" counting elsewhere in the
+  analyzer still groups every cell under the one real notebook file. A plain Python cell (no `%sql`
+  magic) is scanned by new `frontends.extract_spark_sql_calls()` for a `spark.sql(...)` call via the
+  standard library's `ast` module: only a single positional literal string argument is accepted: an
+  f-string, a variable, string concatenation or a keyword argument is reported as a new
+  `ExtractionResidue` (never interpolated, never guessed at — the same "report, never silently drop"
+  discipline the mapper already applies to a construct it cannot map). `run_analyze_command` and
+  `_run_analyze_emit`'s fresh re-parse step both dispatch through a new `_parse_source_file()` helper
+  that resolves a notebook statement's real file (stripping the `::cell:N` suffix) before re-parsing
+  — `--dry-run`, `--emit` and `--inventory` all work unchanged on a notebook path, exactly as they do
+  on a `.sql` file. New `tests/test_analyzer_frontends.py` and new `TestParseNotebook` tests in
+  `tests/test_analyzer_parser.py`; `ruff check src/` and the full non-Spark suite pass with no new
+  failures beyond the pre-existing JRE gap. The query-history sub-point of 43.7 (Databricks SDK,
+  `system.query.history`) is tracked separately, as the plan itself calls it out as its own
+  sub-point.
+
+- Query-history front-end for the project analyzer (Plan 43 — 43.7, second sub-point): new
+  `analyzer/history.py` and `skifer analyze history --warehouse-id ID --days N [--schema CAT.SCHEMA]
+  [--profile NAME]`, feeding `system.query.history` statement text through the exact same
+  `--inventory`/`--dry-run`/`--emit` pipeline a `.sql` file or notebook already goes through.
+  `fetch_query_history()` runs a single `SELECT statement_id, statement_text, start_time FROM
+  system.query.history WHERE start_time >= current_timestamp() - INTERVAL N DAYS` through the
+  Databricks SDK's Statement Execution API (the same SDK surface
+  `SparkBackend.execute_sql_on_warehouse` already uses for a materialized view's DDL — Plan 28) and
+  polls it to completion with a standalone copy of that poller's loop, not an import from
+  `spark_backend.py`: that module imports `pyspark` at module level, which would make the analyzer
+  package — deliberately Spark-free everywhere else — require a JRE just to fetch query text.
+  **Never selects an author/user column**: the fetch statement reads only `statement_id`,
+  `statement_text` and `start_time`, so there is no identity to omit from a later report — it is
+  never read in the first place, a stronger guarantee than redacting it afterwards. **Never reads a
+  query's result data**, only its text. `--schema`, when given, filters the *fetched statement text*
+  (a case-insensitive substring check) rather than a `WHERE` clause pushed into
+  `system.query.history`: `statement_text`/`start_time`/`statement_id` are that system table's
+  documented stable columns, and this module does not assume a particular lineage-column name for
+  which schema or table a statement touched, since that is not part of the same stable contract —
+  a deliberately conservative choice over guessing at an unverified column name. Deduplication is by
+  a versioned content fingerprint (`sha256:v1:`, whitespace- and case-normalized) over the statement
+  text, the same discipline `fingerprint.py` already uses for a recurring expression (Plan 43 —
+  43.4). `_run_analyze_emit`'s own fresh-reparse step (used by both the flat `skifer analyze` and
+  this new subcommand) was changed to re-parse directly from each already-held `Statement.text`
+  rather than re-reading the original file from disk — `Statement.text` is immutable (only the
+  sqlglot AST is mutated in place by `split_corpus`/`map_statement`), so this gives the same fresh,
+  unmutated AST without a second disk read, and, as a side effect, without assuming `source_path` is
+  a real file at all; a query-history statement's `source_path` (`system.query.history::<id>`) never
+  was one. `run_analyze_command`'s own `--inventory`/`--dry-run`/`--emit` dispatch was factored out
+  into a shared `_run_analyze_modes()` so the new subcommand runs the identical mode logic rather
+  than a parallel copy. New `tests/test_analyzer_history.py` (a fake Databricks SDK `WorkspaceClient`
+  stands in — fetch, dedup, schema filter, author/result-column omission, and a PENDING→RUNNING→
+  SUCCEEDED poll, all without a live workspace) and new CLI-level tests in `tests/test_cli.py`.
+  `ruff check src/` and the full non-Spark suite pass with no new failures beyond the pre-existing
+  JRE gap.
+
+- Documentation for the project analyzer (Plan 43 — 43.8, closing the plan): new
+  `docs/project_analyzer.md`, a full guided walkthrough against `examples/24_project_analyzer/`
+  covering every mode (`--inventory`, `--dry-run`/`--split`, `--emit`, the notebook and
+  `system.query.history` front-ends, `analyze parity`, `--enrich`), how to read the report and its
+  exit codes, and the "the LLM never decides structure" rule in full — cross-linked with `core.md`'s
+  own quick-reference section and added to `mkdocs.yml`'s nav under "Building pipelines". A stale
+  line in `examples/24_project_analyzer/README.md` claiming DAG-aware partial wiring,
+  fingerprint-sharing and LLM-assisted naming were still "ahead" was corrected — all three shipped in
+  43.3/43.4/43.6, before this line was last touched. `CLAUDE.md`/`AGENTS.md` gained the `analyzer/`
+  package listed under "Package structure" (every module, Plan 43 included, was undocumented there
+  until now) and a prose "Project analyzer (`skifer analyze`) — Plan 43" section matching the style
+  of every other feature section. `mkdocs build --strict` passes cleanly (verified via `uv run
+  --extra docs`, since `[docs]` was not previously installed in this environment — a genuinely new
+  check, not a rerun of a stale pass): the first attempt surfaced one real broken anchor link in the
+  new page (`core.md`'s heading slug drops one hyphen that a naive guess from its Markdown text
+  would keep), fixed before this entry. Closes Plan 43 — all of 43.0 through 43.8 are implemented.
+
+### Fixed
+
+- `tests/test_analyzer_parity.py::test_parity_runner_detects_a_wrongly_pushed_filter` (Plan 43 —
+  43.5) put `filter:` on the draft schema dict's top level instead of inside its `tables:` entry —
+  an invalid placement the loader silently ignores, so the draft ran unfiltered and the test's own
+  assertions (`identical is False`, a dropped row) passed against an unfiltered result for the
+  wrong reason. This test needs a real local Spark/Delta session and could not run on this machine
+  until now (no local JRE — see the `docs: note the local JRE prerequisite` entry below); it was
+  previously verified by inspection only, which missed the misplaced key. Installing a local JRE
+  (Homebrew `openjdk@17`) made it possible to actually run this test for the first time, which
+  surfaced the failure; fixed by moving `filter:` onto the table entry, where `schema_loader.py`
+  actually reads it. No production code changed — this was a test-fixture bug, not a
+  `ParityRunner`/`compare_tables` defect.
+
 ### Changed
 
 - **Examples réécrits au minimum.** Les 23 `examples/*/run.py` sont des scripts plats (plus de

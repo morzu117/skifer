@@ -129,3 +129,33 @@ select_final: [[id, order_id, [cast:long]]]
 
     assert first.definition_hash == second.definition_hash
     assert len(first.definition_hash) == 64
+
+
+def test_where_and_where_groups_do_not_affect_the_projection():
+    """Pinning test (Plan 43 — 43.1): a post-join 'where:'/'where_groups:' is a
+    row-level predicate, not a column derivation — the projected fields, grain
+    and definition hash must be identical with or without it."""
+    base_yaml = """
+data_product: {id: sales.orders, version: 1.0.0}
+tables:
+  - name: silver.orders
+    alias: o
+  - name: silver.refunds
+    alias: r
+join:
+  - table_from: [o, order_id]
+    table_to: [r, order_id]
+    type: left
+select_final: [[amount, amount, []]]
+"""
+    baseline = _project(base_yaml)
+    with_where = _project(
+        base_yaml + 'where:\n  - "status:equals:APPROVED"\n'
+    )
+    with_where_groups = _project(
+        base_yaml
+        + 'where_groups:\n  - ["status:equals:APPROVED"]\n  - ["order_id:equals:3"]\n'
+    )
+
+    assert with_where.definition_hash == baseline.definition_hash
+    assert with_where_groups.definition_hash == baseline.definition_hash

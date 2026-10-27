@@ -42,6 +42,9 @@ INCIDENTS_EXIT_USAGE = 2
 INCIDENTS_EXIT_INVALID_TRANSITION = 3
 INCIDENTS_EXIT_NOT_FOUND = 4
 
+ANALYZE_EXIT_OK = 0
+ANALYZE_EXIT_ERROR = 1
+
 INDEX_EXIT_OK = 0
 INDEX_EXIT_ERROR = 1
 INDEX_EXIT_USAGE = 2
@@ -63,6 +66,18 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 def main() -> None:
     """Point d'entrée principal de la CLI skifer."""
+    # `skifer analyze parity ...` is intercepted before argparse ever sees it:
+    # `analyze`'s own `paths` positional is `nargs="+"` and greedy, so nesting
+    # a subparser under it would swallow the first legacy-SQL path as a
+    # command name instead (breaking every existing flat `analyze` call).
+    # A dedicated parser for the rest of argv keeps the flat parser untouched.
+    if len(sys.argv) >= 3 and sys.argv[1] == "analyze" and sys.argv[2] == "parity":
+        _run_analyze_parity(sys.argv[3:])
+        return
+    if len(sys.argv) >= 3 and sys.argv[1] == "analyze" and sys.argv[2] == "history":
+        _run_analyze_history(sys.argv[3:])
+        return
+
     parser = argparse.ArgumentParser(
         prog="skifer",
         description="Skifer — framework déclaratif de data engineering.",
@@ -101,6 +116,103 @@ def main() -> None:
         default=None,
         metavar="N",
         help="Exit 2 when overall coverage is below this percentage.",
+    )
+
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Analyze existing SQL scripts towards a Skifer pipeline draft (no Spark; Plan 43).",
+    )
+    analyze_parser.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATHS",
+        help="SQL file path(s) or glob patterns (e.g. legacy_sql/*.sql).",
+    )
+    analyze_parser.add_argument(
+        "--inventory",
+        action="store_true",
+        help="Print a raw AST node-type inventory (joins, functions, windows, aggregates, subqueries).",
+    )
+    analyze_parser.add_argument(
+        "--dialect",
+        default="databricks",
+        metavar="DIALECT",
+        help="sqlglot SQL dialect to parse with (default: databricks).",
+    )
+    analyze_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Map each statement to a Skifer schema draft, round-trip-verify it "
+            "against the source, and print a report — writes nothing to disk."
+        ),
+    )
+    analyze_parser.add_argument(
+        "--format",
+        choices=("md", "json"),
+        default="md",
+        metavar="FORMAT",
+        help="Report format for --dry-run: md (default) or json.",
+    )
+    analyze_parser.add_argument(
+        "--split",
+        action="store_true",
+        help=(
+            "With --dry-run, also classify script-level CTEs/subqueries into "
+            "partials, proposed intermediate tables or inlined fragments, and "
+            "append a Mermaid dependency graph (Plan 43 — 43.3). Writes nothing "
+            "to disk; a cycle among materialized tables is reported, not raised."
+        ),
+    )
+    analyze_parser.add_argument(
+        "--emit",
+        action="store_true",
+        help=(
+            "Find recurring expressions across the corpus (Plan 43 — 43.4) and "
+            "write validated pipeline YAML drafts + shared-rule Python stubs "
+            "into --out. A file without the project_analyzer marker is never "
+            "overwritten; a file with the marker and an unchanged source hash "
+            "is left untouched."
+        ),
+    )
+    analyze_parser.add_argument(
+        "--out",
+        default=".",
+        metavar="DIR",
+        help=(
+            "Project root for --emit (default: current directory). Drafts go "
+            "to <DIR>/schemas/.drafts/..., rule stubs to <DIR>/rules/_generated/..."
+        ),
+    )
+    analyze_parser.add_argument(
+        "--min-occurrences",
+        type=int,
+        default=3,
+        metavar="N",
+        help="With --emit, minimum occurrences to promote a shared-rule candidate (default: 3).",
+    )
+    analyze_parser.add_argument(
+        "--min-scripts",
+        type=int,
+        default=2,
+        metavar="N",
+        help="With --emit, minimum distinct scripts to promote a shared-rule candidate (default: 2).",
+    )
+    analyze_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="With --emit, exit 2 on any residue (skipped unit, refused or invalid artifact).",
+    )
+    analyze_parser.add_argument(
+        "--enrich",
+        action="store_true",
+        help=(
+            "With --emit, also propose rule names/docstrings, draft "
+            "descriptions and fingerprint-grouping via an LLM (Plan 43 — "
+            "43.6, optional) — added to the printed report only, never "
+            "written to disk in this slice. No configured provider: "
+            "silent no-op, exit code unaffected."
+        ),
     )
 
     index_parser = subparsers.add_parser(
@@ -440,6 +552,8 @@ def main() -> None:
         _run_validate(args)
     elif args.command == "audit":
         _run_audit(args)
+    elif args.command == "analyze":
+        _run_analyze(args)
     elif args.command == "index":
         _run_index(args)
     elif args.command == "lineage":
@@ -473,6 +587,397 @@ def _run_adaptive(args: argparse.Namespace) -> None:
 def _run_incidents(args: argparse.Namespace) -> None:
     """Run incident management with stable, category-specific exit codes."""
     sys.exit(run_incidents_command(args))
+
+
+def _run_analyze(args: argparse.Namespace) -> None:
+    """Run the project analyzer with stable exit codes (Plan 43)."""
+    sys.exit(run_analyze_command(args))
+
+
+ANALYZE_EXIT_RESIDUE = 2
+ANALYZE_EXIT_EXISTING_OUTPUT = 4
+ANALYZE_EXIT_PARITY_MISMATCH = 5
+
+
+def _build_analyze_parity_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="skifer analyze parity",
+        description=(
+            "Run a pipeline draft into a disposable table and compare it to "
+            "a legacy table (Plan 43 — 43.5): proof on data before a cutover."
+        ),
+    )
+    parser.add_argument(
+        "draft",
+        metavar="DRAFT_YAML",
+        help="Path to a pipeline draft YAML (e.g. a schemas/.drafts/... file).",
+    )
+    parser.add_argument(
+        "--against",
+        required=True,
+        metavar="FQN",
+        help="Fully-qualified legacy table to compare the draft's output against.",
+    )
+    parser.add_argument(
+        "--target-layer",
+        required=True,
+        metavar="LAYER",
+        help=(
+            "Base target layer the draft is run into (e.g. silver) — only "
+            "used to resolve the disposable comparison table's schema; the "
+            "draft's own eventual target table name is never written to."
+        ),
+    )
+    parser.add_argument(
+        "--key",
+        default=None,
+        metavar="COL,COL,...",
+        help="Comma-separated key column(s) to join draft and legacy rows on; default: every common column.",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help="Path to config.yaml (default: auto-detected from the current directory).",
+    )
+    return parser
+
+
+def _run_analyze_parity(argv: list[str]) -> None:
+    """Run ``skifer analyze parity`` with stable exit codes (Plan 43 — 43.5)."""
+    args = _build_analyze_parity_parser().parse_args(argv)
+    sys.exit(run_analyze_parity_command(args))
+
+
+def run_analyze_parity_command(args: argparse.Namespace, *, engine=None) -> int:
+    """``skifer analyze parity``: run *draft* into a disposable table via the
+    real engine and compare it to ``--against``. Exit codes: ``0`` identical,
+    ``1`` a technical error, ``5`` a measured discrepancy — no exception
+    means the comparison itself completed, whatever it found.
+    """
+    from skifer.analyzer.parity import ParityRunner
+    from skifer.core.schema_loader import load_schema
+
+    try:
+        if engine is None:
+            from skifer.core.core import SkiferEngine
+
+            engine = SkiferEngine(config_path=args.config)
+        draft_schema = load_schema(args.draft, params=engine.default_params)
+        key = [c.strip() for c in args.key.split(",")] if args.key else None
+        report = ParityRunner(engine).run(
+            draft_schema, args.target_layer, against=args.against, key=key,
+        )
+    except Exception as exc:
+        print(f"[analyze parity] failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    print(json.dumps(report.to_dict(), indent=2, sort_keys=False))
+    return ANALYZE_EXIT_OK if report.identical else ANALYZE_EXIT_PARITY_MISMATCH
+
+
+def _build_analyze_history_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="skifer analyze history",
+        description=(
+            "Fetch recent statement text from system.query.history via a "
+            "Databricks SQL warehouse and feed it through the same "
+            "--inventory/--dry-run/--emit pipeline as a .sql file (Plan 43 "
+            "— 43.7's second sub-point). Needs the optional [databricks] "
+            "extra. Never reads a query's result data or who ran it."
+        ),
+    )
+    parser.add_argument("--warehouse-id", required=True, metavar="ID", help="SQL warehouse to query against.")
+    parser.add_argument("--days", type=int, default=7, metavar="N", help="Look back this many days (default: 7).")
+    parser.add_argument(
+        "--schema",
+        default=None,
+        metavar="CAT.SCHEMA",
+        help="Case-insensitive substring filter on fetched statement text (best-effort, not exact lineage).",
+    )
+    parser.add_argument("--profile", default=None, metavar="NAME", help="Databricks CLI config profile to use.")
+    parser.add_argument("--dialect", default="spark", help="sqlglot source dialect (default: spark).")
+    parser.add_argument("--inventory", action="store_true", help="Print a raw AST node-type inventory.")
+    parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Map to drafts and report; write nothing.")
+    parser.add_argument("--split", action="store_true", help="With --dry-run: also report a CTE/subquery split.")
+    parser.add_argument("--emit", action="store_true", help="Find recurring patterns and write validated drafts.")
+    parser.add_argument("--out", default=".", metavar="DIR", help="With --emit: output directory.")
+    parser.add_argument("--format", default="json", choices=["json", "markdown"], help="With --dry-run: output format.")
+    parser.add_argument("--min-occurrences", dest="min_occurrences", type=int, default=3, metavar="N")
+    parser.add_argument("--min-scripts", dest="min_scripts", type=int, default=2, metavar="N")
+    parser.add_argument("--strict", action="store_true", help="With --emit: refuse to write on any residue.")
+    parser.add_argument("--enrich", action="store_true", help="With --emit: add constrained LLM naming/descriptions.")
+    return parser
+
+
+def _run_analyze_history(argv: list[str]) -> None:
+    """Run ``skifer analyze history`` with stable exit codes (Plan 43 — 43.7)."""
+    args = _build_analyze_history_parser().parse_args(argv)
+    sys.exit(run_analyze_history_command(args))
+
+
+def run_analyze_history_command(args: argparse.Namespace, *, workspace_client=None) -> int:
+    """``skifer analyze history``: fetch ``system.query.history``, dedupe by
+    content fingerprint, and run the same corpus through
+    :func:`_run_analyze_modes` as any other front-end's statements.
+    """
+    inventory = getattr(args, "inventory", False)
+    dry_run = getattr(args, "dry_run", False)
+    emit = getattr(args, "emit", False)
+    if not inventory and not dry_run and not emit:
+        print("[analyze history] Nothing to do: pass --inventory, --dry-run or --emit.")
+        return ANALYZE_EXIT_OK
+
+    from skifer.analyzer.history import build_workspace_client, fetch_query_history
+    from skifer.analyzer.parser import _parse_raw_statements
+
+    try:
+        client = workspace_client if workspace_client is not None else build_workspace_client(profile=args.profile)
+        fetch_result = fetch_query_history(
+            client, warehouse_id=args.warehouse_id, days=args.days, schema=args.schema,
+        )
+    except ImportError as exc:
+        print(f"[analyze history] {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+    except Exception as exc:
+        print(f"[analyze history] fetch failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    print(
+        f"[analyze history] fetched {fetch_result.total_fetched}, "
+        f"{fetch_result.duplicate_count} duplicate(s), "
+        f"{len(fetch_result.raw_statements)} distinct statement(s)"
+    )
+
+    try:
+        all_statements = _parse_raw_statements(list(fetch_result.raw_statements), dialect=args.dialect)
+    except Exception as exc:
+        print(f"[analyze history] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    return _run_analyze_modes(args, all_statements, dry_run=dry_run, emit=emit)
+
+
+def _parse_source_file(path: str, *, dialect: str):
+    """Parse one source file into statements, dispatching on its extension
+    (Plan 43 — 43.7): ``.py``/``.ipynb`` through ``parse_notebook`` (which
+    also returns any cell this front-end could not safely read as SQL),
+    anything else through ``parse_script``. Returns ``(statements,
+    residues)`` — ``residues`` is always empty for a plain ``.sql`` file.
+    """
+    import os
+
+    from skifer.analyzer.parser import parse_notebook, parse_script
+
+    if os.path.splitext(path)[1] in (".py", ".ipynb"):
+        return parse_notebook(path, dialect=dialect)
+    return parse_script(path, dialect=dialect), []
+
+
+def run_analyze_command(args: argparse.Namespace) -> int:
+    """Parse one or more SQL files for ``--inventory`` (43.0), ``--dry-run``
+    (43.2), or ``--emit`` (43.4).
+
+    ``--inventory`` prints a raw AST node-type count — nothing is mapped to the
+    Skifer grammar. ``--dry-run`` maps each statement to a schema draft,
+    round-trip-verifies it, and prints a report; it writes nothing to disk.
+    ``--emit`` finds recurring expressions and writes validated pipeline
+    drafts + rule stubs to ``--out``.
+    """
+    inventory = getattr(args, "inventory", False)
+    dry_run = getattr(args, "dry_run", False)
+    emit = getattr(args, "emit", False)
+    if not inventory and not dry_run and not emit:
+        print("[analyze] Nothing to do: pass --inventory, --dry-run or --emit.")
+        return ANALYZE_EXIT_OK
+
+    import glob as glob_mod
+
+    paths: list[str] = []
+    for pattern in args.paths:
+        expanded = sorted(glob_mod.glob(pattern, recursive=True))
+        paths.extend(expanded if expanded else [pattern])
+
+    if not paths:
+        print("[analyze] No SQL files found.")
+        return ANALYZE_EXIT_OK
+
+    from skifer.analyzer.parser import AnalyzerDependencyError, StatementParseError
+
+    all_statements = []
+    had_error = False
+    for path in paths:
+        try:
+            statements, residues = _parse_source_file(path, dialect=args.dialect)
+        except AnalyzerDependencyError as exc:
+            # Missing the optional dependency is global, not per-file: stop immediately.
+            print(f"[analyze] {exc}", file=sys.stderr)
+            return ANALYZE_EXIT_ERROR
+        except StatementParseError as exc:
+            print(f"[analyze] {exc}", file=sys.stderr)
+            had_error = True
+            continue
+        except OSError as exc:
+            print(f"[analyze] Cannot read '{path}': {exc}", file=sys.stderr)
+            had_error = True
+            continue
+        for residue in residues:
+            print(f"[analyze] {residue.source_path}:{residue.line}: {residue.reason}", file=sys.stderr)
+        print(f"[analyze] {path}: {len(statements)} statement(s)")
+        all_statements.extend(statements)
+
+    if had_error:
+        return ANALYZE_EXIT_ERROR
+
+    return _run_analyze_modes(args, all_statements, dry_run=dry_run, emit=emit)
+
+
+def _run_analyze_modes(args: argparse.Namespace, all_statements: list, *, dry_run: bool, emit: bool) -> int:
+    """Shared ``--inventory``/``--dry-run``/``--emit`` dispatch over an
+    already-built statement corpus — used by the flat ``skifer analyze``
+    path and, since 43.7's second sub-point, by ``skifer analyze history``
+    once it has fetched and deduplicated its own corpus."""
+    if dry_run:
+        from skifer.analyzer.report import build_report
+
+        report = build_report(all_statements)
+        split_report = None
+        if getattr(args, "split", False):
+            from skifer.analyzer.report import build_split_report
+
+            split_report = build_split_report(all_statements)
+
+        if args.format == "json":
+            payload = report.to_dict()
+            if split_report is not None:
+                payload["split"] = split_report.to_dict()
+            print(json.dumps(payload, indent=2, sort_keys=False))
+        else:
+            print(report.to_markdown())
+            if split_report is not None:
+                print(split_report.to_markdown())
+        return report.exit_code
+
+    if emit:
+        return _run_analyze_emit(args, all_statements)
+
+    from skifer.analyzer.inventory import inventory_corpus
+
+    corpus = inventory_corpus(all_statements)
+    _print_analyze_inventory(corpus)
+    return ANALYZE_EXIT_OK
+
+
+def _run_analyze_emit(args: argparse.Namespace, all_statements: list) -> int:
+    """``--emit``: find recurring patterns and publish validated drafts +
+    rule stubs to ``--out`` (Plan 43 — 43.4).
+
+    A preflight dry run decides ``--strict``'s "refuse outright" before any
+    file is touched: skipped units and failed validations are known without
+    writing anything, so a strict residue there means zero disk I/O. Whether
+    an artifact's *target* file already exists without the marker can only be
+    known against the real ``--out``, so that one is still checked during the
+    real (non-dry) run and reported with its own exit code (4) regardless of
+    ``--strict``.
+    """
+    from skifer.analyzer.emitter import emit_corpus
+    from skifer.analyzer.patterns import PatternThresholds
+
+    thresholds = PatternThresholds(
+        min_occurrences=args.min_occurrences,
+        min_scripts=args.min_scripts,
+    )
+
+    try:
+        preflight = emit_corpus(all_statements, out_dir=args.out, thresholds=thresholds, dry_run=True)
+    except Exception as exc:
+        print(f"[analyze] --emit failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    if args.strict and preflight.has_residue:
+        print(json.dumps(preflight.to_dict(), indent=2, sort_keys=False))
+        print("[analyze] --strict: residue detected in preflight, refusing to write anything.", file=sys.stderr)
+        return ANALYZE_EXIT_RESIDUE
+
+    # Re-parse fresh: split_corpus/map_statement rewrite the AST in place
+    # (43.3), so the preflight's statements are no longer safe to reuse.
+    # Re-parsed directly from each Statement's own already-held text rather
+    # than re-read from disk: `Statement.text` is immutable (only the AST is
+    # mutated in place), so this gives a fresh, unmutated AST without a
+    # second disk read — and, since 43.7's second sub-point, without
+    # assuming `source_path` is a real file at all (a query-history
+    # statement's `source_path` is a synthetic `system.query.history::<id>`).
+    from skifer.analyzer.frontends import RawStatement
+    from skifer.analyzer.parser import _parse_raw_statements
+
+    fresh_statements = _parse_raw_statements(
+        [RawStatement(source_path=s.source_path, line=s.line, text=s.text) for s in all_statements],
+        dialect=args.dialect,
+    )
+
+    try:
+        report = emit_corpus(fresh_statements, out_dir=args.out, thresholds=thresholds)
+    except Exception as exc:
+        print(f"[analyze] --emit failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ANALYZE_EXIT_ERROR
+
+    payload = report.to_dict()
+    if getattr(args, "enrich", False):
+        payload["enrichment"] = _run_analyze_enrich(fresh_statements, thresholds).to_dict()
+
+    print(json.dumps(payload, indent=2, sort_keys=False))
+
+    if any(a.status == "refused_exists" for a in report.artifacts):
+        print("[analyze] Some files already exist without the project_analyzer marker; left untouched.", file=sys.stderr)
+        return ANALYZE_EXIT_EXISTING_OUTPUT
+
+    if report.has_residue:
+        return ANALYZE_EXIT_RESIDUE
+
+    return ANALYZE_EXIT_OK
+
+
+def _run_analyze_enrich(statements: list, thresholds):
+    """``--enrich`` on ``--emit`` (Plan 43 — 43.6, optional): propose rule
+    names/docstrings, draft descriptions and fingerprint groupings via an
+    LLM, additive to the printed report only — nothing here is written to
+    the drafts or stubs on disk in this slice. No configured provider is a
+    silent no-op, matching the plan's own stated behaviour.
+    """
+    from skifer.analyzer.emitter import list_draft_output_columns
+    from skifer.analyzer.llm_enrichment import enrich
+    from skifer.analyzer.patterns import find_patterns
+
+    try:
+        from skifer.semantic.llm_provider import get_llm_provider
+
+        provider = get_llm_provider()
+    except Exception:
+        provider = None
+
+    report = find_patterns(statements, thresholds=thresholds)
+    draft_output_columns = list_draft_output_columns(statements)
+    return enrich(report, draft_output_columns, provider=provider)
+
+
+def _print_analyze_inventory(corpus) -> None:
+    print(f"\n{len(corpus.statements)} statement(s) analyzed.\n")
+    print("Join types:")
+    for name, count in corpus.join_types.most_common():
+        print(f"  {name}: {count}")
+    print("Functions:")
+    for name, count in corpus.function_names.most_common():
+        print(f"  {name}: {count}")
+    print("Aggregates:")
+    for name, count in corpus.aggregate_names.most_common():
+        print(f"  {name}: {count}")
+    print(f"Windows: {corpus.window_count}")
+    print(f"Subqueries: {corpus.subquery_count}")
+    print(f"CTEs: {corpus.cte_count}")
+    print(f"UNIONs: {corpus.union_count}")
+    print(f"CASE expressions: {corpus.case_count}")
+    print(f"GROUP BYs: {corpus.group_by_count}")
+    print(f"HAVINGs: {corpus.having_count}")
 
 
 def _run_index(args: argparse.Namespace) -> None:

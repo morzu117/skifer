@@ -18,7 +18,11 @@ import pytest
 
 import yaml
 
+from skifer.analyzer.parity import ParityReport
 from skifer.cli import (
+    ANALYZE_EXIT_ERROR,
+    ANALYZE_EXIT_OK,
+    ANALYZE_EXIT_PARITY_MISMATCH,
     API_LOOPBACK_HOST,
     AUDIT_EXIT_BELOW_THRESHOLD,
     AUDIT_EXIT_OK,
@@ -28,6 +32,9 @@ from skifer.cli import (
     SEMANTIC_EXIT_DRIFT,
     SEMANTIC_EXIT_ERROR,
     SEMANTIC_EXIT_OK,
+    run_analyze_command,
+    run_analyze_history_command,
+    run_analyze_parity_command,
     run_contract_command,
     run_audit,
     run_semantic_metric_views,
@@ -934,3 +941,599 @@ def test_semantic_sync_promote_refuses_to_drop_curated_content(tmp_path, monkeyp
     message = str(exc_info.value)
     assert "description" in message
     assert "dimensions.country.description" in message
+
+
+def test_analyze_help_exits_zero():
+    result = _run_cli("analyze", "--help")
+
+    assert result.returncode == 0
+    assert "--inventory" in result.stdout
+
+
+def test_analyze_without_inventory_flag_is_a_noop(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT 1;\n")
+    args = argparse.Namespace(paths=[str(sql_path)], inventory=False, dialect="databricks")
+
+    exit_code = run_analyze_command(args)
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "Nothing to do" in capsys.readouterr().out
+
+
+def test_analyze_inventory_prints_join_and_function_counts(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text(
+        "SELECT o.id, UPPER(c.country) AS country\n"
+        "FROM silver.orders o\n"
+        "LEFT JOIN silver.customers c ON o.customer_id = c.id;\n"
+    )
+    args = argparse.Namespace(paths=[str(sql_path)], inventory=True, dialect="databricks")
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "1 statement(s) analyzed" in output
+    assert "left: 1" in output
+    assert "upper: 1" in output
+
+
+def test_analyze_expands_glob_patterns(tmp_path, capsys):
+    (tmp_path / "a.sql").write_text("SELECT 1;\n")
+    (tmp_path / "b.sql").write_text("SELECT 2;\n")
+    args = argparse.Namespace(
+        paths=[str(tmp_path / "*.sql")], inventory=True, dialect="databricks"
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "2 statement(s) analyzed" in output
+
+
+def test_analyze_non_matching_glob_falls_back_to_literal_path_and_errors(tmp_path, capsys):
+    # A pattern that expands to nothing is treated as a literal path, so a
+    # typo'd glob surfaces as a clear "cannot read" error instead of a silent
+    # "nothing found" that could mask a mistake.
+    pattern = str(tmp_path / "nothing_here_*.sql")
+    args = argparse.Namespace(paths=[pattern], inventory=True, dialect="databricks")
+
+    exit_code = run_analyze_command(args)
+
+    err = capsys.readouterr().err
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "Cannot read" in err
+    assert pattern in err
+
+
+def test_analyze_bad_statement_names_file_and_line_and_exits_error(tmp_path, capsys):
+    sql_path = tmp_path / "bad.sql"
+    sql_path.write_text("SELECT 1;\nSELECT FROM WHERE;\n")
+    args = argparse.Namespace(paths=[str(sql_path)], inventory=True, dialect="databricks")
+
+    exit_code = run_analyze_command(args)
+
+    err = capsys.readouterr().err
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert str(sql_path) in err
+    assert "2" in err
+
+
+def test_analyze_without_inventory_or_dry_run_is_a_noop(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT 1;\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=False, dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "Nothing to do" in capsys.readouterr().out
+
+
+def test_analyze_dry_run_markdown_clean_statement_exits_zero(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM bronze.orders WHERE status = 'ACTIVE';\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="md", dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "# Project analyzer report" in output
+    assert "verified" in output
+
+
+def test_analyze_dry_run_needs_curation_exits_two(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM a UNION SELECT id FROM b;\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="md", dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 2
+    assert "needs_curation" in output
+    assert "union_requires_multi_schema" in output
+
+
+def test_analyze_dry_run_json_format_is_valid_json(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM bronze.orders WHERE status = 'ACTIVE';\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="json", dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    out = capsys.readouterr().out
+    json_text = out[out.index("{"):]
+    payload = json.loads(json_text)
+    assert exit_code == ANALYZE_EXIT_OK
+    assert payload["statement_count"] == 1
+    assert payload["clean_count"] == 1
+
+
+def test_analyze_help_mentions_dry_run_and_format():
+    result = _run_cli("analyze", "--help")
+
+    assert result.returncode == 0
+    assert "--dry-run" in result.stdout
+    assert "--format" in result.stdout
+    assert "--split" in result.stdout
+
+
+def test_analyze_dry_run_split_markdown_appends_decoupage_section(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE a > 1 UNION ALL SELECT a FROM c WHERE a > 1;\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="md", dialect="databricks", split=True,
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    # The unsplit statement itself is needs_curation (a bare CTE) — the
+    # split report is what shows its CTE resolving into a shared partial.
+    assert exit_code == 2
+    assert "# Project analyzer report" in output
+    assert "## Découpage" in output
+    assert "```mermaid" in output
+
+
+def test_analyze_dry_run_split_json_adds_split_key(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM bronze.orders WHERE status = 'ACTIVE';\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="json", dialect="databricks", split=True,
+    )
+
+    exit_code = run_analyze_command(args)
+
+    out = capsys.readouterr().out
+    payload = json.loads(out[out.index("{"):])
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "split" in payload
+    assert "dag_mermaid" in payload["split"]
+
+
+def test_analyze_dry_run_without_split_flag_omits_decoupage_section(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT id FROM bronze.orders WHERE status = 'ACTIVE';\n")
+    args = argparse.Namespace(
+        paths=[str(sql_path)], inventory=False, dry_run=True, format="md", dialect="databricks",
+    )
+
+    exit_code = run_analyze_command(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "Découpage" not in output
+
+
+def test_analyze_unreadable_file_exits_error(tmp_path, capsys):
+    args = argparse.Namespace(
+        paths=[str(tmp_path / "does_not_exist.sql")], inventory=True, dialect="databricks"
+    )
+
+    exit_code = run_analyze_command(args)
+
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "Cannot read" in capsys.readouterr().err
+
+
+def test_analyze_without_sqlglot_reports_install_hint(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("SELECT 1;\n")
+    code = (
+        f"import sys; sys.argv = {['skifer', 'analyze', str(sql_path), '--inventory']!r}; "
+        "import builtins; _real_import = builtins.__import__\n"
+        "def _blocking_import(name, *args, **kwargs):\n"
+        "    if name == 'sqlglot' or name.startswith('sqlglot.'):\n"
+        "        raise ImportError('simulated: sqlglot not installed')\n"
+        "    return _real_import(name, *args, **kwargs)\n"
+        "builtins.__import__ = _blocking_import\n"
+        "from skifer.cli import main; main()"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+
+    assert result.returncode == ANALYZE_EXIT_ERROR
+    assert 'pip install -e ".[analyzer]"' in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def _emit_args(tmp_path, paths, *, out, strict=False, min_occurrences=3, min_scripts=2, enrich=False):
+    return argparse.Namespace(
+        paths=paths, inventory=False, dry_run=False, emit=True, dialect="databricks",
+        out=str(out), strict=strict, min_occurrences=min_occurrences, min_scripts=min_scripts,
+        enrich=enrich,
+    )
+
+
+def test_analyze_emit_clean_corpus_exits_zero(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert (out_dir / "schemas" / ".drafts" / "silver" / "t.yaml").exists()
+
+
+def test_analyze_emit_residue_exits_two_and_still_writes_what_it_can(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text(
+        "CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n"
+        "SELECT id FROM bronze.other;\n"  # no CREATE/INSERT target -> skipped, a residue.
+    )
+    out_dir = tmp_path / "out"
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+
+    output = capsys.readouterr().out
+    assert exit_code == 2
+    assert '"skipped"' in output
+    assert (out_dir / "schemas" / ".drafts" / "silver" / "t.yaml").exists()
+
+
+def test_analyze_emit_strict_refuses_outright_and_writes_nothing(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text(
+        "CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n"
+        "SELECT id FROM bronze.other;\n"
+    )
+    out_dir = tmp_path / "out"
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir, strict=True))
+
+    assert exit_code == 2
+    assert "refusing to write anything" in capsys.readouterr().err
+    assert not out_dir.exists() or list(out_dir.rglob("*")) == []
+
+
+def test_analyze_emit_refuses_existing_file_without_marker(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+    draft_dir = out_dir / "schemas" / ".drafts" / "silver"
+    draft_dir.mkdir(parents=True)
+    (draft_dir / "t.yaml").write_text("tables: []\n")
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+
+    assert exit_code == 4
+    assert "without the project_analyzer marker" in capsys.readouterr().err
+    assert (draft_dir / "t.yaml").read_text() == "tables: []\n"
+
+
+def test_analyze_emit_is_reproducible_on_a_fresh_parse(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+    capsys.readouterr()
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir))
+
+    output = capsys.readouterr().out
+    assert exit_code == ANALYZE_EXIT_OK
+    assert '"status": "unchanged"' in output
+
+
+def test_analyze_help_mentions_emit_flags():
+    result = _run_cli("analyze", "--help")
+
+    assert result.returncode == 0
+    assert "--emit" in result.stdout
+    assert "--out" in result.stdout
+    assert "--min-occurrences" in result.stdout
+    assert "--strict" in result.stdout
+    assert "--enrich" in result.stdout
+
+
+def test_analyze_emit_enrich_without_a_configured_provider_is_a_silent_noop(tmp_path, monkeypatch, capsys):
+    """No LLM_PROVIDER / API keys in this test's environment -> get_llm_provider()
+    raises -> _run_analyze_enrich falls back to provider=None -> empty result,
+    same exit code as without --enrich."""
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir, enrich=True))
+
+    stdout = capsys.readouterr().out
+    output = json.loads(stdout[stdout.index("{"):])
+    assert exit_code == ANALYZE_EXIT_OK
+    assert output["enrichment"] == {"rules": [], "drafts": [], "groupings": []}
+
+
+def test_analyze_emit_without_enrich_flag_has_no_enrichment_key(tmp_path, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir, enrich=False))
+
+    stdout = capsys.readouterr().out
+    output = json.loads(stdout[stdout.index("{"):])
+    assert "enrichment" not in output
+
+
+def test_analyze_emit_enrich_with_a_configured_provider_populates_the_report(tmp_path, monkeypatch, capsys):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+    out_dir = tmp_path / "out"
+
+    class _FakeProvider:
+        def complete(self, *, system_prompt, user_message, temperature=0.0, **kwargs):
+            if "Output columns" in user_message:
+                return json.dumps({"description": "Raw ids promoted to silver."})
+            return json.dumps({"name": "noop", "docstring": "d"})
+
+    monkeypatch.setattr("skifer.semantic.llm_provider.get_llm_provider", lambda *a, **k: _FakeProvider())
+
+    exit_code = run_analyze_command(_emit_args(tmp_path, [str(sql_path)], out=out_dir, enrich=True))
+
+    stdout = capsys.readouterr().out
+    output = json.loads(stdout[stdout.index("{"):])
+    assert exit_code == ANALYZE_EXIT_OK
+    assert output["enrichment"]["drafts"][0]["description"] == "Raw ids promoted to silver."
+
+
+def test_analyze_parity_help_shows_required_flags():
+    result = _run_cli("analyze", "parity", "--help")
+
+    assert result.returncode == 0
+    assert "--against" in result.stdout
+    assert "--target-layer" in result.stdout
+    assert "--key" in result.stdout
+
+
+def test_analyze_parity_missing_required_flag_is_a_usage_error(tmp_path):
+    draft_path = tmp_path / "draft.yaml"
+    draft_path.write_text("tables: []\n")
+
+    result = _run_cli("analyze", "parity", str(draft_path), "--against", "cat.silver.legacy")
+
+    assert result.returncode == 2  # argparse's own usage-error code
+    assert "--target-layer" in result.stderr
+
+
+def test_analyze_plain_usage_is_unaffected_by_the_parity_interception(tmp_path):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+
+    result = _run_cli("analyze", str(sql_path), "--dry-run")
+
+    assert result.returncode == ANALYZE_EXIT_OK
+
+
+def _fake_parity_report(*, identical: bool) -> ParityReport:
+    same_or_different = ("same", "same") if identical else ("a", "b")
+    return ParityReport(
+        draft_fqn="cat.silver._skifer_parity_x",
+        legacy_fqn="cat.silver.legacy",
+        key=("id",),
+        draft_row_count=3,
+        legacy_row_count=3,
+        draft_columns=("id",),
+        legacy_columns=("id",),
+        draft_row_hash=f"sha256:v1:{same_or_different[0]}",
+        legacy_row_hash=f"sha256:v1:{same_or_different[1]}",
+        rows_only_in_draft=0,
+        rows_only_in_legacy=0,
+    )
+
+
+def _parity_args(draft_path, *, key="id"):
+    return argparse.Namespace(
+        draft=str(draft_path), against="cat.silver.legacy", target_layer="silver",
+        key=key, config=None,
+    )
+
+
+def test_run_analyze_parity_command_exits_ok_when_identical(tmp_path, mocker, capsys):
+    draft_path = tmp_path / "draft.yaml"
+    draft_path.write_text("tables:\n  - name: bronze.t\n    alias: t\nkeep_all_columns: true\n")
+    mock_runner = mocker.patch("skifer.analyzer.parity.ParityRunner")
+    mock_runner.return_value.run.return_value = _fake_parity_report(identical=True)
+
+    exit_code = run_analyze_parity_command(_parity_args(draft_path), engine=SimpleNamespace(default_params={}))
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert '"identical": true' in capsys.readouterr().out
+    _, kwargs = mock_runner.return_value.run.call_args
+    assert kwargs["key"] == ["id"]
+    assert kwargs["against"] == "cat.silver.legacy"
+
+
+def test_run_analyze_parity_command_exits_mismatch_when_not_identical(tmp_path, mocker, capsys):
+    draft_path = tmp_path / "draft.yaml"
+    draft_path.write_text("tables:\n  - name: bronze.t\n    alias: t\nkeep_all_columns: true\n")
+    mocker.patch("skifer.analyzer.parity.ParityRunner").return_value.run.return_value = _fake_parity_report(
+        identical=False
+    )
+
+    exit_code = run_analyze_parity_command(_parity_args(draft_path), engine=SimpleNamespace(default_params={}))
+
+    assert exit_code == ANALYZE_EXIT_PARITY_MISMATCH
+    assert '"identical": false' in capsys.readouterr().out
+
+
+def test_run_analyze_parity_command_exits_error_on_missing_draft(tmp_path, capsys):
+    exit_code = run_analyze_parity_command(
+        _parity_args(tmp_path / "missing.yaml"), engine=SimpleNamespace(default_params={}),
+    )
+
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "failed" in capsys.readouterr().err
+
+
+def test_run_analyze_parity_command_without_key_passes_none(tmp_path, mocker):
+    draft_path = tmp_path / "draft.yaml"
+    draft_path.write_text("tables:\n  - name: bronze.t\n    alias: t\nkeep_all_columns: true\n")
+    mock_runner = mocker.patch("skifer.analyzer.parity.ParityRunner")
+    mock_runner.return_value.run.return_value = _fake_parity_report(identical=True)
+
+    run_analyze_parity_command(_parity_args(draft_path, key=None), engine=SimpleNamespace(default_params={}))
+
+    _, kwargs = mock_runner.return_value.run.call_args
+    assert kwargs["key"] is None
+
+
+def test_analyze_history_help_shows_required_flags():
+    result = _run_cli("analyze", "history", "--help")
+
+    assert result.returncode == 0
+    assert "--warehouse-id" in result.stdout
+    assert "--days" in result.stdout
+    assert "--schema" in result.stdout
+
+
+def test_analyze_history_missing_required_flag_is_a_usage_error():
+    result = _run_cli("analyze", "history", "--days", "7")
+
+    assert result.returncode == 2  # argparse's own usage-error code
+    assert "--warehouse-id" in result.stderr
+
+
+def test_analyze_plain_usage_is_unaffected_by_the_history_interception(tmp_path):
+    sql_path = tmp_path / "a.sql"
+    sql_path.write_text("CREATE TABLE silver.t AS SELECT id FROM bronze.t_raw;\n")
+
+    result = _run_cli("analyze", str(sql_path), "--dry-run")
+
+    assert result.returncode == ANALYZE_EXIT_OK
+
+
+class _FakeStatementExecutionForHistory:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def execute_statement(self, *, statement, warehouse_id, wait_timeout):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            statement_id="stmt-1",
+            status=SimpleNamespace(state=SimpleNamespace(value="SUCCEEDED"), error=None),
+            result=SimpleNamespace(data_array=self.rows),
+        )
+
+
+def _history_args(*, inventory=False, dry_run=False, emit=False, out=".", schema=None, days=7):
+    return argparse.Namespace(
+        warehouse_id="wh1", days=days, schema=schema, profile=None, dialect="databricks",
+        inventory=inventory, dry_run=dry_run, split=False, emit=emit, out=out, format="json",
+        min_occurrences=3, min_scripts=2, strict=False, enrich=False,
+    )
+
+
+def test_run_analyze_history_command_nothing_to_do_is_ok(capsys):
+    exit_code = run_analyze_history_command(_history_args(), workspace_client=None)
+
+    assert exit_code == ANALYZE_EXIT_OK
+    assert "Nothing to do" in capsys.readouterr().out
+
+
+def test_run_analyze_history_command_dry_run_reports_the_fetched_statement(capsys):
+    from types import SimpleNamespace
+
+    client = SimpleNamespace(
+        statement_execution=_FakeStatementExecutionForHistory(
+            [["id1", "SELECT id FROM silver.orders", "2026-01-01"]]
+        )
+    )
+
+    exit_code = run_analyze_history_command(_history_args(dry_run=True), workspace_client=client)
+
+    stdout = capsys.readouterr().out
+    payload = json.loads(stdout[stdout.index("{"):])
+    assert exit_code == ANALYZE_EXIT_OK
+    assert payload["statement_count"] == 1
+
+
+def test_run_analyze_history_command_fetch_failure_is_an_error(capsys):
+    class _FailingStatementExecution:
+        def execute_statement(self, **kwargs):
+            raise RuntimeError("warehouse unreachable")
+
+    from types import SimpleNamespace
+
+    client = SimpleNamespace(statement_execution=_FailingStatementExecution())
+
+    exit_code = run_analyze_history_command(_history_args(dry_run=True), workspace_client=client)
+
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "fetch failed" in capsys.readouterr().err
+
+
+def test_run_analyze_history_command_missing_sdk_without_an_injected_client_is_an_error(capsys, monkeypatch):
+    def _raise_import_error(*, profile):
+        raise ImportError('simulated: `pip install -e ".[databricks]"`')
+
+    monkeypatch.setattr("skifer.analyzer.history.build_workspace_client", _raise_import_error)
+
+    exit_code = run_analyze_history_command(_history_args(dry_run=True))
+
+    assert exit_code == ANALYZE_EXIT_ERROR
+    assert "databricks" in capsys.readouterr().err
+
+
+def test_core_cli_help_does_not_import_optional_sqlglot():
+    code = r"""
+import importlib.abc
+import sys
+
+class BlockSqlglot(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "sqlglot" or fullname.startswith("sqlglot."):
+            raise AssertionError("optional sqlglot dependency imported")
+        return None
+
+sys.meta_path.insert(0, BlockSqlglot())
+import skifer
+from skifer.cli import main
+sys.argv = ["skifer", "--help"]
+try:
+    main()
+except SystemExit as exc:
+    assert exc.code == 0
+assert "sqlglot" not in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stdout + result.stderr

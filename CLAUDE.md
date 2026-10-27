@@ -124,6 +124,21 @@ src/skifer/
     _agent_core.py     # MLflow-free core: build_hub, question, ConsumerContext, text + evidence
     deploy.py          # log_agent() — artifacts, model_config, resources, pinned requirements
     _response_serializer.py  # hub_response_to_text() — HubResponse → str (shared CLI + serving)
+  analyzer/
+    frontends.py        # RawStatement + lexical SQL splitting; notebook (.py/.ipynb) extraction (Plan 43)
+    parser.py            # parse_script()/parse_notebook() — lazy sqlglot parsing, AnalyzerDependencyError
+    mapper.py             # sqlglot AST → schema_dict; Residue for anything outside the op catalogue
+    roundtrip.py          # compile_select-based oracle: mapped draft ⇄ original source (43.2)
+    report.py             # build_report()/build_split_report() — --dry-run output, exit codes
+    dag.py                # corpus-wide dependency graph over materialized tables (43.3)
+    splitter.py           # CTE/subquery DAG → partials/intermediate tables/inline (43.3)
+    patterns.py           # recurring shared-rule candidates across scripts (43.4)
+    fingerprint.py         # versioned sha256:v1: structural fingerprints
+    emitter.py            # emit_corpus() — validated drafts + rule stubs, managed-file markers
+    inventory.py          # raw AST node-type counts (--inventory)
+    parity.py              # ParityRunner — disposable-table draft vs. legacy comparison (43.5)
+    llm_enrichment.py      # constrained LLM naming/descriptions only, never structure (43.6)
+    history.py             # skifer analyze history — system.query.history via Databricks SDK (43.7)
   cli.py               # `skifer` CLI, including Plan 31 index/lineage/dictionary/incidents/api/audit
   spark_factory.py     # get_spark_session() — notebook > Connect serverless > Connect cluster > local[*]
   utils.py             # safe_columns and other helpers
@@ -250,6 +265,15 @@ join:
                                           # aliases acceptes : full outer/full_outer/outer -> full,
                                           # anti/left anti -> left_anti, semi/left semi -> left_semi
                                           # left_anti et left_semi : Spark DataFrame only for now
+
+where:                                   # optional (Plan 43) — post-join filter, applied AFTER
+  - "ord_status:equals:ACTIVE"           # every join and BEFORE business_rules. Never pushed down
+                                          # to a table: a LEFT/RIGHT/FULL join's unmatched rows would
+                                          # be silently dropped by filtering a table beforehand instead.
+where_groups:                            # optional — OR-of-ANDs, same placement, same grammar as
+  - ["country:equals:FR"]                # filter_groups. Columns are NOT alias-qualified (no
+  - ["country:equals:BE"]                # "alias.column" form) — rename via fields: before the join
+                                          # if the same column name exists on both sides.
 
 business_rules:
   - flag_high_value
@@ -795,6 +819,37 @@ Builds SQL **only from names defined in semantic YAML models** — never raw SQL
 ### SemanticEngine
 Catalog-first, lazy-loading: only `semantic_catalog.yaml` loads at startup; model YAMLs load on-demand and cache. Never pre-load all models.
 
+### Project analyzer (`skifer analyze`) — Plan 43
+
+Turns existing SQL (scripts, Databricks/Jupyter notebooks, `system.query.history`) into first-draft
+Skifer pipeline YAML, shared rule stubs and partials/intermediate-table splits — **deterministic
+first**: every structural decision comes from `sqlglot`-parsing the statement against the closed
+`op_catalog.py` vocabulary and is proven by a round-trip oracle (`compile_select` back to SQL,
+compared to the source), never guessed. Optional extras: `[analyzer]` (`sqlglot`), `[databricks]`
+(query history).
+
+```bash
+skifer analyze "legacy/*.sql" --inventory              # raw AST node-type counts
+skifer analyze "legacy/*.sql" --dry-run [--split]       # map + round-trip-verify; writes nothing
+skifer analyze "legacy/*.sql" --emit --out DIR [--enrich]  # write validated drafts + rule stubs
+skifer analyze parity DRAFT.yaml --against FQN --target-layer LAYER   # disposable-table vs. legacy
+skifer analyze history --warehouse-id ID --days N [--schema CAT.SCHEMA]  # system.query.history
+```
+
+Three front-ends feed the same pipeline: a `.sql` file, a Databricks `.py` export or `.ipynb`
+notebook (`%sql`/`%%sql` magic cells and a literal `spark.sql(...)` call via the `ast` module — an
+f-string or non-literal argument is a named, never-interpolated residue), and `system.query.history`
+fetched via the Databricks SDK's Statement Execution API (never selecting an author/user column or
+reading result data, deduplicated by content fingerprint). `--emit` finds recurring expressions
+across the corpus (fingerprinted the same `sha256:v1:` way as `adaptive/models.py`) and promotes them
+to shared `RuleRegistry` rule stubs; a file without the `project_analyzer` managed-file marker is
+never overwritten. `--enrich` (optional, needs a configured LLM provider) adds human-readable names
+and descriptions only — never structure, the same allowlist-rejection discipline as
+`SemanticBuilder.build_from_projection()`. `analyze parity` runs a draft into a disposable table and
+compares it to the legacy table it is meant to replace, proof on real data rather than just on SQL
+text. A construct this package cannot safely translate is always a named residue in the report,
+never a silent drop or a guess.
+
 ### Tests
 - LLM calls are always mocked; no live cluster, API key or network is needed.
 - Spark, however, is **not** mocked everywhere: 182 tests run a real local Delta session
@@ -853,6 +908,7 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Lineage du tracker : agrégats, jointures, intermédiaires (Plan 38)](docs/roadmap/38_tracker_lineage_plan.md) | — | **Pas encore un plan ; un point livré.** Le document ne contenait rien (ni fichier, ni branche, ni commit — lien mort) ; il porte désormais le **comportement mesuré**. Deux fail-open sont **fermés** : `aggregate:` produit maintenant du lineage, et l'arête d'une règle porte le nom publié par `select_final` plutôt que le nom interne de la règle — dans les deux cas, une colonne `pii` ne perd plus sa classification en chemin et `mode="strict"` peut l'attraper. Restent quatre points, qui demandent des décisions de conception : comment représenter un doute, si le tracker peut lire un schéma, comment séparer la condition de jointure du flux, et **si une source qualifiée (`ord.id`) est exécutable** — elle ne l'est aujourd'hui sur aucun moteur alors qu'elle est le seul remède à l'attribution par défaut et qu'`examples/23_openlineage` l'emploie ; un garde-fou épingle les deux moteurs ensemble en attendant. |
 | [Skifer derrière un superviseur Genie (Plan 41)](docs/roadmap/41_genie_supervisor_plan.md) | `feat/plan41-genie-supervisor` | **Implémenté et vérifié en live (41.1–41.9)** — `SkiferResponsesAgent` (MLflow 3), Connect serverless, store de certification par catalogue, tags UC, `log_agent`, runbook `docs/databricks_supervisor.md`. Le superviseur n'accepte pas un endpoint de serving directement (pas de `tool_type` pour ça) ; contournement par fonction SQL UC + `ai_query`, documenté et testé. Bug `build_hub`/`config_manager` trouvé et corrigé en 3.0.2. |
 | [Couche sémantique en metric views pour Genie (Plan 42)](docs/roadmap/42_metric_views_plan.md) | `feat/plan42-metric-views` | Implémenté (42.0–42.5) — `metric_views.py`, `SemanticEngine.publish_metric_views`, `skifer semantic metric-views`, page `docs/genie_metric_views.md`. Reste 42.6 (demo_sts bascule sur Skifer, hors dépôt) et la vérification live de `publish_metric_views` lui-même sur le workspace (42.0 n'a vérifié que le DDL brut). |
+| [Project analyzer : du SQL existant aux pipelines Skifer (Plan 43)](docs/roadmap/43_project_analyzer_plan.md) | `feat/plan43-project-analyzer` | **Implémenté — 43.0 à 43.8 sont tous faits.** Corpus synthétique + parser + inventaire (43.0), `where:`/`where_groups:` post-jointure (43.1), mapper déterministe SQL → schema_dict + oracle de round-trip par `compile_select` + rapport + `skifer analyze --dry-run` (43.2), DAG de dépendances + découpage CTE/sous-requêtes en partials/tables intermédiaires/inline + `skifer analyze --dry-run --split` (43.3), fingerprints structurels + détection de motifs récurrents (règles partagées, divergences jamais arbitrées, sous-seuil jamais silencieux) + émission validée de drafts/stubs + `skifer analyze --emit [--out] [--min-occurrences] [--min-scripts] [--strict]` (43.4), run de parité données `ParityRunner`/`compare_tables` (table jetable, jamais la cible réelle ni la legacy) + `skifer analyze parity <draft.yaml> --against <fqn> --target-layer <layer> [--key col,…]` (43.5, `--target-layer` ajouté au-delà de l'esquisse du plan — requis par `run_process_to_table`) : 7/8 statements du corpus vérifient (05 et 07 résolus par le découpage), le 8e (`LAG()`) reste honnêtement bloqué ; sur le même corpus, `--emit` promeut `country` en règle partagée, trouve la divergence `net_margin`, et écrit 7 drafts + 1 stub. Les deux tests Spark de 43.5, initialement vérifiés par relecture seulement (pas de JRE local), ont depuis été réellement exécutés (JRE local installé) : la relecture avait raté un `filter:` mal placé dans un fixture de test (corrigé — aucun défaut côté `ParityRunner`/`compare_tables`), suite complète désormais verte avec Spark. Enrichissement LLM contraint optionnel (43.6) : `--enrich` sur `--emit` propose noms/docstrings de règles, descriptions de drafts et regroupements de fingerprints via JSON fermé (allowlist par clé, nom de règle proposé purement consultatif, jamais utilisé pour renommer) — additif au rapport JSON uniquement, no-op silencieux sans provider ; le corps de règle pour un fragment `needs_curation` reste un scope cut assumé (pas de fragment sûr isolable sans travail côté mapper). Front-ends notebooks (43.7, premier sous-point) : `skifer analyze` lit aussi un export Databricks `.py` (cellules `# MAGIC %sql` + appels `spark.sql(...)` littéraux scannés par `ast`) et un `.ipynb` (`%%sql` + `spark.sql(...)`), chaque statement gardant son origine fichier/cellule/ligne (`::cell:N` pour un ipynb, même convention de suffixe que 43.3) ; une f-string ou un argument non littéral est un `ExtractionResidue` nommé, jamais interpolé. Historique de requêtes (43.7, second sous-point) : `skifer analyze history --warehouse-id ID --days N` lit `system.query.history` via l'API Statement Execution du SDK Databricks, ne sélectionne jamais de colonne auteur/résultat, dédoublonne par fingerprint de contenu. Doc (43.8) : `docs/project_analyzer.md` (parcours guidé complet sur l'exemple 24), entrée `mkdocs.yml`, arborescence `analyzer/` et section prose dans `CLAUDE.md`/`AGENTS.md`. **Plan clos.** |
 
 ## Key files
 

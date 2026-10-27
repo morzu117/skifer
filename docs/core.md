@@ -435,6 +435,118 @@ aliases, so a typo fails before any Spark work.
 
 ---
 
+## Post-join filters (`where` / `where_groups`) — Plan 43
+
+A table's `filter:` runs **before** the join — on an outer join, filtering the joined
+side there is not equivalent to filtering it after the join: it drops the unmatched
+rows the outer join is meant to keep. `where:` / `where_groups:` fill that gap: a
+top-level, post-join filter applied after every join and before `business_rules`.
+
+```yaml
+tables:
+  - name: silver.orders
+    alias: o
+  - name: silver.refunds
+    alias: r
+    fields:                             # rename ahead of the join to keep status unambiguous
+      - [status, refund_status]
+
+join:
+  - table_from: [o, order_id]
+    table_to: [r, order_id]
+    type: left                          # keep every order, matched or not
+
+where:                                  # applied AFTER the join
+  - "refund_status:equals:APPROVED"     # orders with no approved refund are dropped here,
+                                         # not silently lost by filtering r before the join
+where_groups:                           # optional — OR-of-ANDs, same placement
+  - ["country:equals:FR", "amount:greater_than:100"]
+  - ["country:equals:BE"]
+```
+
+Same two forms as a table's `filter:` (compact string list, column-mapping dict) and
+the same grammar as `filter_groups:` for `where_groups:`. Requires at least one table
+— it is refused at load time otherwise. Columns are **not** alias-qualified (there is
+no `alias.column` form, same as `select_final`): they are resolved by name on the
+joined row, so a column present on both sides of the join must be renamed upstream
+via a table's `fields:` before it becomes ambiguous.
+
+---
+
+## Project analyzer (`skifer analyze`) — Plan 43
+
+`skifer analyze` turns existing SQL scripts into a first-draft Skifer pipeline — deterministic
+parsing and mapping, no LLM:
+
+```bash
+skifer analyze "legacy_sql/*.sql" --inventory               # raw AST node-type counts
+skifer analyze "legacy_sql/*.sql" --dry-run [--split]        # map + round-trip-verify; writes nothing
+skifer analyze "legacy_sql/*.sql" --emit --out PROJECT_ROOT  # write validated drafts + rule stubs
+```
+
+Any of the three modes also accepts a Databricks `.py` notebook export or a Jupyter `.ipynb`
+notebook in place of a `.sql` path (Plan 43 — 43.7): a `%sql` magic cell (or `%%sql` in `.ipynb`) is
+extracted the same way as a `.sql` file's statements, and a plain code cell is scanned for a
+`spark.sql(...)` call via Python's own `ast` module. Only a single positional literal string
+argument is accepted — an f-string, a variable, a concatenation or a keyword argument is reported
+instead of guessed at, the same "report, never silently drop" discipline a mapper residue already
+follows. Each statement keeps its origin: file and line for a `.py` export (relative to the real
+file, not the cell), file and cell index (`path.ipynb::cell:N`) for a `.ipynb`, since a notebook has
+no line numbers spanning cells.
+
+A third front-end reads recent statement text straight from a Databricks workspace (Plan 43 —
+43.7's second sub-point, extra `[databricks]`):
+
+```bash
+skifer analyze history --warehouse-id ID --days 7 [--schema CAT.SCHEMA] [--profile NAME] --dry-run
+```
+
+fetches `system.query.history` via the Databricks SDK's Statement Execution API, deduplicates by a
+content fingerprint, and feeds the result into the same `--inventory`/`--dry-run`/`--emit` pipeline.
+It never selects an author/user column — there is no identity to omit from the report, because it
+is never read — and never reads a query's result data, only its text.
+
+`--dry-run` maps each statement to a schema draft and round-trip-verifies it against the source
+SQL via `compile_select`; a statement it cannot map (a window function, a `UNION`, …) is reported
+`needs_curation` with the reason, never silently dropped. `--split` additionally classifies every
+script-level CTE/subquery into a partial, a proposed intermediate table, or an inlined fragment,
+and appends a Mermaid dependency graph.
+
+`--emit` finds row-level expressions that recur across the corpus (`--min-occurrences`,
+`--min-scripts`; default 3 occurrences across 2+ scripts) and promotes them to a shared
+`RuleRegistry` stub under `rules/_generated/`, wired into every draft that used to inline the
+expression via `business_rules:`. The same output alias computed by two structurally different
+formulas is never arbitrated — both are reported as a named divergence, for a human to resolve.
+Every draft (`schemas/.drafts/`) and stub carries a `_generated_by: project_analyzer` marker and a
+source hash: re-emitting against an unchanged corpus is a byte-for-byte no-op, a hand-edited file
+without the marker is never overwritten (exit 4), and `--strict` refuses to write anything at all
+the moment a dry preflight finds any residue (skipped unit, failed validation).
+
+Exit codes: `0` clean · `1` a technical error · `2` a residue was reported (or, under `--strict`,
+refused outright before any write) · `4` an existing file without the marker blocked a write.
+`examples/24_project_analyzer/` runs all three modes end to end against a synthetic 8-script
+corpus.
+
+`skifer analyze parity <draft.yaml> --against <fqn_legacy> --target-layer <layer> [--key col,…]`
+proves data-level equivalence before a cutover (Plan 43 — 43.5): it runs the draft through the
+real engine into a disposable table — never the draft's own eventual target, never the legacy
+table — compares row counts, columns, a row hash, and (with `--key`) a per-column count of rows
+that differ for matched keys, then drops the disposable table. The report never carries a data
+value, only counts and column names. Exit codes: `0` identical · `5` a measured discrepancy · `1`
+a technical error. This is the only `analyze` mode that needs a real Spark session.
+
+`--enrich` on `--emit` (Plan 43 — 43.6, optional) proposes, via an `LLMProvider`, an advisory
+rule name and a one-sentence docstring per shared-rule candidate, a one-sentence description per
+draft, and fingerprint-grouping proposals — added as an `"enrichment"` key on the printed report,
+never written to a draft or stub on disk. Every call sends the LLM only what is already proven
+safe: a candidate's canonical, qualifier-stripped expression shape or a draft's declared output
+column names — never a table name, a join condition, or a filter value. A proposed rule name is
+purely advisory: it is validated as a Python identifier but never used to rename the generated
+function or its `business_rules:` wiring. No configured provider is a silent no-op (empty result,
+exit code unaffected).
+
+---
+
 ## Semantic projection metadata (`data_product`, `contract`, `semantic`) — Plan 29
 
 Pipeline YAML can describe a data product and its planned semantic surface before

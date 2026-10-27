@@ -49,6 +49,7 @@ nav:
       - Business Rules: rules.md
       - Lineage & Dictionary: lineage.md
       - Data Observability: observability.md
+      - Project Analyzer: project_analyzer.md
   - Semantic & agentic:
       - Semantic Layer: semantic.md
       - Agentic Layer: agentic.md

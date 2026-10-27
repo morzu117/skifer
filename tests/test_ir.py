@@ -268,6 +268,36 @@ class TestFilterParsing:
         assert ir.tables[0].filter_groups[0][0].value == "EMEA"
         assert ir.tables[0].filter_groups[1][0].value == "APAC"
 
+    def test_where_parses_to_parsed_filter_list(self):
+        """Top-level post-join 'where:' (Plan 43) parses on the schema, not a table."""
+        schema = {
+            "tables": [{"name": "t"}],
+            "where": [{"column": "status", "operator": "equals", "value": "ACTIVE"}],
+        }
+        ir = parse_to_ir(schema)
+        assert len(ir.where) == 1
+        f = ir.where[0]
+        assert isinstance(f, ParsedFilter)
+        assert f.column == "status" and f.operator == "equals" and f.value == "ACTIVE"
+
+    def test_where_defaults_to_empty(self):
+        ir = parse_to_ir({"tables": [{"name": "t"}]})
+        assert ir.where == []
+        assert ir.where_groups == []
+
+    def test_where_groups_parses_to_nested_parsed_filter_lists(self):
+        schema = {
+            "tables": [{"name": "t"}],
+            "where_groups": [
+                [{"column": "country", "operator": "equals", "value": "FR"}],
+                [{"column": "country", "operator": "equals", "value": "BE"}],
+            ],
+        }
+        ir = parse_to_ir(schema)
+        assert len(ir.where_groups) == 2
+        assert ir.where_groups[0][0].value == "FR"
+        assert ir.where_groups[1][0].value == "BE"
+
 
 # ---------------------------------------------------------------------------
 # Column spec parsing — linear ops

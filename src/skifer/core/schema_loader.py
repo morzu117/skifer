@@ -561,6 +561,18 @@ def _validate_schema_ops(schema_dict: dict) -> None:
     _validate_ops_in_select_list(schema_dict.get("select_final", []), "select_final", errors)
     _validate_ops_in_select_list(schema_dict.get("add_columns", []), "add_columns", errors)
 
+    # Post-join filters (Plan 43) — already normalized to dicts above.
+    for f in schema_dict.get("where", []):
+        if isinstance(f, dict):
+            _validate_filter_op(f.get("operator", ""), f.get("column", "?"), "where", errors)
+
+    for group in schema_dict.get("where_groups", []):
+        for f in group:
+            if isinstance(f, dict):
+                _validate_filter_op(
+                    f.get("operator", ""), f.get("column", "?"), "where_groups", errors
+                )
+
     if errors:
         raise ValueError(
             f"Schema validation failed with {len(errors)} error(s):\n"
@@ -1598,6 +1610,32 @@ def _normalize_schema(schema_dict, params=None, base_dir=None, seen_paths=None):
             raise ValueError(
                 "Schema validation failed — invalid join references:\n" + "\n".join(join_errors)
             )
+
+    # Normalize post-join filters (Plan 43) — same two forms as a table's
+    # 'filter:' (string list or column-mapping dict), applied after every join
+    # and before business_rules. Unlike a table filter, there is no table to
+    # attach it to, so it requires at least one table in the schema.
+    if "where" in schema_dict:
+        if not schema_dict.get("tables"):
+            raise ValueError(
+                "[where] 'where:' requires at least one table in 'tables:' — "
+                "a post-join filter has nothing to run after."
+            )
+        where_val = schema_dict["where"]
+        if isinstance(where_val, dict):
+            schema_dict["where"] = _normalize_filter_mapping(where_val)
+        else:
+            schema_dict["where"] = _normalize_filters(where_val)
+
+    if "where_groups" in schema_dict:
+        if not schema_dict.get("tables"):
+            raise ValueError(
+                "[where_groups] 'where_groups:' requires at least one table in "
+                "'tables:' — a post-join filter has nothing to run after."
+            )
+        schema_dict["where_groups"] = [
+            _normalize_filters(g) for g in schema_dict["where_groups"]
+        ]
 
     # Normalize select_final
     if "select_final" in schema_dict:

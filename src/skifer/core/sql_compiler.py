@@ -359,6 +359,26 @@ def _compile_table_cte(table: Any, resolve_table: Callable[[str], str], allow_ra
     return sql
 
 
+def _compile_where_clause(parsed: ParsedSchema, allow_raw_sql: bool) -> str:
+    """Compile the post-join 'where:'/'where_groups:' predicates (Plan 43).
+
+    Mirrors ``_compile_table_cte``'s predicate handling, but against the
+    joined row instead of a single table — these predicates are never pushed
+    down into a table's CTE (see ``ParsedSchema.where`` docstring).
+    """
+    predicates = [compile_filter(f, allow_raw_sql) for f in parsed.where]
+
+    group_predicates = []
+    for group in parsed.where_groups:
+        conds = [compile_filter(f, allow_raw_sql) for f in group]
+        if conds:
+            group_predicates.append("(" + " AND ".join(conds) + ")")
+    if group_predicates:
+        predicates.append("(" + " OR ".join(group_predicates) + ")")
+
+    return ("\n  WHERE " + " AND ".join(predicates)) if predicates else ""
+
+
 def _compile_join_tree(parsed: ParsedSchema) -> str:
     """Compile the FROM clause: base alias followed by each join in declaration order."""
     aliases = [t.alias for t in parsed.tables]
@@ -423,11 +443,12 @@ def compile_select(
     )
     join_tree = _compile_join_tree(parsed)
     add_columns = [compile_column_spec(f, allow_raw_sql) for f in parsed.add_columns]
+    where_clause = _compile_where_clause(parsed, allow_raw_sql)
 
     if parsed.aggregate:
         agg = parsed.aggregate
         inner_projection = ", ".join(["*"] + add_columns)
-        inner = f"SELECT {inner_projection}\n  FROM {join_tree}"
+        inner = f"SELECT {inner_projection}\n  FROM {join_tree}{where_clause}"
         outputs = [quote_ident(k) for k in agg.group_by]
         outputs += [compile_measure(m) for m in agg.measures]
         body = (
@@ -438,11 +459,11 @@ def compile_select(
             body += "\nHAVING " + " AND ".join(compile_filter(h, allow_raw_sql) for h in agg.having)
     elif parsed.select_final:
         projection = ", ".join(compile_column_spec(f, allow_raw_sql) for f in parsed.select_final)
-        body = f"SELECT {projection}\nFROM {join_tree}"
+        body = f"SELECT {projection}\nFROM {join_tree}{where_clause}"
     else:
         # keep_all_columns (or neither) — pass every column through, plus add_columns.
         projection = ", ".join(["*"] + add_columns)
-        body = f"SELECT {projection}\nFROM {join_tree}"
+        body = f"SELECT {projection}\nFROM {join_tree}{where_clause}"
 
     return f"WITH {ctes}\n{body}"
 

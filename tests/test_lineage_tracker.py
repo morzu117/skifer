@@ -754,3 +754,53 @@ aggregate:
         assert len(bucket) == 1
         assert bucket[0].source_column == "amount"
         assert bucket[0].transformations == ["round:0"]
+
+
+class TestWhereLineagePin:
+    """Pinning test (Plan 43 — 43.1): a post-join 'where:'/'where_groups:' is a
+    row-level predicate, not a column derivation — it must not appear in the
+    lineage graph at all, with or without it the edges are identical."""
+
+    @staticmethod
+    def _graph(extra: str = ""):
+        from skifer.core.schema_loader import parse_schema
+
+        schema = parse_schema(
+            f"""
+tables:
+  - name: silver.orders
+    alias: o
+  - name: silver.refunds
+    alias: r
+join:
+  - table_from: [o, order_id]
+    table_to: [r, order_id]
+    type: left
+select_final:
+  - [amount, amount, []]
+{extra}
+"""
+        )
+        return LineageTracker.from_schema(schema, target_name="gold.orders")
+
+    def test_where_produces_no_additional_edge(self):
+        baseline = self._graph()
+        with_where = self._graph(
+            "where:\n  - \"status:equals:APPROVED\"\n"
+        )
+        assert [(e.source_table, e.source_column, e.target_table, e.target_column)
+                for e in with_where.edges] == [
+            (e.source_table, e.source_column, e.target_table, e.target_column)
+            for e in baseline.edges
+        ]
+
+    def test_where_groups_produces_no_additional_edge(self):
+        baseline = self._graph()
+        with_where_groups = self._graph(
+            "where_groups:\n  - [\"status:equals:APPROVED\"]\n  - [\"order_id:equals:3\"]\n"
+        )
+        assert [(e.source_table, e.source_column, e.target_table, e.target_column)
+                for e in with_where_groups.edges] == [
+            (e.source_table, e.source_column, e.target_table, e.target_column)
+            for e in baseline.edges
+        ]
