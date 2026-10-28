@@ -111,7 +111,7 @@ def test_predict_returns_text_and_evidence_in_custom_outputs(served):
     assert message["role"] == "assistant"
     assert message["content"][0]["text"].startswith("All good.")
     skifer = out["custom_outputs"]["skifer"]
-    assert skifer["schema_version"] == "1"
+    assert skifer["schema_version"] == "2"
     assert skifer["evidence"]["sql_hash"] == "sha256:v1:hash"
     assert "SELECT" not in str(out)
 

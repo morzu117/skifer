@@ -18,6 +18,10 @@ SQL_NORMALIZATION_VERSION = "v1"
 # A single-quoted SQL literal, with '' as the escape for an embedded quote.
 _STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
 _WHITESPACE = re.compile(r"\s+")
+# Certification of the *metric* itself, distinct from the certification of the
+# sources it reads: a candidate metric computed over certified tables is still
+# not a certified answer (Plan 44, D4).
+METRIC_CERTIFICATION_STATUSES = frozenset({"CERTIFIED", "CANDIDATE"})
 
 
 class EvidenceRedactionError(Exception):
@@ -159,11 +163,29 @@ class MetricEvidence:
     # An empty `source_columns` alone is ambiguous: it reads as "this metric has
     # no sources", which is false when lineage simply could not be resolved.
     lineage_status: str = "resolved"
+    certification: str = "CERTIFIED"
+    candidate_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.certification not in METRIC_CERTIFICATION_STATUSES:
+            allowed = ", ".join(sorted(METRIC_CERTIFICATION_STATUSES))
+            raise ValueError(
+                f"MetricEvidence.certification must be one of {allowed}; "
+                f"got {self.certification!r}."
+            )
+        if self.certification == "CANDIDATE" and not self.candidate_id:
+            raise ValueError(
+                "MetricEvidence.candidate_id is required when certification is CANDIDATE."
+            )
+        if self.certification == "CERTIFIED" and self.candidate_id is not None:
+            raise ValueError(
+                "MetricEvidence.candidate_id must be None when certification is CERTIFIED."
+            )
 
 
 @dataclass(frozen=True, kw_only=True)
 class SemanticEvidence:
-    schema_version: str = field(default="1", init=False)
+    schema_version: str = field(default="2", init=False)
     evidence_id: str
     trace_id: str | None
     model_keys: tuple[str, ...]
@@ -213,6 +235,12 @@ class SemanticEvidence:
                     ),
                     "lineage_status": _serialize_value(
                         metric.lineage_status, f"metrics[{index}].lineage_status"
+                    ),
+                    "certification": _serialize_value(
+                        metric.certification, f"metrics[{index}].certification"
+                    ),
+                    "candidate_id": _serialize_value(
+                        metric.candidate_id, f"metrics[{index}].candidate_id"
                     ),
                 }
                 for index, metric in enumerate(self.metrics)

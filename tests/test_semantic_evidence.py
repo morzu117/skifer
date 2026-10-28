@@ -23,6 +23,7 @@ from skifer.semantic.evidence import (
     EvidenceRedactionError,
     MissingCertificationSnapshot,
     ExecutionResult,
+    MetricEvidence,
     SemanticEvidence,
     SemanticExecutionError,
     SourceEvidence,
@@ -816,3 +817,48 @@ def test_certification_snapshot_is_frozen_against_later_store_changes(tmp_path):
     engine.certification_store = None  # the registry moves on
 
     assert result.evidence.to_dict() == before
+
+
+# --- Plan 44 S00: certification carried by the metric itself (D4) -----------------
+
+_CANDIDATE_ID = "candidate:v1:0123456789abcdef0123456789abcdef"
+
+
+def _metric(**overrides) -> MetricEvidence:
+    values = {
+        "name": "total_amount",
+        "model_key": "sales.orders",
+        "definition_hash": "definition-1",
+        "source_columns": ("gold.fact_orders.amount",),
+    }
+    values.update(overrides)
+    return MetricEvidence(**values)
+
+
+def test_metric_certification_rejects_unknown_status():
+    with pytest.raises(ValueError, match="must be one of CANDIDATE, CERTIFIED; got 'GOLD'"):
+        _metric(certification="GOLD")
+
+
+def test_candidate_metric_requires_candidate_id():
+    with pytest.raises(ValueError, match="candidate_id is required when certification is CANDIDATE"):
+        _metric(certification="CANDIDATE")
+
+
+def test_certified_metric_rejects_candidate_id():
+    with pytest.raises(ValueError, match="candidate_id must be None when certification is CERTIFIED"):
+        _metric(candidate_id=_CANDIDATE_ID)
+
+
+def test_to_dict_serializes_metric_certification():
+    payload = _evidence(
+        metrics=(_metric(), _metric(name="n", certification="CANDIDATE", candidate_id=_CANDIDATE_ID))
+    ).to_dict()
+
+    assert payload["schema_version"] == "2"
+    certified, candidate = payload["metrics"]
+    assert certified["certification"] == "CERTIFIED"
+    assert certified["candidate_id"] is None
+    assert candidate["certification"] == "CANDIDATE"
+    assert candidate["candidate_id"] == _CANDIDATE_ID
+    json.dumps(payload)
