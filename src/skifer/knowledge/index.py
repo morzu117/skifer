@@ -13,12 +13,13 @@ from collections import deque
 import math
 import re
 import unicodedata
-from typing import Iterable
+from typing import Any, Iterable
 
 from .models import NODE_KINDS, Edge, Node, SearchHit
 from .store import KnowledgeStore
 
 
+SEARCH_MODES = ("bm25", "dense", "hybrid")  # bm25 stays the default until D7 (S09)
 BM25_K1 = 1.2
 BM25_B = 0.75
 FIELD_WEIGHTS = {"label": 3.0, "synonyms": 2.0, "text": 1.0}
@@ -67,8 +68,15 @@ def _fields(node: Node) -> dict[str, tuple[str, ...]]:
 class KnowledgeIndex:
     """Search and neighborhood over the live (non-removed) nodes of a store."""
 
-    def __init__(self, nodes: Iterable[Node], edges: Iterable[Edge] = ()):
+    def __init__(
+        self, nodes: Iterable[Node], edges: Iterable[Edge] = (), *, embedder: Any = None,
+        embeddings: dict[str, list[float]] | None = None,
+    ):
         self._nodes = {node.node_id: node for node in sorted(nodes, key=lambda n: n.node_id)}
+        # Plan 44, S08: optional dense vectors, only for live nodes, from ``embedder``'s model.
+        self._embedder = embedder
+        self._embeddings = {key: vector for key, vector in sorted((embeddings or {}).items())
+                            if key in self._nodes}
         self._tf: dict[str, dict[str, dict[str, int]]] = {}
         lengths: dict[str, list[int]] = {field: [] for field in FIELD_WEIGHTS}
         self._lengths: dict[str, dict[str, int]] = {}
@@ -104,8 +112,11 @@ class KnowledgeIndex:
                 self._adjacency.setdefault(edge.to_id, []).append((edge.from_id, edge.weight))
 
     @classmethod
-    def from_store(cls, store: KnowledgeStore) -> "KnowledgeIndex":
-        return cls(store.list_nodes(), store.list_edges())
+    def from_store(cls, store: KnowledgeStore, *, embedder: Any = None) -> "KnowledgeIndex":
+        """With ``embedder``, also the vectors stored for its model (``dense``/``hybrid``)."""
+        embeddings = store.list_embeddings(embedder.model_name) if embedder is not None else None
+        return cls(store.list_nodes(), store.list_edges(), embedder=embedder,
+                   embeddings=embeddings)
 
     def __len__(self) -> int:
         return len(self._nodes)
@@ -149,10 +160,14 @@ class KnowledgeIndex:
 
     def search(
         self, query: str, *, k: int = 10, kinds: Iterable[str] | None = None,
-        domain: str | None = None,
+        domain: str | None = None, mode: str = "bm25",
     ) -> list[SearchHit]:
         if k < 1:
             raise ValueError(f"k must be a positive integer; got {k!r}.")
+        if mode not in SEARCH_MODES:
+            raise ValueError(f"mode must be one of {list(SEARCH_MODES)}; got {mode!r}.")
+        if mode != "bm25":
+            return self._search_with_vectors(query, k=k, kinds=kinds, domain=domain, mode=mode)
         selected = _node_kinds(kinds)
         terms = tuple(sorted(set(tokenize(query))))
         if not terms:
@@ -168,6 +183,36 @@ class KnowledgeIndex:
                 hits.append(SearchHit(node=node, score=score, matched_terms=matched))
         hits.sort(key=lambda hit: (-hit.score, hit.node.node_id))
         return hits[:k]
+
+    def _search_with_vectors(
+        self, query: str, *, k: int, kinds: Iterable[str] | None, domain: str | None, mode: str,
+    ) -> list[SearchHit]:
+        """``dense``: cosine to the query vector. ``hybrid``: RRF of the BM25 and dense rankings."""
+        from .embeddings import cosine, extra_missing_error, reciprocal_rank_fusion
+
+        if self._embedder is None:
+            raise extra_missing_error()
+        selected = _node_kinds(kinds)
+        query_vector = self._embedder.embed_query(query)
+        dense = sorted(
+            (
+                (cosine(query_vector, vector), node_id)
+                for node_id, vector in self._embeddings.items()
+                if (selected is None or self._nodes[node_id].kind in selected)
+                and (domain is None or self._nodes[node_id].domain == domain)
+            ),
+            key=lambda pair: (-pair[0], pair[1]),
+        )
+        if mode == "dense":
+            return [SearchHit(node=self._nodes[node_id], score=score, matched_terms=())
+                    for score, node_id in dense[:k]]
+        lexical = self.search(query, k=max(len(self._nodes), 1), kinds=kinds, domain=domain)
+        matched = {hit.node.node_id: hit.matched_terms for hit in lexical}
+        fused = reciprocal_rank_fusion([[hit.node.node_id for hit in lexical],
+                                        [node_id for _, node_id in dense]])
+        return [SearchHit(node=self._nodes[node_id], score=score,
+                          matched_terms=matched.get(node_id, ()))
+                for node_id, score in fused[:k]]
 
     def neighbors(
         self, node_id: str, *, max_depth: int = 2, min_weight: float = 0.5,

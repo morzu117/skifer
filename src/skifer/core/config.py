@@ -309,6 +309,35 @@ def candidate_drift_settings(
     return min_sample, dict(thresholds)
 
 
+def knowledge_embedding_settings(
+    env_config: dict | None, *, env_name: str | None = None
+) -> tuple[str | None, str | None, str]:
+    """(``knowledge_embedding_model``, ``knowledge_model_cache``, search mode) of an environment.
+
+    ``knowledge_search_mode: null`` means ``bm25``: the default stays BM25 until D7 is
+    decided (Plan 44, S09). ``dense``/``hybrid`` need an embedding model.
+    """
+    from skifer.knowledge.embeddings import SUPPORTED_MODELS
+
+    where = f" for environment '{env_name}'" if env_name else ""
+    env_config = env_config or {}
+    model = env_config.get("knowledge_embedding_model")
+    if model is not None and model not in SUPPORTED_MODELS:
+        raise ValueError(f"Invalid knowledge_embedding_model{where}: {model!r}. "
+                         f"Expected null or one of {sorted(SUPPORTED_MODELS)}.")
+    cache = env_config.get("knowledge_model_cache")
+    if cache is not None and (not isinstance(cache, str) or not cache.strip()):
+        raise ValueError(f"Invalid knowledge_model_cache{where}: expected null or a path.")
+    mode = env_config.get("knowledge_search_mode") or "bm25"
+    if mode not in ("bm25", "dense", "hybrid"):
+        raise ValueError(f"Invalid knowledge_search_mode{where}: {mode!r}. "
+                         "Expected null, 'bm25', 'dense' or 'hybrid'.")
+    if mode != "bm25" and model is None:
+        raise ValueError(f"knowledge_search_mode {mode!r}{where} needs a "
+                         "knowledge_embedding_model.")
+    return model, cache, mode
+
+
 class ConfigurationManager:
     """
     Manages the loading and retrieval of configuration from a YAML file.
@@ -511,6 +540,7 @@ class ConfigurationManager:
                         candidate_fallback_mode(env_config, env_name=env_name)
                     candidate_validation_thresholds(env_config, env_name=env_name)
                     candidate_drift_settings(env_config, env_name=env_name)
+                    knowledge_embedding_settings(env_config, env_name=env_name)
                     if "candidates_decider_identity" in env_config:
                         identity = env_config["candidates_decider_identity"]
                         if identity not in {"hmac", "plain"}:

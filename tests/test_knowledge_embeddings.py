@@ -290,3 +290,71 @@ def test_spark_migration_adds_columns_in_place(spark):
         assert {"embedding", "embedding_model"} <= set(spark.table(f"{schema}.{NODES_TABLE}").columns)
     finally:
         spark.sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+
+
+# --- S08.2: search modes ---------------------------------------------------------------
+
+
+def _index(store, embedder=None):
+    from skifer.knowledge.index import KnowledgeIndex
+
+    return KnowledgeIndex.from_store(store, embedder=embedder)
+
+
+def test_dense_without_extra_names_the_extra(store, monkeypatch):
+    index = _index(store)
+    for mode in ("dense", "hybrid"):
+        with pytest.raises(EmbeddingsUnavailableError,
+                           match=r'pip install "skifer\[knowledge-embeddings\]"'):
+            index.search("chiffre d'affaires", mode=mode)
+    assert index.search("orders")[0].node.node_id == "metric:sales.orders"   # bm25 still works
+    with pytest.raises(ValueError, match="mode must be one of"):
+        index.search("orders", mode="vector")
+
+
+class KeywordEmbedder:
+    """Two-dimensional vectors: (talks about money, talks about orders)."""
+
+    model_name = "bge-m3"
+
+    @staticmethod
+    def _vector(text):
+        text = text.lower()
+        return [float(any(w in text for w in ("chiffre", "revenue", "ca "))),
+                float(any(w in text for w in ("order", "commande")))]
+
+    def embed_passages(self, texts):
+        return [self._vector(text) for text in texts]
+
+    def embed_query(self, text):
+        return self._vector(text + " ")
+
+
+def test_dense_and_hybrid_rank_by_vectors(store):
+    embedder = KeywordEmbedder()
+    embed_nodes(store, embedder)
+    index = _index(store, embedder)
+
+    dense = index.search("CA du mois", mode="dense", k=2)
+    assert [hit.node.node_id for hit in dense] == ["metric:sales.revenue_net",
+                                                   "metric:sales.margin"]
+    assert dense[0].score == pytest.approx(1.0) and dense[0].matched_terms == ()
+    assert index.search("CA du mois", mode="dense", kinds=["table"]) == []
+
+    hybrid = index.search("orders count", mode="hybrid", k=3)
+    assert hybrid[0].node.node_id == "metric:sales.orders"
+    assert hybrid[0].score == pytest.approx(2 / 61)
+    assert "orders" in hybrid[0].matched_terms
+    # deterministic: same query, same ranking.
+    assert index.search("orders count", mode="hybrid", k=3) == hybrid
+
+
+def test_search_default_stays_bm25(store):
+    embedder = KeywordEmbedder()
+    embed_nodes(store, embedder)
+    index = _index(store, embedder)
+    from skifer.knowledge.index import KnowledgeIndex
+
+    assert index.search("CA du mois") == KnowledgeIndex.from_store(store).search("CA du mois")
+    other = _index(store, fake_embedder("multilingual-e5-small")[0])
+    assert other.search("CA du mois", mode="dense") == []   # no vector for that model yet
