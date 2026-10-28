@@ -221,6 +221,11 @@ def test_dry_run_stability_reads_recorded_runs_only(store):
         "code": "stability_not_measured", "observed": 0, "threshold": 2, "verdict": "fail"}}
     assert backend.executed == [] and store.list_runs(candidate.candidate_id) == []
 
+    store.upsert_candidate(candidate)
+    answered_on(store, candidate, 0, 1)
+    assert check.validate(candidate.candidate_id, execute=False).outcome == "pending"
+    assert backend.executed == []
+
 
 # --- S05-R3 ----------------------------------------------------------------------------
 

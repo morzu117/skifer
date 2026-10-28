@@ -239,6 +239,45 @@ def candidate_fallback_mode(env_config: dict | None, *, env_name: str | None = N
         )
     return value
 
+# config key -> ValidationThresholds field (Plan 44, S05)
+CANDIDATE_THRESHOLD_KEYS = {
+    "candidates_min_requests": "min_requests",
+    "candidates_min_distinct_requesters": "min_distinct_requesters",
+    "candidates_min_days": "min_days",
+    "candidates_stability_runs": "stability_runs",
+    "candidates_min_stability": "min_stability",
+}
+
+
+def candidate_validation_thresholds(
+    env_config: dict | None, *, env_name: str | None = None
+) -> dict:
+    """The ``ValidationThresholds`` keyword arguments an environment overrides.
+
+    Counts are non-negative integers (``candidates_stability_runs`` at least 1),
+    ``candidates_min_stability`` is within ``[0, 1]``; anything else is a
+    configuration error, never a silently clamped threshold.
+    """
+    where = f" for environment '{env_name}'" if env_name else ""
+    thresholds: dict = {}
+    for key, field_name in CANDIDATE_THRESHOLD_KEYS.items():
+        if key not in (env_config or {}):
+            continue
+        value = env_config[key]
+        if key == "candidates_min_stability":
+            valid = (not isinstance(value, bool) and isinstance(value, (int, float))
+                     and 0 <= value <= 1)
+            expected = "a number within [0, 1]"
+        else:
+            minimum = 1 if key == "candidates_stability_runs" else 0
+            valid = not isinstance(value, bool) and isinstance(value, int) and value >= minimum
+            expected = "a positive integer" if minimum else "a non-negative integer"
+        if not valid:
+            raise ValueError(f"Invalid {key}{where}: {value!r}. Expected {expected}.")
+        thresholds[field_name] = value
+    return thresholds
+
+
 class ConfigurationManager:
     """
     Manages the loading and retrieval of configuration from a YAML file.
@@ -439,6 +478,7 @@ class ConfigurationManager:
                             )
                     if "candidate_fallback" in env_config:
                         candidate_fallback_mode(env_config, env_name=env_name)
+                    candidate_validation_thresholds(env_config, env_name=env_name)
                     if "candidates_store_questions" in env_config:
                         mode = env_config["candidates_store_questions"]
                         if mode not in {"full", "redacted"}:

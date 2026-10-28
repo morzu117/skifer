@@ -255,6 +255,10 @@ class CandidateValidator:
         if coherence.passed and frequency.passed:
             stability = self.stability(candidate, execute=execute)
             outcome = "validated" if stability.passed else "needs_review"
+            if stability.reasons[0]["code"] == "stability_not_measured":
+                # A dry run that may not execute cannot conclude: no evidence yet,
+                # which is not evidence of instability.
+                outcome = "pending"
         else:
             # A candidate that cannot be published is never run for stability.
             stability = CriterionResult("stability", False, (

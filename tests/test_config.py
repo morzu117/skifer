@@ -488,3 +488,29 @@ def test_config_candidate_fallback_reads_yaml_booleans_and_defaults_to_off(tmp_p
     assert candidate_fallback_mode({"candidate_fallback": "shadow"}) == "shadow"
     assert candidate_fallback_mode({}) == "off"
     assert candidate_fallback_mode(None) == "off"
+
+
+@pytest.mark.parametrize("key,value", [
+    ("candidates_min_requests", -1), ("candidates_min_days", True),
+    ("candidates_min_distinct_requesters", 1.5), ("candidates_stability_runs", 0),
+    ("candidates_min_stability", 1.2), ("candidates_min_stability", -0.1),
+    ("candidates_min_stability", "1"),
+])
+def test_config_invalid_candidate_thresholds_raise_at_load(tmp_path, key, value):
+    with pytest.raises(ValueError, match=key):
+        ConfigurationManager(config_path=_write_env_config(tmp_path, **{key: value}))
+
+
+def test_config_candidate_thresholds_map_to_validation_thresholds(tmp_path):
+    from skifer.candidates.validator import ValidationThresholds
+    from skifer.core.config import candidate_validation_thresholds
+
+    env = {"candidates_min_requests": 0, "candidates_min_distinct_requesters": 1,
+           "candidates_min_days": 3, "candidates_stability_runs": 2,
+           "candidates_min_stability": 0.5}
+    ConfigurationManager(config_path=_write_env_config(tmp_path, **env))
+    assert ValidationThresholds(**candidate_validation_thresholds(env)) == ValidationThresholds(
+        min_requests=0, min_distinct_requesters=1, min_days=3, stability_runs=2,
+        min_stability=0.5)
+    assert candidate_validation_thresholds({}) == {}
+    assert candidate_validation_thresholds(None) == {}

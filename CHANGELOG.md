@@ -179,6 +179,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new purpose `promotion` with its error class, and the candidate keeps its state. A promotion fills
   `published_view`/`published_metric_view` and adds to the knowledge index a `metric` node of status
   `candidate` and one `shortcut` edge per join (`source="candidate"`, `weight=0.8`).
+- (Plan 44, S05.4) `skifer candidates validate [--candidate ID ...] [--dry-run] [--json]` judges the
+  `candidate` candidates, then the `validated` ones not yet published, and applies each report.
+  Exit codes: `0` ok, `1` technical error (a failed DDL included), `2` when at least one candidate
+  went to `needs_review` during the run — it wins over `1`, being the signal a job notifies on.
+  `--dry-run` runs no stability query, emits no DDL and writes nothing; a candidate whose stability
+  was never measured is then reported `pending`, not unstable. Thresholds come from the environment
+  (`candidates_min_requests`, `candidates_min_distinct_requesters`, `candidates_min_days`,
+  `candidates_stability_runs`, `candidates_min_stability`) and are validated when `config.yaml`
+  loads: a negative count, `candidates_stability_runs < 1` or a stability outside `[0, 1]` is an
+  error.
 
 ### Fixed
 
