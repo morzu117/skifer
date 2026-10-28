@@ -7,7 +7,12 @@
 > même jour (notebook d'arbitrage plutôt qu'API + app : la facilité d'abord). **D7 en suspens
 > jusqu'au benchmark de 44.7** : aucun défaut d'index n'est arrêté. Les décisions du brief sont
 > reprises telles quelles sauf mention explicite (tableau « Écarts avec le brief »).
-> Branche : `feat/plan44-metric-candidates`. Rien n'est implémenté.
+> Branche du plan : `memory-improvements`. Rien n'est implémenté.
+> **Découpé en 11 specs de développement** (33 slices) dans
+> [`44_metric_candidates/`](44_metric_candidates/README.md) — ordre, dépendances, contrats,
+> exigences testables. Les écarts que l'écriture des contrats a imposés au présent plan y sont
+> listés (« Écarts assumés avec le plan parent ») ; en cas de divergence, la spec fait foi pour
+> le *comment*, ce plan pour les *décisions*.
 
 ## Objectif
 
