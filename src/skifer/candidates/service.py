@@ -518,6 +518,30 @@ class CandidateService:
         )
 
 
+def build_candidate_service(
+    semantic: Any, *, store: Any = None, index_store: Any = None,
+    clock: Callable[[], datetime] | None = None,
+) -> CandidateService:
+    """The service the CLI and the arbitration notebook share, built from a ``SemanticEngine``.
+
+    Stores default to where the engine runs; the decider identity mode is the
+    environment's ``candidates_decider_identity`` (``hmac`` unless set).
+    """
+    from skifer.knowledge.store import default_knowledge_store
+
+    from .store import default_candidate_store
+
+    core = semantic.core
+    env_config = core._context.env_config()
+    return CandidateService(
+        store if store is not None else default_candidate_store(core),
+        engine=semantic,
+        index_store=index_store if index_store is not None else default_knowledge_store(core),
+        decider_identity=env_config.get("candidates_decider_identity", "hmac"),
+        clock=clock,
+    )
+
+
 def load_schema(path: str) -> dict:
     """``skifer.load_schema``, named here so a test can act between check and write."""
     from skifer.core.schema_loader import load_schema as _load_schema

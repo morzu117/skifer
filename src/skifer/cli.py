@@ -67,6 +67,12 @@ AUDIT_EXIT_BELOW_THRESHOLD = 2
 CANDIDATES_EXIT_OK = 0
 CANDIDATES_EXIT_ERROR = 1
 CANDIDATES_EXIT_NEEDS_REVIEW = 2
+# Arbitration (Plan 44, S06): its own contract, distinct from the validate job.
+CANDIDATES_EXIT_USAGE = 2
+CANDIDATES_EXIT_STALE = 3
+CANDIDATES_EXIT_CONFLICT = 4
+CANDIDATES_DECISIONS = ("approve", "reject", "promote", "review", "demote")
+CANDIDATES_ARBITRATION = ("list", "show", "history", *CANDIDATES_DECISIONS)
 
 API_LOOPBACK_HOST = "127.0.0.1"
 
@@ -488,6 +494,41 @@ def main() -> None:
     candidates_validate_parser.add_argument("--models-dir", default="semantic_models",
                                             help="Directory holding semantic_catalog.yaml.")
 
+    candidates_list_parser = candidates_subparsers.add_parser(
+        "list", help="List candidates, optionally in one state.")
+    candidates_list_parser.add_argument("--state", default=None, help="Only this state.")
+    candidates_list_parser.add_argument("--json", action="store_true", help="Print JSON.")
+    for name, help_text in (("show", "Show one candidate."),
+                            ("history", "Show a candidate's certification events.")):
+        read_parser = candidates_subparsers.add_parser(name, help=help_text)
+        read_parser.add_argument("candidate_id", metavar="ID")
+        read_parser.add_argument("--json", action="store_true", help="Print JSON.")
+    for name, help_text in (
+        ("approve", "Publish at level 1 by human decision."),
+        ("reject", "Reject a candidate."),
+        ("promote", "Write the level 2 pipeline and semantic drafts for a PR."),
+        ("review", "Put a promoted candidate under review."),
+        ("demote", "Drop a candidate's level 1 views."),
+    ):
+        decision_parser = candidates_subparsers.add_parser(name, help=help_text)
+        decision_parser.add_argument("candidate_id", metavar="ID")
+        decision_parser.add_argument("--reason", required=True, help="Why — recorded.")
+        if name == "promote":
+            decision_parser.add_argument("--pipeline-output", default=None, metavar="PATH",
+                                         help="Pipeline draft path, under a '.drafts' directory.")
+        if name == "review":
+            decision_parser.add_argument("--signal", default=None, metavar="NAME",
+                                         help="The signal that prompted the review.")
+        if name == "demote":
+            decision_parser.add_argument("--replaced-by", default=None, metavar="ID",
+                                         help="Candidate id or model:<model>.<metric>.")
+    for arbitration_parser in candidates_subparsers.choices.values():
+        if arbitration_parser is not candidates_validate_parser:
+            arbitration_parser.add_argument("--config", default=None, metavar="PATH",
+                                            help="Path to config.yaml.")
+            arbitration_parser.add_argument("--models-dir", default="semantic_models",
+                                            help="Directory holding semantic_catalog.yaml.")
+
     adaptive_parser = subparsers.add_parser(
         "adaptive",
         help="Review adaptive Gold proposals; never deploy or invoke Git.",
@@ -671,6 +712,8 @@ def run_candidates_command(
     from skifer.knowledge.index import KnowledgeIndex
     from skifer.knowledge.store import default_knowledge_store
 
+    if getattr(args, "candidates_command", None) in CANDIDATES_ARBITRATION:
+        return run_candidates_arbitration(args)
     if getattr(args, "candidates_command", None) != "validate":
         print("Candidates command missing. Use 'skifer candidates --help'.", file=sys.stderr)
         return CANDIDATES_EXIT_ERROR
@@ -744,6 +787,85 @@ def run_candidates_command(
     if reviewed:
         return CANDIDATES_EXIT_NEEDS_REVIEW
     return CANDIDATES_EXIT_ERROR if failed else CANDIDATES_EXIT_OK
+
+
+def run_candidates_arbitration(args: argparse.Namespace, *, service=None, decider=None) -> int:
+    """``skifer candidates list|show|history|approve|reject|promote|review|demote``.
+
+    ``0`` success · ``1`` technical error or no traceable decider · ``2`` usage ·
+    ``3`` stale candidate · ``4`` state conflict, existing output or refused approval.
+    """
+    from skifer.candidates.service import (
+        ApprovalRefusedError,
+        CandidateUsageError,
+        DeciderIdentityError,
+        OutputExistsError,
+        StaleCandidateError,
+        StateConflictError,
+        build_candidate_service,
+    )
+
+    command = args.candidates_command
+    try:
+        if service is None:
+            from skifer.core.core import SkiferEngine
+            from skifer.observability.certification_store import default_certification_store
+            from skifer.semantic.semantic import SemanticEngine
+
+            engine = SkiferEngine(config_path=args.config)
+            service = build_candidate_service(SemanticEngine(
+                engine, models_dir=args.models_dir,
+                certification_store=default_certification_store(engine)))
+        if command in CANDIDATES_DECISIONS and decider is None:
+            from skifer.services.identity import LocalIdentity
+
+            decider = LocalIdentity.resolve().subject
+        if command == "list":
+            output = [view.to_dict() for view in service.list(state=args.state)]
+        elif command == "show":
+            output = service.show(args.candidate_id).to_dict()
+        elif command == "history":
+            output = service.history(args.candidate_id)
+        else:
+            options = {"decider": decider, "reason": args.reason}
+            if command == "promote":
+                options["pipeline_output"] = args.pipeline_output
+            elif command == "review":
+                options["signal"] = args.signal
+            elif command == "demote":
+                options["replaced_by"] = args.replaced_by
+            result = getattr(service, command)(args.candidate_id, **options)
+            output = result if isinstance(result, dict) else result.to_dict()
+    except StaleCandidateError as exc:
+        print(f"[candidates] {exc}", file=sys.stderr)
+        return CANDIDATES_EXIT_STALE
+    except (StateConflictError, OutputExistsError, ApprovalRefusedError) as exc:
+        print(f"[candidates] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return CANDIDATES_EXIT_CONFLICT
+    except CandidateUsageError as exc:
+        print(f"[candidates] {exc}", file=sys.stderr)
+        return CANDIDATES_EXIT_USAGE
+    except DeciderIdentityError as exc:
+        print(f"[candidates] {exc}", file=sys.stderr)
+        return CANDIDATES_EXIT_ERROR
+    except Exception as exc:
+        print(f"[candidates] {command} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return CANDIDATES_EXIT_ERROR
+    if getattr(args, "json", False) or command in CANDIDATES_DECISIONS:
+        print(json.dumps(output, ensure_ascii=False, sort_keys=True, default=str))
+    elif command == "list":
+        for row in output:
+            print(f"{row['candidate_id']}  {row['state']:<13} {row['metric_name']}")
+        if not output:
+            print("[candidates] no candidate")
+    elif command == "show":
+        for key, value in output.items():
+            print(f"{key}: {value}")
+    else:
+        for event in output:
+            print(f"{event['event_at']}  {event['event_type']}  {event['previous_state']} -> "
+                  f"{event['new_state']}  {event['decided_by']}")
+    return CANDIDATES_EXIT_OK
 
 
 def _run_knowledge(args: argparse.Namespace) -> None:
