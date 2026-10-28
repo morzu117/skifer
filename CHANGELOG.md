@@ -189,6 +189,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `candidates_stability_runs`, `candidates_min_stability`) and are validated when `config.yaml`
   loads: a negative count, `candidates_stability_runs < 1` or a stability outside `[0, 1]` is an
   error.
+- (Plan 44, S06.3 fix) `semantic.source_candidate_id` is declared provenance, outside the
+  contract identity hash: a pipeline promoted from a candidate and the same pipeline written by
+  hand certify as the same contract. The contract-block guard in `tests/test_certification.py`
+  now lists it explicitly (`_BLOCK_OUTSIDE_HASH`) and a test proves the hash does not move.
 - (Plan 44, S06.1) `skifer.candidates.service.CandidateService` is the single implementation of a
   human decision on a candidate: `list`, `show` (an allowlisted `CandidateView` with the criteria of
   the last validation report, the same for `display()` and `--json`), `history` (chronological,
