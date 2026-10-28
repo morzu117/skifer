@@ -164,6 +164,10 @@ def test_removed_object_is_soft_deleted_and_unsearchable(workspace, tmp_path):
     removed = [n for n in store.list_nodes(include_removed=True)
                if n.node_id == "dimension:order_lines.line_sku"]
     assert len(removed) == 1, "soft delete keeps the row"
+    from skifer.knowledge.index import KnowledgeIndex
+
+    hits = KnowledgeIndex.from_store(store).search("line sku")
+    assert "dimension:order_lines.line_sku" not in {hit.node.node_id for hit in hits}
 
 
 def test_unity_catalog_only_table_becomes_reference_node(workspace, tmp_path):

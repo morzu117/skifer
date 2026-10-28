@@ -50,6 +50,10 @@ INDEX_EXIT_ERROR = 1
 INDEX_EXIT_USAGE = 2
 INDEX_EXIT_CLASSIFICATION = 3
 
+KNOWLEDGE_EXIT_OK = 0
+KNOWLEDGE_EXIT_ERROR = 1
+KNOWLEDGE_EXIT_USAGE = 2
+
 META_EXIT_OK = 0
 META_EXIT_ERROR = 1
 META_EXIT_USAGE = 2
@@ -418,6 +422,43 @@ def main() -> None:
         help="Project directory (default: cwd).",
     )
 
+    knowledge_parser = subparsers.add_parser(
+        "knowledge",
+        help="Sync and search the knowledge graph (Plan 44): BM25, no LLM.",
+    )
+    knowledge_subparsers = knowledge_parser.add_subparsers(dest="knowledge_command")
+    knowledge_sync_parser = knowledge_subparsers.add_parser(
+        "sync", help="Rebuild the graph from pipelines, semantic models, rules and UC."
+    )
+    knowledge_sync_parser.add_argument(
+        "--schema", action="append", default=None, metavar="CAT.SCHEMA",
+        help="Unity Catalog schema to sync (repeatable); opens a Spark session.",
+    )
+    knowledge_sync_parser.add_argument("--dry-run", action="store_true",
+                                       help="Report what would change; write nothing.")
+    knowledge_sync_parser.add_argument("--json", action="store_true", help="Print the report as JSON.")
+    knowledge_sync_parser.add_argument("--db", default=".skifer_knowledge.db",
+                                       help="SQLite knowledge store (local mode).")
+    knowledge_sync_parser.add_argument("--metadata-db", default=".skifer_metadata.db",
+                                       help="Pipeline metadata registry written by 'skifer index'.")
+    knowledge_sync_parser.add_argument("--models-dir", default="semantic_models",
+                                       help="Directory holding semantic_catalog.yaml.")
+    knowledge_sync_parser.add_argument("--rules", action="append", default=None, metavar="MODULE",
+                                       help="Rule module to import so its rules are indexed (repeatable).")
+    knowledge_sync_parser.add_argument("--config", default=None, metavar="PATH",
+                                       help="Path to config.yaml, used with --schema.")
+    knowledge_search_parser = knowledge_subparsers.add_parser(
+        "search", help="Find the tables, columns, metrics and rules relevant to a question."
+    )
+    knowledge_search_parser.add_argument("question", metavar="QUESTION")
+    knowledge_search_parser.add_argument("--kind", action="append", default=None,
+                                         help="Node kind to keep (repeatable).")
+    knowledge_search_parser.add_argument("--domain", default=None, metavar="CAT.SCHEMA")
+    knowledge_search_parser.add_argument("-k", type=int, default=10, dest="k", metavar="N")
+    knowledge_search_parser.add_argument("--json", action="store_true", help="Print hits as JSON.")
+    knowledge_search_parser.add_argument("--db", default=".skifer_knowledge.db",
+                                         help="SQLite knowledge store.")
+
     adaptive_parser = subparsers.add_parser(
         "adaptive",
         help="Review adaptive Gold proposals; never deploy or invoke Git.",
@@ -570,6 +611,8 @@ def main() -> None:
         _run_api(args)
     elif args.command == "adaptive":
         _run_adaptive(args)
+    elif args.command == "knowledge":
+        _run_knowledge(args)
     elif args.command == "incidents":
         _run_incidents(args)
     elif args.command == "contract":
@@ -577,6 +620,96 @@ def main() -> None:
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_knowledge(args: argparse.Namespace) -> None:
+    """Run knowledge graph sync/search with stable exit codes (Plan 44, S02)."""
+    sys.exit(run_knowledge_command(args))
+
+
+def run_knowledge_command(args: argparse.Namespace, *, store=None, engine=None) -> int:
+    """``skifer knowledge sync|search``: ``0`` success, ``1`` technical error, ``2`` usage."""
+    from skifer.knowledge.sync import validate_domain
+
+    command = getattr(args, "knowledge_command", None)
+    if command not in ("sync", "search"):
+        print("Knowledge command missing. Use 'skifer knowledge --help'.", file=sys.stderr)
+        return KNOWLEDGE_EXIT_USAGE
+    if command == "search":
+        return _knowledge_search(args, store=store)
+    try:
+        domains = [validate_domain(value) for value in args.schema] if args.schema else None
+    except ValueError:
+        print("[knowledge] --schema expects CATALOG.SCHEMA", file=sys.stderr)
+        return KNOWLEDGE_EXIT_USAGE
+    try:
+        import_rule_modules(getattr(args, "rules", None) or [])
+    except ValueError as exc:
+        print(f"[knowledge] {exc}", file=sys.stderr)
+        return KNOWLEDGE_EXIT_USAGE
+    return _knowledge_sync(args, domains, store=store, engine=engine)
+
+
+def _knowledge_sync(args, domains, *, store=None, engine=None) -> int:
+    from skifer.knowledge.store import SqliteKnowledgeStore, default_knowledge_store
+    from skifer.knowledge.sync import KnowledgeSynchronizer
+    from skifer.observability.metadata_store import SqliteMetadataStore
+
+    try:
+        if engine is None and domains:
+            from skifer.core.core import SkiferEngine
+
+            engine = SkiferEngine(config_path=args.config)
+        if store is None:
+            store = default_knowledge_store(engine) if engine is not None else SqliteKnowledgeStore(args.db)
+        metadata = SqliteMetadataStore(args.metadata_db) if os.path.exists(args.metadata_db) else None
+        report = KnowledgeSynchronizer(
+            store, engine=engine, metadata_store=metadata, domains=domains,
+            models_dir=os.path.abspath(args.models_dir),
+        ).sync(dry_run=args.dry_run)
+    except Exception as exc:
+        print(f"[knowledge] sync failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return KNOWLEDGE_EXIT_ERROR
+    if args.json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, sort_keys=True))
+    else:
+        prefix = "[knowledge] (dry run) " if args.dry_run else "[knowledge] "
+        print(f"{prefix}added={report.added} updated={report.updated} "
+              f"unchanged={report.unchanged} removed={report.removed}")
+        for item in report.unavailable:
+            print(f"[knowledge] unavailable: {item}")
+    return KNOWLEDGE_EXIT_OK
+
+
+def _knowledge_search(args, *, store=None) -> int:
+    from skifer.knowledge.index import KnowledgeIndex
+    from skifer.knowledge.store import SqliteKnowledgeStore
+
+    if args.k < 1:
+        print("[knowledge] -k expects a positive integer", file=sys.stderr)
+        return KNOWLEDGE_EXIT_USAGE
+    if store is None and not os.path.exists(args.db):
+        print("index is empty — run 'skifer knowledge sync'")
+        return KNOWLEDGE_EXIT_OK
+    try:
+        index = KnowledgeIndex.from_store(store or SqliteKnowledgeStore(args.db))
+        hits = index.search(args.question, k=args.k, kinds=args.kind, domain=args.domain)
+    except ValueError as exc:
+        print(f"[knowledge] {exc}", file=sys.stderr)
+        return KNOWLEDGE_EXIT_USAGE
+    except Exception as exc:
+        print(f"[knowledge] search failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return KNOWLEDGE_EXIT_ERROR
+    if len(index) == 0:
+        print("index is empty — run 'skifer knowledge sync'")
+        return KNOWLEDGE_EXIT_OK
+    if args.json:
+        print(json.dumps([hit.to_dict() for hit in hits], ensure_ascii=False, sort_keys=True))
+        return KNOWLEDGE_EXIT_OK
+    for hit in hits:
+        print(f"{hit.score:.3f}\t{hit.node.kind}\t{hit.node.fqn}\t{hit.node.status}\t"
+              f"{','.join(hit.matched_terms)}")
+    return KNOWLEDGE_EXIT_OK
 
 
 def _run_adaptive(args: argparse.Namespace) -> None:

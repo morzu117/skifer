@@ -77,6 +77,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A higher source is never overwritten by a lower one. Writes are fingerprint-diffed, an object gone
   from a source is soft-deleted, and an unreadable schema or lineage table is listed in
   `SyncReport.unavailable` — never raised, and it removes nothing.
+- (Plan 44, S02.4) `knowledge.index`: `tokenize()` (lowercase, NFKD accent stripping, snake_case /
+  camelCase / digit splits, frozen FR+EN stopword list, no stemming) and `KnowledgeIndex` — pure-Python
+  field-weighted BM25 (`label` 3, `synonyms` 2, `text` 1; ties sorted by `node_id`, identical under any
+  `PYTHONHASHSEED`) over live nodes only, plus `neighbors()` (breadth-first, bounded by `max_depth` and
+  `min_weight`, each node once at its minimal distance). New CLI `skifer knowledge sync [--schema
+  CAT.SCHEMA ...] [--dry-run] [--json]` and `skifer knowledge search "QUESTION" [--kind] [--domain] [-k]
+  [--json]` (exit codes `0` / `1` / `2`). `examples/03_semantic_and_question`'s `total_revenue` metric
+  now declares French synonyms, so `search "chiffre d'affaires par pays"` finds it.
 
 ### Fixed
 

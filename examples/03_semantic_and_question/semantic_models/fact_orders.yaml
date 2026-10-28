@@ -17,6 +17,7 @@ models:
         sql: amount_eur
         type: sum
         description: Total order revenue in EUR
+        synonyms: ["chiffre d'affaires", CA, sales]
       - name: order_count
         sql: order_id
         type: count_distinct
