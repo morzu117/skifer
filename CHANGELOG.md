@@ -138,6 +138,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   knowledge index and its candidate store only when `candidate_fallback` is not `off`.
   `MetricCandidateAgent` now keeps the context's key order in the prompt, so promoted candidates come
   first as the S03 contract says (they were sorted after `joins`).
+- (Plan 44, S04.2) A `candidate` answer is announced as such before anything else:
+  `hub_response_to_text` and `hub_response_to_markdown` start it with
+  "> Réponse non certifiée — calculée hors du semantic layer, à valider." (once; certified answers
+  are unchanged). Through real MLflow, the served text carries that line and
+  `custom_outputs["skifer"]` keeps the v2 evidence with the `CANDIDATE` metric and its `candidate_id`.
 
 ### Fixed
 

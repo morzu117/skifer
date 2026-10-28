@@ -539,3 +539,16 @@ def test_promoted_candidate_is_reused_not_duplicated(tmp_path):
         assert json.loads(context)["promoted_candidates"][0]["name"] == promoted.candidate_id
     finally:
         store.close()
+
+
+def test_on_returns_candidate_with_warning_prefix():
+    hub, _, agent = _fallback_hub(GENBI_ANSWERS["no_model"], mode="on")
+    agent.ask.side_effect = _candidate_response
+    response = hub.ask("chiffre d'affaires par segment client",
+                       consumer_context=ConsumerContext(consumer_id="alice",
+                                                        consumer_class="dashboard"))
+    assert response.mode == "candidate" and response.candidate_id == CANDIDATE_ID
+    _, kwargs = agent.ask.call_args
+    assert kwargs["requester_id"] == "alice"
+    assert hub_response_to_text(response).startswith(
+        "> Réponse non certifiée — calculée hors du semantic layer, à valider.")

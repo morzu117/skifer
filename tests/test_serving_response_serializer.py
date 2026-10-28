@@ -503,3 +503,15 @@ def test_v1_evidence_dict_reads_as_certified():
     }
 
     assert _certification_text([v1_source], [v1_metric]) == "certifié le 2026-09-04"
+
+
+def test_candidate_response_starts_with_the_warning_in_text_and_markdown():
+    evidence = _evidence_with(metrics=(_metric(certification="CANDIDATE", candidate_id=_CANDIDATE_ID),))
+    candidate = replace(_kpi_response(evidence), mode="candidate", candidate_id=_CANDIDATE_ID)
+    warning = "> Réponse non certifiée — calculée hors du semantic layer, à valider."
+    text, markdown = hub_response_to_text(candidate), hub_response_to_markdown(candidate)
+    assert text.startswith(warning + "\n") and markdown.startswith(warning + "\n\n")
+    assert text.count(warning) == 1 and markdown.count(warning) == 1
+    certified = _kpi_response(evidence)
+    assert warning not in hub_response_to_text(certified)
+    assert warning not in hub_response_to_markdown(certified)
