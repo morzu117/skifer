@@ -200,6 +200,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, S06.2) `CandidateService` gains the decisions that publish or retire a metric.
+  `approve` revalidates coherence and publishes at level 1 by human decision: only
+  `residue_present` and `undeclared_join` may be waived (recorded under `evidence.waived`); a
+  missing table, an uncertified source, an unsafe fanout or an invalid schema raise
+  `ApprovalRefusedError` before any DDL. `promote` (level 2) leaves the state unchanged and writes
+  two managed drafts — the pipeline (default `schemas/.drafts/candidates/<name>.yaml`, refused
+  outside a `.drafts` segment) built on `metric_definition`, with `data_product`, `contract`
+  (`grain` = `group_by`), a `semantic` seed carrying `source_candidate_id`, a `candidates.<name>`
+  delta sink and `_generated_by: metric_candidates`; and the semantic model under
+  `semantic_models/.drafts/` — after the staged pipeline loaded and its projection passed
+  `SemanticValidator`. Both files are created with `O_EXCL`: if either exists, even when it
+  appears after the check, neither is kept (`OutputExistsError`). Converted filters are returned
+  as `filters_to_dimensions`. `demote` drops the metric view then the view (`DROP VIEW IF
+  EXISTS`), clears the published names, retires the index entries, and with `replaced_by` (a
+  candidate id or `model:<model>.<metric>`) records a symmetric `replaced` event.
 - (Plan 44, S06.3) The pipeline `semantic:` seed accepts an optional `source_candidate_id`
   (`candidate:v1:<64 hex>`, validated at load), kept on `ParsedSemanticSeed` and copied into the
   managed draft's `metadata` — absent otherwise, so a pipeline that never was a candidate keeps the
