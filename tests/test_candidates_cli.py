@@ -272,3 +272,30 @@ def test_read_commands_print_json(arbitration, capsys):
     assert decide(["history", candidate.candidate_id], service_) == CANDIDATES_EXIT_OK
     assert "candidate -> needs_review" in capsys.readouterr().out
     assert decide(["list", "--state", "nope"], service_) == CANDIDATES_EXIT_ERROR
+
+
+def test_json_output_stays_parseable_when_the_engine_prints(arbitration, monkeypatch, capsys):
+    """Spark and the semantic catalogue print on start-up; ``--json`` must still be pure JSON."""
+    import skifer.candidates.service as service_module
+    import skifer.core.core as core_module
+    import skifer.observability.certification_store as certification_module
+    import skifer.semantic.semantic as semantic_module
+
+    store, models_dir = arbitration
+    candidate = seeded(store, models_dir)
+
+    class Chatty:
+        def __init__(self, *args, **kwargs):
+            print("[SparkFactory] session initialized")
+
+    monkeypatch.setattr(core_module, "SkiferEngine", Chatty)
+    monkeypatch.setattr(semantic_module, "SemanticEngine", Chatty)
+    monkeypatch.setattr(certification_module, "default_certification_store", lambda e: None)
+    monkeypatch.setattr(service_module, "build_candidate_service",
+                        lambda semantic: make_service(store, models_dir))
+    parsed = argparse.Namespace(candidates_command="show", candidate_id=candidate.candidate_id,
+                                json=True, config=None, models_dir=models_dir)
+    assert run_candidates_arbitration(parsed) == CANDIDATES_EXIT_OK
+    out = capsys.readouterr()
+    assert json.loads(out.out)["candidate_id"] == candidate.candidate_id
+    assert "session initialized" in out.err

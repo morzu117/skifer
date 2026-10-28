@@ -211,6 +211,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `CandidateError` is printed, never raised. It takes a `models_dir` widget, made absolute,
   because `SemanticEngine` resolves a relative one against the installed package. Run end to end
   in the suite with `tests/fakes/fake_dbutils.py`.
+- (Plan 44, S06.4) `skifer candidates … --json` stays parseable: the engine start-up and the
+  decision's DDL print to stderr, as `candidates validate` already did for its schema warning.
 - (Plan 44, S06.2) `CandidateService` gains the decisions that publish or retire a metric.
   `approve` revalidates coherence and publishes at level 1 by human decision: only
   `residue_present` and `undeclared_join` may be waived (recorded under `evidence.waived`); a

@@ -812,10 +812,11 @@ def run_candidates_arbitration(args: argparse.Namespace, *, service=None, decide
             from skifer.observability.certification_store import default_certification_store
             from skifer.semantic.semantic import SemanticEngine
 
-            engine = SkiferEngine(config_path=args.config)
-            service = build_candidate_service(SemanticEngine(
-                engine, models_dir=args.models_dir,
-                certification_store=default_certification_store(engine)))
+            with contextlib.redirect_stdout(sys.stderr):  # keep --json parseable
+                engine = SkiferEngine(config_path=args.config)
+                service = build_candidate_service(SemanticEngine(
+                    engine, models_dir=args.models_dir,
+                    certification_store=default_certification_store(engine)))
         if command in CANDIDATES_DECISIONS and decider is None:
             from skifer.services.identity import LocalIdentity
 
@@ -834,7 +835,8 @@ def run_candidates_arbitration(args: argparse.Namespace, *, service=None, decide
                 options["signal"] = args.signal
             elif command == "demote":
                 options["replaced_by"] = args.replaced_by
-            result = getattr(service, command)(args.candidate_id, **options)
+            with contextlib.redirect_stdout(sys.stderr):  # DDL chatter stays off stdout
+                result = getattr(service, command)(args.candidate_id, **options)
             output = result if isinstance(result, dict) else result.to_dict()
     except StaleCandidateError as exc:
         print(f"[candidates] {exc}", file=sys.stderr)
