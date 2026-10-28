@@ -204,6 +204,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, S09.2) `skifer candidates evaluate [--json] [--mlflow]` and
+  `skifer.candidates.reference.evaluate(hub, index, store, k_values=(5, 10))` → `EvaluationReport`
+  (`reference_set_version`, `semantic_layer_version`, `question_count`, `metrics`, `failures`).
+  Metrics: `A.recall@k`, `A.routing_accuracy`, `B.exact_match` (the fallback's recorded
+  `result_hash`), `C.correct_refusal`, `C.false_answer`, `C.false_refusal` (over A and B); an
+  empty family gives `None`, never `0` or `1`. `failures` carry ids, modes and names only — never
+  a question text, a `schema_dict` or a filter value, and a hub error by class name. The report is
+  written to `.skifer_evaluations/<timestamp>.json` (never overwritten, git-ignored) and indexed by
+  an `evaluation` run on `reference_set:v1` whose `result_hash` is the report's hash. `--mlflow`
+  imports MLflow lazily, fails with exit `1` naming `pip install "skifer[tracing]"` before asking
+  anything, and logs the metrics, both versions as parameters and the report as an artefact. An
+  empty set is a valid report with every metric `None`, exit `0`. `compute_drift(...,
+  evaluations=)` gains the optional `reference_degradation` signal — the A or B metrics lower in
+  the last report than in the previous one, `inconclusive` with fewer than two — which
+  `skifer candidates drift --evaluations-dir` reads.
 - (Plan 44, S09.1) Reference question set — `skifer.candidates.reference`. `bootstrap_from_models`
   builds family A from the semantic catalogue with frozen templates (`TEMPLATES_FR`,
   `REFERENCE_SET_VERSION = "v1"`): one question per (label | synonym) and template, the dimension

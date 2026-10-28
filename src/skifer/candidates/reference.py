@@ -17,10 +17,20 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Callable
 
-from .models import HASH_PREFIX, REFERENCE_FAMILIES, ReferenceQuestion
+from .models import (
+    HASH_PREFIX,
+    REFERENCE_FAMILIES,
+    REFERENCE_SET_PREFIX,
+    CandidateRun,
+    ReferenceQuestion,
+)
 
 TEMPLATES_FR = ("Quel est le {label} ?", "{label} par {dimension}")   # frozen, versioned
 REFERENCE_SET_VERSION = "v1"
@@ -177,3 +187,203 @@ def run_hook(hook: Callable[[Any, Any], Any], event: Any, store: Any) -> None:
         hook(event, store)
     except Exception as exc:
         _log.warning("Reference hook %s failed (%s).", hook.__name__, type(exc).__name__)
+
+
+# --- S09.2: evaluation -------------------------------------------------------------------
+
+ANSWERED_MODES = ("query", "view", "candidate")
+REFUSED_MODES = ("candidate_refused", "no_model", "needs_clarification", "ambiguous")
+EVALUATIONS_DIR = ".skifer_evaluations"
+
+
+@dataclass(frozen=True)
+class EvaluationReport:
+    reference_set_version: str
+    semantic_layer_version: str | None
+    question_count: dict[str, int]                  # per family
+    metrics: dict[str, float | None]                # None = empty family
+    failures: tuple[dict, ...]                      # never a question text nor a filter value
+
+    def to_dict(self) -> dict:
+        return {"reference_set_version": self.reference_set_version,
+                "semantic_layer_version": self.semantic_layer_version,
+                "question_count": dict(self.question_count), "metrics": dict(self.metrics),
+                "failures": [dict(failure) for failure in self.failures]}
+
+
+def _ratio(numerator: int, denominator: int) -> float | None:
+    return None if denominator == 0 else round(numerator / denominator, 6)
+
+
+def _outcome(response: Any) -> str:
+    """``answered`` | ``refused`` | ``error`` — a technical error is neither of the first two."""
+    if getattr(response, "access_denied", False):
+        return "refused"
+    mode = getattr(response, "mode", None)
+    if mode in ANSWERED_MODES:
+        return "answered"
+    return "refused" if mode in REFUSED_MODES else "error"
+
+
+def _ask(hub: Any, question: str) -> Any:
+    try:
+        return hub.ask(question)
+    except Exception as exc:  # recorded by class name only, like every registry error
+        return SimpleNamespace(mode="error", error_type=type(exc).__name__)
+
+
+def _answer_hash(store: Any, response: Any) -> str | None:
+    """The ``result_hash`` the fallback recorded for this answer (its last ``answer`` run)."""
+    candidate_id = getattr(response, "candidate_id", None)
+    if getattr(response, "mode", None) != "candidate" or not candidate_id:
+        return None
+    runs = [run for run in store.list_runs(candidate_id, purpose="answer") if run.result_hash]
+    return runs[-1].result_hash if runs else None
+
+
+def _layer_version(hub: Any) -> str | None:
+    from .validator import semantic_layer_version
+
+    engine = getattr(hub, "_semantic_engine", None)
+    models_dir = getattr(engine, "models_dir", None)
+    return semantic_layer_version(models_dir) if models_dir else None
+
+
+def evaluate(
+    hub: Any, index: Any, store: Any, *, k_values: tuple[int, ...] = (5, 10),
+    search_mode: str = "bm25", semantic_layer_version: str | None = None,
+) -> EvaluationReport:
+    """Ask every reference question, sorted by id, and compute the report's metrics.
+
+    - ``A.recall@k``: the expected metric is among the first ``k`` ``metric`` hits;
+    - ``A.routing_accuracy``: GenBI answered with the expected ``model_used`` and metric;
+    - ``B.exact_match``: the fallback's ``result_hash`` equals the expected one;
+    - ``C.correct_refusal`` / ``C.false_answer``: refused / answered where refusing was right;
+    - ``C.false_refusal``: refused where an answer was expected, over A and B.
+    """
+    if (not k_values or any(isinstance(k, bool) or not isinstance(k, int) or k < 1
+                            for k in k_values)):
+        raise ValueError(f"k_values must be positive integers; got {k_values!r}.")
+    ks = tuple(sorted(set(k_values)))
+    questions = sorted(store.list_references(), key=lambda q: q.question_id)
+    families = {family: [q for q in questions if q.family == family]
+                for family in REFERENCE_FAMILIES}
+    failures: list[dict] = []
+    recalled = {k: 0 for k in ks}
+    routed = exact = correct_refusals = false_answers = false_refusals = 0
+
+    for question in families["A"]:
+        expected = {"model_key": question.expected["model_key"],
+                    "metric": question.expected["metric"]}
+        target = f"metric:{expected['model_key']}.{expected['metric']}"
+        ids = [hit.node.node_id for hit in index.search(question.question, k=ks[-1],
+                                                       kinds=["metric"], mode=search_mode)]
+        rank = ids.index(target) + 1 if target in ids else None
+        for k in ks:
+            recalled[k] += rank is not None and rank <= k
+        response = _ask(hub, question.question)
+        metrics = list((getattr(response, "query_params", None) or {}).get("metrics") or [])
+        ok = (getattr(response, "mode", None) == "query"
+              and getattr(response, "model_used", None) == expected["model_key"]
+              and expected["metric"] in metrics)
+        routed += ok
+        false_refusals += _outcome(response) == "refused"
+        if not ok or rank is None:
+            failures.append({"question_id": question.question_id, "family": "A",
+                             "expected": expected,
+                             "obtained": {"mode": getattr(response, "mode", None),
+                                          "model_used": getattr(response, "model_used", None),
+                                          "metrics": [str(m) for m in metrics], "rank": rank}})
+
+    for question in families["B"]:
+        response = _ask(hub, question.question)
+        obtained_hash = _answer_hash(store, response)
+        ok = obtained_hash is not None and obtained_hash == question.expected["result_hash"]
+        exact += ok
+        false_refusals += _outcome(response) == "refused"
+        if not ok:
+            # The expected schema_dict is left out: it holds the question's filter values.
+            failures.append({"question_id": question.question_id, "family": "B",
+                             "expected": {"result_hash": question.expected["result_hash"]},
+                             "obtained": {"mode": getattr(response, "mode", None),
+                                          "candidate_id": getattr(response, "candidate_id", None),
+                                          "result_hash": obtained_hash}})
+
+    for question in families["C"]:
+        response = _ask(hub, question.question)
+        outcome = _outcome(response)
+        correct_refusals += outcome == "refused"
+        false_answers += outcome == "answered"
+        if outcome != "refused":
+            failures.append({"question_id": question.question_id, "family": "C",
+                             "expected": {"outcome": question.expected["outcome"]},
+                             "obtained": {"mode": getattr(response, "mode", None)}})
+
+    count_a, count_b, count_c = (len(families[f]) for f in REFERENCE_FAMILIES)
+    metrics_out: dict[str, float | None] = {
+        f"A.recall@{k}": _ratio(recalled[k], count_a) for k in ks}
+    metrics_out.update({
+        "A.routing_accuracy": _ratio(routed, count_a),
+        "B.exact_match": _ratio(exact, count_b),
+        "C.correct_refusal": _ratio(correct_refusals, count_c),
+        "C.false_answer": _ratio(false_answers, count_c),
+        "C.false_refusal": _ratio(false_refusals, count_a + count_b),
+    })
+    return EvaluationReport(
+        reference_set_version=REFERENCE_SET_VERSION,
+        semantic_layer_version=(semantic_layer_version if semantic_layer_version is not None
+                                else _layer_version(hub)),
+        question_count={family: len(families[family]) for family in REFERENCE_FAMILIES},
+        metrics=metrics_out, failures=tuple(failures),
+    )
+
+
+def report_hash(report: dict) -> str:
+    payload = json.dumps(report, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return HASH_PREFIX + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def evaluation_run_id() -> str:
+    return f"{REFERENCE_SET_PREFIX}{REFERENCE_SET_VERSION}"
+
+
+def store_evaluation(
+    report: EvaluationReport, store: Any, *, directory: str = EVALUATIONS_DIR,
+    clock: Callable[[], datetime] | None = None,
+) -> str:
+    """Write ``<directory>/<timestamp>.json`` (never overwriting) and its ``evaluation`` run."""
+    now = (clock or (lambda: datetime.now(timezone.utc)))()
+    data = report.to_dict()
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                        + ".json")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, sort_keys=True, indent=2)
+    store.append_run(CandidateRun(
+        run_id=uuid.uuid4().hex, candidate_id=evaluation_run_id(), executed_at=now,
+        purpose="evaluation", result_hash=report_hash(data),
+        row_count=sum(report.question_count.values()),
+    ))
+    return path
+
+
+def load_evaluations(store: Any, *, directory: str = EVALUATIONS_DIR) -> list[dict]:
+    """Stored reports, oldest first, found through the ``evaluation`` runs' ``result_hash``.
+
+    A run whose report file is gone (cleaned, another machine) is skipped.
+    """
+    by_hash: dict[str, dict] = {}
+    if os.path.isdir(directory):
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict):
+                by_hash[report_hash(data)] = data
+    runs = store.list_runs(evaluation_run_id(), purpose="evaluation")
+    return [by_hash[run.result_hash] for run in runs if run.result_hash in by_hash]

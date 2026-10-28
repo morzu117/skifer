@@ -540,6 +540,18 @@ def main() -> None:
                                          help="Usage partition (default: the engine's).")
     candidates_drift_parser.add_argument("--usage-store", default=".skifer_adaptive.db",
                                          metavar="PATH", help="SQLite adaptive usage store.")
+    candidates_drift_parser.add_argument(
+        "--evaluations-dir", default=".skifer_evaluations", metavar="PATH",
+        help="Stored evaluation reports, for the reference_degradation signal.")
+    candidates_evaluate_parser = candidates_subparsers.add_parser(
+        "evaluate", help="Ask the reference set and measure recall, routing and refusals.")
+    candidates_evaluate_parser.add_argument("--json", action="store_true", help="Print JSON.")
+    candidates_evaluate_parser.add_argument(
+        "--mlflow", action="store_true",
+        help="Also log the metrics and the report to an MLflow run ([tracing] extra).")
+    candidates_evaluate_parser.add_argument(
+        "--evaluations-dir", default=".skifer_evaluations", metavar="PATH",
+        help="Where the JSON report is written (never overwritten).")
     for arbitration_parser in candidates_subparsers.choices.values():
         if arbitration_parser is not candidates_validate_parser:
             arbitration_parser.add_argument("--config", default=None, metavar="PATH",
@@ -755,6 +767,8 @@ def run_candidates_command(
         return run_candidates_drift(args)
     if getattr(args, "candidates_command", None) == "reference":
         return run_candidates_reference(args)
+    if getattr(args, "candidates_command", None) == "evaluate":
+        return run_candidates_evaluate(args)
     if getattr(args, "candidates_command", None) != "validate":
         print("Candidates command missing. Use 'skifer candidates --help'.", file=sys.stderr)
         return CANDIDATES_EXIT_ERROR
@@ -1017,6 +1031,109 @@ def run_candidates_reference(
     return CANDIDATES_EXIT_OK
 
 
+EVALUATION_EMPTY_LINE = "reference set is empty — run 'skifer candidates reference bootstrap'"
+MLFLOW_EXTRA_INSTALL = 'pip install "skifer[tracing]"'
+
+
+def _import_mlflow():
+    """MLflow, imported only for ``--mlflow``; ``ImportError`` names the extra."""
+    try:
+        import mlflow
+    except ImportError:
+        raise ImportError(f"--mlflow needs MLflow: {MLFLOW_EXTRA_INSTALL}") from None
+    return mlflow
+
+
+def _log_evaluation_to_mlflow(mlflow, report: dict) -> None:
+    """Metrics, the two versions as parameters and the report as an artefact — no question."""
+    with mlflow.start_run(run_name="skifer-candidates-evaluate"):
+        mlflow.log_params({"reference_set_version": report["reference_set_version"],
+                           "semantic_layer_version": str(report["semantic_layer_version"])})
+        mlflow.log_metrics({name.replace("@", "_at_"): value
+                            for name, value in sorted(report["metrics"].items())
+                            if value is not None})
+        mlflow.log_dict(report, "evaluation_report.json")
+
+
+def run_candidates_evaluate(
+    args: argparse.Namespace, *, hub=None, index=None, store=None, search_mode=None, clock=None,
+) -> int:
+    """``skifer candidates evaluate``: ``0`` ok (even an empty set), ``1`` technical error."""
+    from skifer.candidates.reference import evaluate, store_evaluation
+
+    mlflow = None
+    if args.mlflow:
+        try:
+            mlflow = _import_mlflow()
+        except ImportError as exc:
+            print(f"[candidates] {exc}", file=sys.stderr)
+            return CANDIDATES_EXIT_ERROR
+    opened = []
+    try:
+        if hub is None or index is None or store is None:
+            from skifer.agentic.hub import AgenticHub
+            from skifer.candidates.store import default_candidate_store
+            from skifer.core.config import knowledge_embedding_settings
+            from skifer.core.core import SkiferEngine
+            from skifer.knowledge.index import KnowledgeIndex
+            from skifer.knowledge.store import default_knowledge_store
+            from skifer.observability.certification_store import default_certification_store
+            from skifer.semantic.llm_provider import get_llm_provider
+            from skifer.semantic.semantic import SemanticEngine
+            from skifer.serving._agent_core import _build_candidate_agent
+
+            with contextlib.redirect_stdout(sys.stderr):  # keep --json parseable
+                core = SkiferEngine(config_path=args.config)
+                semantic = SemanticEngine(core, models_dir=args.models_dir,
+                                          certification_store=default_certification_store(core))
+                if store is None:
+                    store = default_candidate_store(core)
+                    opened.append(store)
+                if index is None:
+                    model, cache, search_mode = knowledge_embedding_settings(
+                        core._context.env_config())
+                    embedder = None
+                    if search_mode != "bm25":
+                        from skifer.knowledge.embeddings import load_embedder
+
+                        embedder = load_embedder(model, cache_dir=cache)
+                    knowledge = default_knowledge_store(core)
+                    opened.append(knowledge)
+                    index = KnowledgeIndex.from_store(knowledge, embedder=embedder)
+                if hub is None:
+                    llm = get_llm_provider()
+                    candidate_agent = _build_candidate_agent(core, semantic, llm)
+                    hub = AgenticHub(semantic_engine=semantic, llm_provider=llm,
+                                     candidate_agent=candidate_agent)
+        report = evaluate(hub, index, store, search_mode=search_mode or "bm25")
+        data = report.to_dict()
+        empty = sum(report.question_count.values()) == 0
+        if not empty:
+            data_path = store_evaluation(report, store, directory=args.evaluations_dir,
+                                         clock=clock)
+            print(f"[candidates] report written to {data_path}", file=sys.stderr)
+        if mlflow is not None:
+            _log_evaluation_to_mlflow(mlflow, data)
+    except Exception as exc:
+        print(f"[candidates] evaluate failed: {type(exc).__name__}", file=sys.stderr)
+        return CANDIDATES_EXIT_ERROR
+    finally:
+        for resource in opened:
+            with contextlib.suppress(Exception):
+                resource.close()
+    if empty:
+        print(EVALUATION_EMPTY_LINE, file=sys.stderr if args.json else sys.stdout)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, sort_keys=True))
+        return CANDIDATES_EXIT_OK
+    counts = " ".join(f"{family}={count}" for family, count in data["question_count"].items())
+    print(f"[candidates] reference set {data['reference_set_version']}: {counts}")
+    for name, value in data["metrics"].items():
+        print(f"{name}\t{'n/a' if value is None else f'{value:.3f}'}")
+    print(f"failures\t{len(data['failures'])}")
+    return CANDIDATES_EXIT_OK
+
+
 def run_candidates_drift(
     args: argparse.Namespace, *, candidate_store=None, usage_store=None, index=None,
     catalog_models=None, environment=None, env_config=None, clock=None,
@@ -1067,10 +1184,15 @@ def run_candidates_drift(
                            if Path(args.usage_store).is_file() else _NoUsageEvents())
             opened.append(usage_store)
         min_sample, _thresholds = candidate_drift_settings(env_config)  # validated, not applied
+        evaluations = None
+        if getattr(args, "evaluations_dir", None):
+            from skifer.candidates.reference import load_evaluations
+
+            evaluations = load_evaluations(candidate_store, directory=args.evaluations_dir)
         report = compute_drift(
             candidate_store=candidate_store, usage_store=usage_store,
             catalog_models=catalog_models, index=index, environment=environment,
-            since=since, until=until, min_sample=min_sample,
+            since=since, until=until, min_sample=min_sample, evaluations=evaluations,
         )
     except Exception as exc:
         print(f"[candidates] drift failed: {type(exc).__name__}: {exc}", file=sys.stderr)

@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 SIGNALS = ("fallback_rate", "orphan_certified_metrics", "rephrasing")
+OPTIONAL_SIGNALS = ("reference_degradation",)   # S09: only with stored evaluations
 INCONCLUSIVE_REASONS = ("sample_below_minimum", "evidence_unavailable", "questions_redacted")
 
 
@@ -83,8 +84,13 @@ def compute_drift(
     until: datetime,
     min_sample: int,
     rephrasing_overlap: float = 0.6,
+    evaluations: list[dict] | None = None,
 ) -> DriftReport:
-    """Three signals over ``[since, until)`` for one environment; reads only."""
+    """Three signals over ``[since, until)`` for one environment; reads only.
+
+    With ``evaluations`` (stored ``EvaluationReport`` dicts, oldest first — S09), a
+    fourth signal, ``reference_degradation``, compares the last report to the one before.
+    """
     since, until = _aware_utc(since, "since"), _aware_utc(until, "until")
     if since >= until:
         raise ValueError("since must be before until.")
@@ -111,7 +117,25 @@ def compute_drift(
         _rephrasing(candidate_store, candidates, index, window, since, until, min_sample,
                     float(rephrasing_overlap)),
     )
+    if evaluations is not None:
+        signals += (_reference_degradation(evaluations, window),)
     return DriftReport(environment, signals, thresholds_applied=False)
+
+
+def _reference_degradation(evaluations: list[dict], window) -> DriftSignal:
+    """The A or B metrics lower in the last evaluation than in the previous one."""
+    if len(evaluations) < 2:
+        return _signal("reference_degradation", window, len(evaluations),
+                       reason="evidence_unavailable")
+    previous, current = (report.get("metrics") or {} for report in evaluations[-2:])
+    declines = [
+        {"metric": name, "previous": previous[name], "current": current[name]}
+        for name in sorted(set(previous) & set(current))
+        if name.startswith(("A.", "B.")) and isinstance(previous[name], (int, float))
+        and isinstance(current[name], (int, float)) and current[name] < previous[name]
+    ]
+    return _signal("reference_degradation", window, 2, value=float(len(declines)),
+                   details=declines)
 
 
 def _fallback_rate(store, candidates, usage, window, since, until, min_sample) -> DriftSignal:
