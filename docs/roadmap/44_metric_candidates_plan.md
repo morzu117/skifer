@@ -3,9 +3,11 @@
 > **Statut :** plan rédigé le 28 octobre 2026 à partir du brief de conception du même jour
 > (« agent builder de backup et cycle de certification des métriques », 16 décisions actées).
 > Les décisions D1 à D9 ci-dessous **contournent les cinq points qui bloquaient** le brief tel
-> quel face au code existant ; elles sont à valider avant de commencer. Les décisions du brief
-> sont reprises telles quelles sauf mention explicite (tableau « Écarts avec le brief »).
-> Branche prévue : `feat/plan44-metric-candidates`. Rien n'est implémenté.
+> quel face au code existant. **D1 à D5, D8 et D9 validées le 28 octobre 2026.** D6 révisée le
+> même jour (notebook d'arbitrage plutôt qu'API + app : la facilité d'abord). **D7 en suspens
+> jusqu'au benchmark de 44.7** : aucun défaut d'index n'est arrêté. Les décisions du brief sont
+> reprises telles quelles sauf mention explicite (tableau « Écarts avec le brief »).
+> Branche : `feat/plan44-metric-candidates`. Rien n'est implémenté.
 
 ## Objectif
 
@@ -113,8 +115,8 @@ Les cinq premières répondent aux cinq bloquants identifiés à la lecture du b
 | D3 | **Sortie de l'agent bornée à la grammaire Skifer** (bloquant : qu'est-ce qu'une « métrique candidate » ?) | L'agent de repli ne produit pas de SQL libre mais un **`schema_dict`** (`tables`, `join`, `filter`/`where`, `aggregate` ou `select_final`) validé par `load_schema`, recompilé par `compile_select`, puis `EXPLAIN` et exécution bornée (`dev_limit`, timeout). Le LLM peut répondre en SQL : il est alors passé dans `analyzer.mapper.map_statement`, et **un résidu (`expr:`, `needs_curation`) rend la candidate exécutable mais jamais auto-promouvable**. Une candidate est donc, par construction, un pipeline Skifer en puissance : la promotion niveau 2 ne traduit rien, elle écrit ce qui est déjà là. | SQL libre + validation syntaxique : rien ne garantit la convertibilité, la promotion deviendrait un travail manuel de réécriture. |
 | D4 | **Certification portée par la métrique dans la preuve** (bloquant : l'affichage dit « certifié » pour une réponse de repli) | `SemanticEvidence.metrics[]` gagne `certification: CERTIFIED \| CANDIDATE` et `candidate_id`; `schema_version` passe à `2`. `_certification_text()` prend le **minimum** entre sources et métriques : dès qu'une métrique est `CANDIDATE`, le texte est « **métrique non certifiée** (candidate `<id>`, demandée N fois) » et le libellé « certifié le … » n'apparaît pas. Même preuve, même sérialiseur, un champ de plus — la décision 12 du brief est respectée. | Un bandeau séparé dans la réponse : deux mécanismes à garder cohérents. |
 | D5 | **Routage dans le hub, pas dans le superviseur** (bloquant : contradiction avec Plan 41) | La voie rapide est **`GenBIAgent` sur les modèles certifiés** (déterministe), pas Genie. Le repli se déclenche quand GenBI renvoie `needs_clarification` et qu'aucune suggestion n'atteint le seuil de proximité, ou qu'aucun modèle ne couvre la question. Mode `candidate_fallback: off \| shadow \| on` par environnement (`shadow` : la candidate est construite et enregistrée, l'utilisateur reçoit toujours la clarification — pour la phase d'observation). Côté superviseur Agent Bricks (Plan 41), rien ne change : Genie garde l'exploration libre ; ce que l'agent de repli apporte en plus de Genie, c'est une réponse **bornée à la grammaire, vérifiée, tracée et capitalisée**. | Mettre le routeur dans le superviseur : impossible d'y observer la raison du refus de GenBI ; et le superviseur est payant (Model Serving), hors contrainte section 0. |
-| D6 | **Arbitrage humain : CLI et API obligatoires, Databricks App recommandée** (section 0 vs décision 7) | Le canal de référence est `skifer candidates list/show/approve/reject/promote/demote` et les routes `api/` correspondantes (comme `adaptive`). Une **Databricks App** est fournie en exemple (`examples/25_metric_candidates/app/`, FastAPI réutilisant `skifer.api`), déployable quand le client accepte son coût de compute, arrêtable sinon. L'agent de repli tourne **dans le hub** (notebook, job, ou l'app) ; le job de validation est un **job serverless** : coût à l'usage, zéro coût fixe. | Apps obligatoire : contredit « sans coût fixe » ; un client qui ne la déploie pas n'aurait aucun arbitrage. |
-| D7 | **Index : BM25 par défaut, embeddings denses en option** (décision 15 nuancée) | `knowledge/index.py` implémente BM25 en Python pur sur noms, commentaires, descriptions, synonymes, règles — zéro dépendance, marche partout. Les embeddings denses (`intfloat/multilingual-e5-small` par défaut, `BAAI/bge-m3` en option) sont dans l'extra **`[knowledge-embeddings]`** (`sentence-transformers`), import paresseux, poids mis en cache dans un Volume UC (`knowledge_model_cache`) parce que HuggingFace est souvent bloqué en entreprise. **Le benchmark (44.7) décide** si le dense devient le défaut : la décision 15 du brief est maintenue comme choix de modèle, pas comme choix de défaut tant que la mesure n'est pas faite. | `sentence-transformers` en dépendance de base : ~2 Go de torch sur chaque driver, pour une hypothèse non mesurée. |
+| D6 | **Arbitrage humain : un notebook sur Databricks, la CLI en local** (section 0 vs décision 7 ; **révisée le 28 octobre 2026**, la facilité d'abord) | La même API Python `skifer.candidates` (`CandidateService` : `list`, `show`, `approve`, `reject`, `promote`, `demote`, `history`, `drift`) est exposée par deux canaux minces. **Sur Databricks : un notebook d'arbitrage** livré dans l'exemple (`examples/25_metric_candidates/notebooks/arbitrage.py`, format source Databricks) — une cellule `display()` des candidates `needs_review` avec leurs critères et chiffres, des widgets `candidate_id` / `decision` / `reason`, une cellule qui applique la décision. Zéro infrastructure, aucun déploiement, tourne sur le compute que l'utilisateur a déjà (notebook serverless à l'usage) ; le décideur est l'utilisateur connecté (`get_clean_username()`, pseudonymisé dans l'historique), donc `decided_by = human:<…>` sans aucune couche d'auth à écrire. **En local : la CLI** `skifer candidates …` sur SQLite. Le suivi (drift, historique) se lit en SQL sur les tables Delta ; un dashboard AI/BI et une Databricks App sont **des options ultérieures**, pas des livrables : ils n'arrivent que si le notebook ne suffit plus. L'agent de repli tourne dans le hub (notebook ou job) ; la validation est un **job serverless** : coût à l'usage, zéro coût fixe. | Apps obligatoire : contredit « sans coût fixe ». API `services/` + routes + app dès la v1 : trois couches à écrire et à sécuriser avant la première décision humaine, pour un besoin que trois cellules couvrent. |
+| D7 | **Index : défaut en suspens jusqu'au benchmark** (décision 15) | **Rien n'est arrêté.** BM25 (Python pur, zéro dépendance) est implémenté en 44.1 parce que l'agent a besoin d'une recherche pour fonctionner et que c'est la seule qui marche partout sans installer quoi que ce soit. Les embeddings denses (`intfloat/multilingual-e5-small`, `BAAI/bge-m3`) sont implémentés en 44.8 dans l'extra **`[knowledge-embeddings]`** (import paresseux, poids mis en cache dans un Volume UC parce que HuggingFace est souvent bloqué en entreprise) **pour pouvoir être mesurés**. Le défaut — BM25 seul, dense seul, ou hybride — est tranché après `skifer knowledge benchmark` (44.7), sur le jeu de référence, et consigné ici. | Décider maintenant, dans un sens ou dans l'autre : c'est exactement ce que la décision 16 du brief (benchmark maison) demande de ne pas faire. |
 | D8 | **Synchronisation UC → graphe par instantanés** (décision 9 ajustée) | `knowledge/sync.py` lit `information_schema.{tables,columns}` (et `system.access.table_lineage` quand accessible), calcule un fingerprint par nœud et n'écrit que les différences. Le CDF est **activé sur les tables de Skifer** (graphe, index, candidates, historique) pour qui veut les consommer en incrémental. | CDF sur les tables système : elles n'en ont pas. |
 | D9 | Version | Nouvelle fonctionnalité → **4.1.0**, décidée par l'utilisateur au moment de la release. | — |
 
@@ -123,13 +125,13 @@ Les cinq premières répondent aux cinq bloquants identifiés à la lecture du b
 | Décision du brief | Sort dans ce plan |
 |---|---|
 | 1 Routeur : certifié → Genie, sinon backup | **Ajustée (D5)** : certifié → GenBI/QueryResolver (déterministe) ; Genie reste l'exploration du Plan 41. |
-| 7 Databricks Apps obligatoire | **Ajustée (D6)** : recommandée, livrée en exemple ; CLI + API obligatoires. |
+| 7 Databricks Apps obligatoire | **Ajustée (D6)** : notebook d'arbitrage sur Databricks, CLI en local ; app et dashboard en options ultérieures. |
 | 8 Index maison, pas Vector Search | Maintenue. |
 | 9 CDF pour la sync | **Ajustée (D8)** : instantanés pour UC → graphe ; CDF sur les tables Skifer. |
 | 10 MLflow retenu, Agent Framework écarté | Maintenue (l'endpoint du Plan 41 reste **optionnel**, il n'est pas requis par ce plan). |
 | 11 Promotion automatique | **Précisée (D1)** : automatique au niveau 1 (publié non certifié), humaine au niveau 2 (certifié, git). |
 | 12 Même mécanisme d'affichage | Maintenue (D4) : un champ de plus dans la preuve. |
-| 15 `e5-small` par défaut | **Nuancée (D7)** : modèle par défaut de l'option dense ; BM25 reste le défaut sans extra. |
+| 15 `e5-small` par défaut | **En suspens (D7)** : les deux modèles sont implémentés en option pour le benchmark ; le défaut est tranché après 44.7. |
 | Tables `skifer.governance.*` | Convention existante : `<catalog>._skifer_candidates`, SQLite en local. |
 | `request_count DEFAULT 1` | Défaut appliqué dans le code du store, pas dans le DDL. |
 | Toutes les autres (2, 3, 4, 5, 6, 13, 14, 16) | Maintenues telles quelles. |
@@ -138,14 +140,16 @@ Les cinq premières répondent aux cinq bloquants identifiés à la lecture du b
 
 **Dans la v1** : agent de repli sur `aggregate`/`select_final` mono- et multi-tables avec
 jointures equi, filtres du catalogue, `where:` post-jointure ; registre + historique ; chaîne de
-validation et promotion niveau 1 ; CLI/API d'arbitrage et promotion niveau 2 par drafts ;
-graphe + index BM25 ; trois signaux de drift **calculés et exposés, sans action automatique**
-(décision 14) ; jeu de référence et évaluation MLflow ; benchmark d'embedding.
+validation et promotion niveau 1 ; arbitrage par notebook (Databricks) et CLI (local), promotion
+niveau 2 par drafts ; graphe + index BM25, embeddings denses en option pour le benchmark ; trois
+signaux de drift **calculés et exposés, sans action automatique** (décision 14) ; jeu de
+référence et évaluation MLflow ; benchmark d'embedding.
 
 **Hors v1** : rétrogradation automatique sur seuil (les seuils se calibrent sur la phase
 d'observation) ; metric views avec jointures (plan suivant) ; fenêtres, pivots, UDF dans les
 candidates (résidu → `needs_curation`, jamais promu) ; sync du lineage de colonnes UC
-(`system.access.column_lineage`) ; interface graphique au-delà de l'exemple d'app.
+(`system.access.column_lineage`) ; **routes `api/` et Databricks App d'arbitrage** (repris
+seulement si le notebook ne suffit plus) ; dashboard AI/BI de suivi.
 
 ## Modèle de données
 
@@ -311,24 +315,38 @@ quelque chose de testé.
 
 ### 44.5 — Arbitrage humain, promotion niveau 2, rétrogradation
 
-**But** : la décision est humaine pour tout ce qui touche au certifié.
+**But** : la décision est humaine pour tout ce qui touche au certifié — par le canal le plus
+simple qui existe là où l'on est (D6).
 
-- CLI `skifer candidates list [--state …]`, `show ID`, `approve ID` (→ `promoted` niveau 1 pour
-  une `needs_review`), `reject ID --reason`, `promote ID --pipeline-output … --model-output …`
-  (→ drafts gérés : `schema_dict` écrit par `write_yaml_atomic` avec marqueur
-  `_generated_by: metric_candidates` ; modèle sémantique par `SemanticDraftBuilder` depuis la
-  projection du pipeline ; refus `O_EXCL` d'écraser ; événement `certification_requested`),
-  `demote ID --reason` (→ `demoted`, `DROP VIEW` des objets niveau 1, événement avec
-  `replaced_by_metric` optionnel), `history ID`.
-- Codes de sortie alignés sur `adaptive` : `0`, `1` technique, `2` usage, `3` candidate
-  périmée (le `semantic_layer_version` a changé depuis sa validation : revalider), `4` conflit
-  d'état ou sortie existante.
-- `services/candidates.py` + routes `api/routes/candidates.py` (scopes nommés, lecture et
-  décision séparées), pour l'app d'exemple (44.9).
+- `candidates/service.py` : `CandidateService(store, engine=None)` — **l'unique implémentation**
+  des décisions, appelée telle quelle par la CLI et par le notebook : `list(state=…)`,
+  `show(id)`, `approve(id, reason)` (→ `promoted` niveau 1 pour une `needs_review`),
+  `reject(id, reason)`, `promote(id, pipeline_output, model_output)` (→ drafts gérés :
+  `schema_dict` écrit par `write_yaml_atomic` avec marqueur `_generated_by: metric_candidates` ;
+  modèle sémantique par `SemanticDraftBuilder` depuis la projection du pipeline ; refus `O_EXCL`
+  d'écraser ; événement `certification_requested`), `demote(id, reason, replaced_by=None)`
+  (→ `demoted`, `DROP VIEW` des objets niveau 1), `history(id)`. Le décideur est passé par
+  l'appelant et pseudonymisé par le service ; chaque méthode renvoie un DTO sérialisable par
+  allowlist (pour `display()` comme pour le JSON de la CLI). Erreurs typées
+  (`StaleCandidateError`, `StateConflictError`, `OutputExistsError`).
+- CLI `skifer candidates list|show|approve|reject|promote|demote|history` : adaptateur mince
+  sur le service. Codes de sortie alignés sur `adaptive` : `0`, `1` technique, `2` usage, `3`
+  candidate périmée (le `semantic_layer_version` a changé depuis sa validation : revalider),
+  `4` conflit d'état ou sortie existante.
+- **Notebook d'arbitrage** `examples/25_metric_candidates/notebooks/arbitrage.py` (format
+  source Databricks, trois cellules utiles) : (1) `display()` des candidates `needs_review` —
+  question, tables, critères avec chiffres et raisons, `request_count`, `stability_score` ;
+  (2) widgets `candidate_id`, `decision` (`approve | reject | promote | demote`), `reason` ;
+  (3) appel du service avec `get_clean_username()` comme décideur, puis `display()` de
+  l'historique de la candidate. Une cellule optionnelle montre `drift()` sur la fenêtre
+  courante. Le notebook est **exécuté dans la suite** comme script Python contre SQLite et un
+  `dbutils` factice (c'est un exemple, donc un livrable testé), pour que ses cellules ne
+  cassent pas en silence.
 - Hook de certification : quand `semantic sync --promote` publie un modèle dont le
   `metadata.source_candidate_id` est renseigné, événement `certified` dans l'historique.
-- Tests : CLI bout en bout sur SQLite ; `promote` refuse d'écraser ; `history` reconstitue
-  « X rétrogradée au profit de Y ».
+- Tests : service bout en bout sur SQLite (chaque transition, chaque erreur typée) ; CLI
+  (codes de sortie) ; `promote` refuse d'écraser ; `history` reconstitue « X rétrogradée au
+  profit de Y » ; le notebook s'exécute.
 
 ### 44.6 — Signaux de drift d'usage (observation seule)
 
@@ -362,29 +380,36 @@ quelque chose de testé.
   modèle d'embedding et pour BM25 seul ; c'est ce rapport qui tranche D7.
 - Tests : bootstrap déterministe (deux appels → mêmes questions) ; évaluation sur un hub factice.
 
-### 44.8 — Embeddings denses optionnels (`[knowledge-embeddings]`)
+### 44.8 — Embeddings denses en option, pour le benchmark (`[knowledge-embeddings]`)
+
+**But** : rendre la mesure possible, pas trancher (D7). Ce point précède l'exécution du
+benchmark de 44.7 ; le défaut de l'index est décidé ensuite et consigné dans ce plan.
 
 - `pyproject.toml` : extra `knowledge-embeddings = ["sentence-transformers>=3"]`.
-- `knowledge/embeddings.py` : import paresseux, `multilingual-e5-small` par défaut avec
-  préfixes `query:`/`passage:`, `bge-m3` par config ; cache des poids dans
+- `knowledge/embeddings.py` : import paresseux, `multilingual-e5-small` (préfixes
+  `query:`/`passage:`) et `bge-m3` sélectionnables par config ; cache des poids dans
   `knowledge_model_cache` (chemin local ou Volume UC) ; erreur explicite nommant l'extra et le
   cache si le modèle n'est pas disponible hors ligne.
 - Store : colonne `embedding ARRAY<FLOAT>` + `embedding_model` ; seules les lignes dont le
-  fingerprint a changé sont ré-embeddées. Recherche hybride : fusion de rangs (RRF) entre BM25
-  et cosinus, en Python sur quelques milliers de lignes.
+  fingerprint a changé sont ré-embeddées. Trois modes de recherche exposés au benchmark :
+  `bm25`, `dense`, `hybrid` (fusion de rangs RRF, en Python sur quelques milliers de lignes).
+  Tant que D7 n'est pas tranchée, la config `knowledge_search_mode` n'a pas de défaut
+  documenté autre que « ce qui est installé » : `bm25` sans l'extra.
 - Tests : le cœur s'importe sans `sentence_transformers` ; fusion de rangs sur des scores
   injectés ; modèle factice pour le chemin d'indexation.
 
-### 44.9 — Exemple, app d'arbitrage, documentation
+### 44.9 — Exemple complet et documentation
 
 - `examples/25_metric_candidates/` : un hub local (`catalog: null`) avec deux modèles
   certifiés, une question hors périmètre qui produit une candidate, `validate` qui la promeut
   au niveau 1 (SQLite + Spark local), `promote` qui émet les drafts, `drift` et `evaluate` sur
-  le jeu amorcé. `app/` : FastAPI minimal sur `skifer.api` avec `app.yaml` pour Databricks Apps,
-  et la note de coût.
+  le jeu amorcé ; `notebooks/arbitrage.py` (44.5) y est rangé et documenté, avec la marche à
+  suivre pour l'importer dans un workspace.
 - `docs/metric_candidates.md` (nav « Semantic & agentic ») : pourquoi, les deux niveaux de
-  promotion, ce qui est stocké et ce qui ne l'est jamais, configuration, CLI, codes de sortie,
-  signaux de drift, jeu de référence, limites. `docs/databricks_supervisor.md` : ce que l'agent
+  promotion, ce qui est stocké et ce qui ne l'est jamais, configuration, l'arbitrage (notebook
+  sur Databricks, CLI en local, et pourquoi pas d'app en v1), codes de sortie, signaux de
+  drift, jeu de référence, benchmark et décision D7 une fois prise, limites.
+  `docs/databricks_supervisor.md` : ce que l'agent
   de repli ajoute à Genie. `docs/adaptive.md` : renvoi et frontière (« `adaptive` ne stocke pas
   la question ; `candidates` oui, et voici pourquoi »). `CLAUDE.md` / `AGENTS.md` : lignes de
   structure `candidates/`, `knowledge/`, `candidate_agent.py` ; section courte.
@@ -397,7 +422,8 @@ quelque chose de testé.
 | R1 | Une metric view n'accepte pas une **vue** comme `source` | À vérifier en premier sur `sts_demo_catalog` (44.4). Repli : publier la vue SQL seule au niveau 1 ; la metric view n'arrive qu'au niveau 2 (mono-table après matérialisation par le pipeline promu). |
 | R2 | Le LLM ne produit pas de `schema_dict` fiable | Le chemin SQL + `map_statement` est le repli (D3) ; les deux chemins passent par le même validateur. Mesuré par la famille B du jeu de référence. |
 | R3 | `information_schema` trop lent ou interdit sur un gros catalogue | Sync par schéma (`--schema`), bornée aux domaines déclarés dans la config ; `system.access.*` optionnel. |
-| R4 | `sentence-transformers` n'installe pas sur le driver (taille, réseau) | Extra optionnel, cache Volume, BM25 toujours fonctionnel (D7). |
+| R4 | `sentence-transformers` n'installe pas sur le driver (taille, réseau) | Extra optionnel, cache Volume, BM25 toujours fonctionnel ; si le benchmark lui-même ne peut pas tourner sur le workspace cible, il tourne en local sur un export du graphe (Delta → SQLite), le jeu de référence étant le même. |
+| R8 | Le notebook d'arbitrage ne suffit plus (plusieurs arbitres, besoin de traçabilité d'écran, file d'attente) | C'est le signal pour reprendre les routes `api/` et l'app, **sur le même `CandidateService`** — rien du notebook n'est à jeter. |
 | R5 | La question stockée contient une donnée personnelle | Mode `redacted` (D2), rétention, pseudonymisation ; documenté comme classification `internal`. |
 | R6 | Boucle : une candidate promue niveau 1 est reproposée comme candidate | Le routeur consulte d'abord les candidates `promoted` (fingerprint et index) : une question déjà couverte réutilise la candidate (`request_count` += 1) au lieu d'en créer une. |
 | R7 | Divergence entre la vue niveau 1 et le pipeline promu niveau 2 | Les deux viennent du même `schema_dict` via `compile_select` ; test d'égalité des SQL compilés. |
