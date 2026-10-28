@@ -150,3 +150,15 @@ def test_get_and_edges_expose_live_graph_only():
     assert index.edges(kinds=["derives"]) == []
     assert index.edges(node_ids=[amount.node_id]) == []
     assert len(index.edges(node_ids=[amount.node_id, country.node_id], kinds=["joins"])) == 1
+
+
+def test_nodes_lists_live_nodes_sorted_and_filtered_by_kind():
+    from skifer.knowledge.index import KnowledgeIndex
+    from skifer.knowledge.models import Node
+
+    metric = Node.build(kind="metric", fqn="sales.revenue", label="revenue", source="semantic")
+    table = Node.build(kind="table", fqn="sales.orders", label="orders", source="pipeline")
+    index = KnowledgeIndex([metric, table])
+    assert [node.node_id for node in index.nodes()] == ["metric:sales.revenue",
+                                                        "table:sales.orders"]
+    assert index.nodes(kinds=["table"]) == [table]

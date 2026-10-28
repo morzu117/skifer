@@ -528,3 +528,17 @@ def test_config_candidates_decider_identity_accepts_hmac_and_plain(tmp_path):
         manager = ConfigurationManager(
             config_path=_write_env_config(tmp_path, candidates_decider_identity=value))
         assert manager.get_value("candidates_decider_identity") == value
+
+
+def test_candidate_drift_settings_are_validated():
+    from skifer.core.config import candidate_drift_settings
+
+    assert candidate_drift_settings({}) == (30, {})
+    assert candidate_drift_settings({"candidates_min_sample": 5, "candidates_drift_thresholds": {
+        "fallback_rate": 0.2}}) == (5, {"fallback_rate": 0.2})
+    for bad in ({"candidates_min_sample": -1}, {"candidates_min_sample": True},
+                {"candidates_drift_thresholds": [0.2]},
+                {"candidates_drift_thresholds": {"rephrasing": 0.2}},
+                {"candidates_drift_thresholds": {"fallback_rate": 1.5}}):
+        with pytest.raises(ValueError, match="candidates_"):
+            candidate_drift_settings(bad, env_name="dev")

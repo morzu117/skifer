@@ -114,6 +114,12 @@ class KnowledgeIndex:
         """The live node with this id, or None (absent or soft-deleted)."""
         return self._nodes.get(node_id)
 
+    def nodes(self, *, kinds: Iterable[str] | None = None) -> list[Node]:
+        """Live nodes, optionally of some kinds, sorted by id."""
+        selected = _node_kinds(kinds)
+        return [node for node_id, node in sorted(self._nodes.items())
+                if selected is None or node.kind in selected]
+
     def edges(
         self, *, node_ids: Iterable[str] | None = None, kinds: Iterable[str] | None = None
     ) -> list[Edge]:
