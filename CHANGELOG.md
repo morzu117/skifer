@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing is ever counted. `default_candidate_store(engine)` follows `default_certification_store`:
   SQLite locally or without a catalog, Delta in `<catalog>._skifer_candidates` otherwise, with the
   environment's `candidates_store_questions` / `candidates_retention_days`.
+- (Plan 44, S02.1) New `skifer.knowledge` package: knowledge graph `Node` (id `<kind>:<fqn>`,
+  closed `NODE_KINDS` / `NODE_STATUSES`, `sha256:v1:` content fingerprint verified at construction),
+  `Edge` (id derived from kind, endpoints and join keys, weight in `(0, 1]`), `SearchHit` and
+  `SyncReport`. Importing the package loads neither Spark nor `sentence_transformers`.
 
 ### Fixed
 
