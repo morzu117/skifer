@@ -143,6 +143,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "> Réponse non certifiée — calculée hors du semantic layer, à valider." (once; certified answers
   are unchanged). Through real MLflow, the served text carries that line and
   `custom_outputs["skifer"]` keeps the v2 evidence with the `CANDIDATE` metric and its `candidate_id`.
+- (Plan 44, S05.1) Level 1 promotion definitions, `skifer.candidates.promotion`:
+  `metric_definition(schema_dict)` turns each `{{ pN }}` filter of a stored candidate into an
+  `aggregate.group_by` dimension (value-free filters stay; a filter group left empty drops the OR; a
+  `having` on a measure is dropped). `level1_view_ddl` emits `CREATE OR REPLACE VIEW
+  <catalog>.<schema>_candidates.<metric_name>` whose body is exactly
+  `compile_select(parse_to_ir(metric_definition(...)[0]))`, with the candidate id and the view SQL hash
+  in its comment; `level1_model` / `level1_metric_view_ddl` build the single-table metric view
+  `<metric_name>_metrics` on that view (only `sum`, `count`, `min`, `max` measures, which roll up over a
+  grouped view; anything else is a `MetricViewTranslationError`). Risk R1 was verified live on
+  `sts_demo_catalog`: a metric view accepts a view as its source, so `LEVEL1_PUBLISHES_METRIC_VIEW =
+  True`. The same test showed that Unity Catalog refuses `.` in a tag key: the candidate tag is
+  `certification = CANDIDATE` (the Plan 41 mirror's key), not `skifer.certification`.
 
 ### Fixed
 
