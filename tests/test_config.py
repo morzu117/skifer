@@ -432,3 +432,37 @@ def test_config_rejects_non_boolean_uc_certification_tags(tmp_path, value):
 
     with pytest.raises(ValueError, match="uc_certification_tags.*environment 'local'.*true or false"):
         ConfigurationManager(config_path=str(config_file))
+
+
+# --- Plan 44 S01: candidate registry settings -------------------------------------
+
+
+def _write_env_config(tmp_path, **env):
+    config_file = tmp_path / "config.yaml"
+    with open(config_file, "w") as f:
+        yaml.dump(
+            {"priority_check": ["local"], "environments": {"local": {"catalog": None, **env}}}, f
+        )
+    return str(config_file)
+
+
+@pytest.mark.parametrize("value", ["hashed", "FULL", None, 1])
+def test_config_invalid_candidates_store_questions_raises_at_load(tmp_path, value):
+    with pytest.raises(ValueError, match="candidates_store_questions"):
+        ConfigurationManager(config_path=_write_env_config(tmp_path, candidates_store_questions=value))
+
+
+@pytest.mark.parametrize("value", [0, -1, "365", True, 1.5])
+def test_config_invalid_candidates_retention_days_raises_at_load(tmp_path, value):
+    with pytest.raises(ValueError, match="candidates_retention_days"):
+        ConfigurationManager(config_path=_write_env_config(tmp_path, candidates_retention_days=value))
+
+
+def test_config_accepts_candidate_settings(tmp_path):
+    manager = ConfigurationManager(
+        config_path=_write_env_config(
+            tmp_path, candidates_store_questions="redacted", candidates_retention_days=30
+        )
+    )
+    assert manager.get_value("candidates_store_questions") == "redacted"
+    assert manager.get_value("candidates_retention_days") == 30

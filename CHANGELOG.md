@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the values separately for an immediate re-run only; a raw `sql` filter is refused.
   `question_hash()` (NFKC, case-folded, whitespace-collapsed) and `requester_pseudonym()` (delegates
   to the tracing `TraceAttributePolicy`, `None` without an HMAC secret).
+- (Plan 44, S01.3) `candidates.store`: `CandidateStore` Protocol and `SqliteCandidateStore`
+  (`.skifer_candidates.db`, git-ignored) over four tables — `metric_candidates` (upsert on
+  `candidate_id`), `metric_candidate_runs`, `metric_certification_history` and
+  `reference_questions` (idempotent appends: a known id is ignored). `upsert_candidate` refuses a
+  `schema_dict` that still holds a filter value; in `redacted` mode the question is never written,
+  only its hash. The history has no update or delete path anywhere. Event listing uses half-open
+  `[since, until)` windows. New environment settings `candidates_store_questions`
+  (`full` | `redacted`) and `candidates_retention_days` (positive integer, read and validated, no
+  purge yet), validated at config load.
 
 ### Fixed
 

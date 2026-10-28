@@ -414,6 +414,24 @@ class ConfigurationManager:
                                 f"'{env_name}': {autonomy!r}. Expected 'shadow' or "
                                 "'supervised'; guarded is deliberately not configurable in v1."
                             )
+                    if "candidates_store_questions" in env_config:
+                        mode = env_config["candidates_store_questions"]
+                        if mode not in {"full", "redacted"}:
+                            raise ValueError(
+                                "Invalid candidates_store_questions for environment "
+                                f"'{env_name}': {mode!r}. Expected 'full' or 'redacted'."
+                            )
+                    if "candidates_retention_days" in env_config:
+                        retention = env_config["candidates_retention_days"]
+                        if (
+                            isinstance(retention, bool)
+                            or not isinstance(retention, int)
+                            or retention <= 0
+                        ):
+                            raise ValueError(
+                                "Invalid candidates_retention_days for environment "
+                                f"'{env_name}': {retention!r}. Expected a positive integer."
+                            )
         except yaml.YAMLError as exc:
             raise ValueError(f"Error parsing YAML file: {exc}")
 
