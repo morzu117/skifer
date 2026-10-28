@@ -25,9 +25,14 @@ from skifer.candidates.store import (
     HISTORY_TABLE,
     TABLE_COLUMNS,
     CandidateStore,
+    DeltaCandidateStore,
     SqliteCandidateStore,
     candidate_settings,
+    default_candidate_store,
 )
+from skifer.core import spark_backend as spark_backend_module
+from skifer.core.spark_backend import SparkBackend
+from tests.fakes.fake_backend import FakeBackend
 
 NOW = datetime(2026, 10, 28, 12, tzinfo=timezone.utc)
 CANARY = "CANARY-7f3a"
@@ -139,7 +144,19 @@ def _sqlite_raw_rows(store) -> list[str]:
     return rows
 
 
-STORES = {"sqlite": (_sqlite, _sqlite_raw_rows)}
+def _delta(tmp_path, **kwargs):
+    return DeltaCandidateStore(FakeBackend(), "prod_cat._skifer_candidates", **kwargs)
+
+
+def _delta_raw_rows(store) -> list[str]:
+    return [
+        json.dumps(row, default=str)
+        for rows in store.backend._candidate_tables.values()
+        for row in rows
+    ]
+
+
+STORES = {"sqlite": (_sqlite, _sqlite_raw_rows), "delta": (_delta, _delta_raw_rows)}
 
 
 @pytest.fixture(params=sorted(STORES))
@@ -320,7 +337,16 @@ def test_history_store_has_no_update_or_delete():
     # the only upsert path is the candidates table
     for match in re.finditer(r"self\._insert\(([A-Z_]+),[^\n]*upsert=True", source):
         assert match.group(1) == "CANDIDATES_TABLE"
-    for cls in (CandidateStore, SqliteCandidateStore):
+    backend_source = inspect.getsource(spark_backend_module)
+    start = backend_source.index("Plan 44: metric candidate registry")
+    candidate_section = backend_source[start:backend_source.index("def check_catalog_access", start)]
+    assert not re.search(r"(UPDATE|MERGE|DELETE)[^\n]*" + HISTORY_TABLE, candidate_section)
+    assert "DELETE" not in candidate_section
+    assert re.findall(r"MERGE INTO", candidate_section) == ["MERGE INTO"]
+    assert "ON t.candidate_id = s.candidate_id" in candidate_section
+    for verb in ("update", "delete", "remove"):
+        assert not [name for name in dir(SparkBackend) if name.startswith(verb) and "candidate" in name]
+    for cls in (CandidateStore, SqliteCandidateStore, DeltaCandidateStore):
         assert {"append_event", "list_events"} <= set(dir(cls))
         assert not [name for name in dir(cls) if "event" in name and not name.startswith(("append_", "list_"))]
 
@@ -344,3 +370,136 @@ def test_candidate_settings_defaults_and_validation():
         candidate_settings({"candidates_store_questions": "hashed"})
     with pytest.raises(ValueError, match="candidates_retention_days"):
         SqliteCandidateStore(":memory:", retention_days=0)
+
+
+class _Context:
+    def __init__(self, env_config):
+        self._env_config = env_config
+
+    def env_config(self):
+        return self._env_config
+
+
+class _Engine:
+    def __init__(self, *, is_local, db, backend=None, env_config=None):
+        self.is_local = is_local
+        self.db = db
+        self.backend = backend
+        self.context = _Context(env_config or {})
+
+
+def test_default_store_selection(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    local = default_candidate_store(_Engine(is_local=True, db=None))
+    assert isinstance(local, SqliteCandidateStore)
+    assert (tmp_path / ".skifer_candidates.db").exists()
+    no_catalog = default_candidate_store(_Engine(is_local=False, db=None))
+    assert isinstance(no_catalog, SqliteCandidateStore)
+    local_with_catalog = default_candidate_store(_Engine(is_local=True, db="dev_cat"))
+    assert isinstance(local_with_catalog, SqliteCandidateStore)
+
+    backend = object()
+    delta = default_candidate_store(
+        _Engine(is_local=False, db="prod_cat", backend=backend,
+                env_config={"candidates_store_questions": "redacted",
+                            "candidates_retention_days": 30})
+    )
+    assert isinstance(delta, DeltaCandidateStore)
+    assert delta.backend is backend
+    assert delta.schema == "prod_cat._skifer_candidates"
+    assert (delta.store_questions, delta.retention_days) == ("redacted", 30)
+
+
+def test_delta_ddl_enables_cdf_without_defaults():
+    store = _delta(None)
+    candidate = make_candidate()
+    store.upsert_candidate(candidate)
+    store.append_run(make_run(candidate.candidate_id))
+    store.append_event(make_event(candidate.candidate_id))
+    store.append_reference(make_reference())
+
+    ddl = store.backend._candidate_sql
+    assert len(ddl) == 4
+    for statement in ddl:
+        assert statement.startswith("CREATE TABLE IF NOT EXISTS `prod_cat`.`_skifer_candidates`.")
+        assert "USING DELTA" in statement
+        assert "TBLPROPERTIES (delta.enableChangeDataFeed = true)" in statement
+        assert "DEFAULT" not in statement.upper()
+    assert any("request_count BIGINT" in statement for statement in ddl)
+
+
+def test_delta_escapes_identifiers():
+    from unittest.mock import MagicMock
+
+    spark = MagicMock()
+    spark.catalog.tableExists.return_value = True
+    spark.sql.return_value.collect.return_value = []
+    backend = SparkBackend(spark=spark)
+    store = DeltaCandidateStore(backend, "prod_cat._skifer_candidates")
+
+    store.get_candidate("candidate:v1:x\\' OR 1=1 --")
+    statement = spark.sql.call_args.args[0]
+    assert "candidate:v1:x\\\\'' OR 1=1 --" in statement
+
+    store.list_runs("reference_set:it's")
+    assert "reference_set:it''s" in spark.sql.call_args.args[0]
+
+    store.append_run(make_run("reference_set:a\\'b", run_id="r\\'1"))
+    lookups = [call.args[0] for call in spark.sql.call_args_list if "SELECT 1" in call.args[0]]
+    assert "'r\\\\''1'" in lookups[-1]
+    assert "`prod_cat`.`_skifer_candidates`" in lookups[-1]
+
+
+def test_delta_round_trip_on_local_spark(spark):
+    schema = "plan44_candidates_store_test"
+    spark.sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+    try:
+        store = DeltaCandidateStore(SparkBackend(spark=spark), schema)
+        parameterized, _ = parameterize_filters(_canary_schema())
+        candidate = make_candidate(parameterized, stability_score=0.5,
+                                   coherence={"verdict": True, "reasons": []},
+                                   joins_used=(("o", "c", "k"),))
+        store.upsert_candidate(candidate)
+        bumped = replace(candidate, request_count=3, updated_at=NOW + timedelta(seconds=1))
+        store.upsert_candidate(bumped)
+        assert store.get_candidate(candidate.candidate_id) == bumped
+        assert store.find_by_fingerprint(candidate.fingerprint) == bumped
+        assert store.list_candidates(state="candidate") == [bumped]
+
+        run = make_run(candidate.candidate_id, row_count=2, duration_ms=5)
+        event = make_event(candidate.candidate_id, evidence={"n": 1})
+        reference = make_reference()
+        for _ in range(2):
+            store.append_run(run)
+            store.append_event(event)
+            store.append_reference(reference)
+        assert store.list_runs(candidate.candidate_id) == [run]
+        assert store.list_events(metric_id=candidate.candidate_id,
+                                 since=NOW, until=NOW + timedelta(seconds=1)) == [event]
+        assert store.list_references() == [reference]
+
+        rows = [json.dumps(row.asDict(), default=str)
+                for table in TABLE_COLUMNS
+                for row in spark.sql(f"SELECT * FROM {schema}.{table}").collect()]
+        assert rows and not any(CANARY in row for row in rows)
+        for table in TABLE_COLUMNS:
+            properties = {
+                row["key"]: row["value"]
+                for row in spark.sql(f"SHOW TBLPROPERTIES {schema}.{table}").collect()
+            }
+            assert properties.get("delta.enableChangeDataFeed") == "true"
+    finally:
+        spark.sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+
+
+def test_candidates_package_imports_without_spark():
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "import skifer.candidates, skifer.candidates.store\n"
+        "print(sorted(m for m in ('pyspark', 'delta', 'sqlglot', 'mlflow') if m in sys.modules))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "[]"

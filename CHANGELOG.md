@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[since, until)` windows. New environment settings `candidates_store_questions`
   (`full` | `redacted`) and `candidates_retention_days` (positive integer, read and validated, no
   purge yet), validated at config load.
+- (Plan 44, S01.4) `DeltaCandidateStore` over new named `SparkBackend` primitives
+  (`upsert_metric_candidate` — `MERGE INTO` on `candidate_id`, `get_metric_candidate`,
+  `list_metric_candidates`, `append_candidate_row` — idempotent append on the row id, and
+  `list_candidate_rows`), with explicit DDL `CREATE TABLE IF NOT EXISTS … USING DELTA TBLPROPERTIES
+  (delta.enableChangeDataFeed = true)` and no column `DEFAULT`; values and identifiers are escaped,
+  nothing is ever counted. `default_candidate_store(engine)` follows `default_certification_store`:
+  SQLite locally or without a catalog, Delta in `<catalog>._skifer_candidates` otherwise, with the
+  environment's `candidates_store_questions` / `candidates_retention_days`.
 
 ### Fixed
 

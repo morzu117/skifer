@@ -22,18 +22,28 @@ from .models import (
     run_from_row,
 )
 from .redaction import parameterize_filters, question_hash, requester_pseudonym
+from .store import (
+    CandidateStore,
+    DeltaCandidateStore,
+    SqliteCandidateStore,
+    default_candidate_store,
+)
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "CANDIDATE_STATES",
     "EVENT_TYPES",
     "CandidateRun",
+    "CandidateStore",
     "CertificationEvent",
+    "DeltaCandidateStore",
     "MetricCandidate",
     "ReferenceQuestion",
+    "SqliteCandidateStore",
     "candidate_from_row",
     "candidate_id_for",
     "check_transition",
+    "default_candidate_store",
     "event_from_row",
     "fingerprint_candidate",
     "parameterize_filters",

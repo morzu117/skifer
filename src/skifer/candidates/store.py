@@ -337,3 +337,146 @@ class SqliteCandidateStore:
 
     def close(self) -> None:
         self._conn.close()
+
+
+# --- Delta --------------------------------------------------------------------------------
+
+DEFAULT_CANDIDATES_SCHEMA = "_skifer_candidates"
+_DELTA_TYPES = {"string": "STRING", "json": "STRING", "int": "BIGINT", "float": "DOUBLE"}
+# Read order of each table; the time column bounds a [since, until) window.
+ORDER_COLUMNS = {
+    CANDIDATES_TABLE: (("updated_at", "DESC"), ("candidate_id", "ASC")),
+    RUNS_TABLE: (("executed_at", "ASC"), ("run_id", "ASC")),
+    HISTORY_TABLE: (("event_at", "ASC"), ("event_id", "ASC")),
+    REFERENCES_TABLE: (("created_at", "ASC"), ("question_id", "ASC")),
+}
+TIME_COLUMNS = {HISTORY_TABLE: "event_at"}
+
+
+def delta_columns_ddl(table: str) -> str:
+    """Spark schema string of a registry table (also used by ``createDataFrame``)."""
+    return ", ".join(f"{column} {_DELTA_TYPES[kind]}" for column, kind in TABLE_COLUMNS[table])
+
+
+def delta_create_table_sql(qualified_table: str, table: str) -> str:
+    """Explicit Delta DDL with Change Data Feed on, and no column ``DEFAULT``.
+
+    ``request_count``'s default of 1 is set by ``MetricCandidate``: a DDL
+    ``DEFAULT`` would require the ``allowColumnDefaults`` table feature.
+    """
+    return (
+        f"CREATE TABLE IF NOT EXISTS {qualified_table} ({delta_columns_ddl(table)}) "
+        "USING DELTA TBLPROPERTIES (delta.enableChangeDataFeed = true)"
+    )
+
+
+class DeltaCandidateStore:
+    """Delta adapter over named ``SparkBackend`` candidate primitives; never counts."""
+
+    def __init__(
+        self,
+        backend: Any,
+        schema: str = DEFAULT_CANDIDATES_SCHEMA,
+        *,
+        store_questions: str = "full",
+        retention_days: int = DEFAULT_RETENTION_DAYS,
+    ):
+        self.backend = backend
+        self.schema = schema
+        self.store_questions = validate_store_questions(store_questions)
+        self.retention_days = validate_retention_days(retention_days)
+
+    def upsert_candidate(self, candidate: MetricCandidate) -> None:
+        self.backend.upsert_metric_candidate(
+            self.schema, candidate_row(candidate, self.store_questions)
+        )
+
+    def get_candidate(self, candidate_id: str) -> MetricCandidate | None:
+        row = self.backend.get_metric_candidate(self.schema, candidate_id=candidate_id)
+        return candidate_from_row(row) if row else None
+
+    def find_by_fingerprint(self, fingerprint: str) -> MetricCandidate | None:
+        row = self.backend.get_metric_candidate(self.schema, fingerprint=fingerprint)
+        return candidate_from_row(row) if row else None
+
+    def list_candidates(
+        self, *, state: str | None = None, limit: int | None = None
+    ) -> list[MetricCandidate]:
+        rows = self.backend.list_metric_candidates(
+            self.schema,
+            state=_choice(state, CANDIDATE_STATES, "state"),
+            limit=_limit(limit),
+        )
+        return [candidate_from_row(row) for row in rows]
+
+    def append_run(self, run: CandidateRun) -> None:
+        _require(run, CandidateRun, "run")
+        self.backend.append_candidate_row(
+            self.schema, RUNS_TABLE, storage_row(RUNS_TABLE, run.to_dict()), ID_COLUMNS[RUNS_TABLE]
+        )
+
+    def list_runs(self, candidate_id: str, *, purpose: str | None = None) -> list[CandidateRun]:
+        filters = {"candidate_id": candidate_id}
+        if _choice(purpose, RUN_PURPOSES, "purpose") is not None:
+            filters["purpose"] = purpose
+        rows = self.backend.list_candidate_rows(self.schema, RUNS_TABLE, **filters)
+        return [run_from_row(row) for row in rows]
+
+    def append_event(self, event: CertificationEvent) -> None:
+        _require(event, CertificationEvent, "event")
+        self.backend.append_candidate_row(
+            self.schema, HISTORY_TABLE, storage_row(HISTORY_TABLE, event.to_dict()),
+            ID_COLUMNS[HISTORY_TABLE],
+        )
+
+    def list_events(
+        self,
+        *,
+        metric_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[CertificationEvent]:
+        filters = {} if metric_id is None else {"metric_id": metric_id}
+        rows = self.backend.list_candidate_rows(
+            self.schema, HISTORY_TABLE,
+            since=_bound(since, "since"), until=_bound(until, "until"), **filters,
+        )
+        return [event_from_row(row) for row in rows]
+
+    def append_reference(self, question: ReferenceQuestion) -> None:
+        _require(question, ReferenceQuestion, "question")
+        self.backend.append_candidate_row(
+            self.schema, REFERENCES_TABLE,
+            storage_row(REFERENCES_TABLE, question.to_dict()), ID_COLUMNS[REFERENCES_TABLE],
+        )
+
+    def list_references(self, *, family: str | None = None) -> list[ReferenceQuestion]:
+        filters = {}
+        if _choice(family, REFERENCE_FAMILIES, "family") is not None:
+            filters["family"] = family
+        rows = self.backend.list_candidate_rows(self.schema, REFERENCES_TABLE, **filters)
+        return [reference_from_row(row) for row in rows]
+
+
+def default_candidate_store(engine: Any) -> CandidateStore:
+    """Return the candidate store matching where ``engine`` runs.
+
+    Same rule as ``default_certification_store``: SQLite locally (``catalog:
+    null`` or a session the engine started in ``local[*]``), otherwise Delta
+    qualified with the environment's catalog — a bare schema would resolve against
+    whatever catalog the session happens to use.
+    """
+    context = getattr(engine, "context", None)
+    env_config = context.env_config() if context is not None else {}
+    store_questions, retention_days = candidate_settings(env_config)
+    catalog = getattr(engine, "db", None)
+    if engine.is_local or not catalog:
+        return SqliteCandidateStore(
+            store_questions=store_questions, retention_days=retention_days
+        )
+    return DeltaCandidateStore(
+        engine.backend,
+        schema=f"{catalog}.{DEFAULT_CANDIDATES_SCHEMA}",
+        store_questions=store_questions,
+        retention_days=retention_days,
+    )

@@ -126,6 +126,8 @@ class FakeBackend:
         self._missing_tables = set()  # FQNs table_exists() must report as absent
         self._certification = {"contracts": [], "runs": [], "checks": []}
         self._adaptive_usage_events = []
+        self._candidate_tables = {}  # {(schema, table): [row, ...]} — Plan 44 registry
+        self._candidate_sql = []  # DDL the real backend would run, for assertions
 
     def _append_certification(self, kind: str, row: dict) -> None:
         if not any(existing.get("event_id", existing.get("definition_hash")) == row.get("event_id", row.get("definition_hash")) for existing in self._certification[kind]):
@@ -197,6 +199,56 @@ class FakeBackend:
         ]
         rows.sort(key=lambda row: (row["occurred_at"], row["event_id"]), reverse=True)
         return [dict(row) for row in (rows[:limit] if limit is not None else rows)]
+
+    # --- Plan 44: metric candidate registry (same surface as SparkBackend) ---
+
+    def _candidate_rows(self, schema: str, table: str) -> list:
+        from skifer.candidates.store import delta_create_table_sql
+        from skifer.core.sql_compiler import quote_fqn, quote_ident
+
+        key = (schema, table)
+        if key not in self._candidate_tables:
+            self._candidate_sql.append(
+                delta_create_table_sql(f"{quote_fqn(schema)}.{quote_ident(table)}", table)
+            )
+            self._candidate_tables[key] = []
+        return self._candidate_tables[key]
+
+    def upsert_metric_candidate(self, schema: str, row: dict) -> None:
+        rows = self._candidate_rows(schema, "metric_candidates")
+        rows[:] = [r for r in rows if r["candidate_id"] != row["candidate_id"]] + [dict(row)]
+
+    def get_metric_candidate(self, schema, *, candidate_id=None, fingerprint=None):
+        filters = {
+            key: value
+            for key, value in (("candidate_id", candidate_id), ("fingerprint", fingerprint))
+            if value is not None
+        }
+        rows = self.list_candidate_rows(schema, "metric_candidates", limit=1, **filters)
+        return rows[0] if rows else None
+
+    def list_metric_candidates(self, schema, *, state=None, limit=None):
+        filters = {} if state is None else {"state": state}
+        return self.list_candidate_rows(schema, "metric_candidates", limit=limit, **filters)
+
+    def append_candidate_row(self, schema: str, table: str, row: dict, id_column: str) -> None:
+        rows = self._candidate_rows(schema, table)
+        if not any(existing[id_column] == row[id_column] for existing in rows):
+            rows.append(dict(row))
+
+    def list_candidate_rows(self, schema, table, *, since=None, until=None, limit=None, **filters):
+        from skifer.candidates.store import ORDER_COLUMNS, TIME_COLUMNS
+
+        rows = [
+            dict(row)
+            for row in self._candidate_tables.get((schema, table), [])
+            if all(row[column] == value for column, value in filters.items())
+            and (since is None or row[TIME_COLUMNS[table]] >= since)
+            and (until is None or row[TIME_COLUMNS[table]] < until)
+        ]
+        for column, direction in reversed(ORDER_COLUMNS[table]):
+            rows.sort(key=lambda row: row[column], reverse=direction == "DESC")
+        return rows[:limit] if limit is not None else rows
 
     def register_temp_view(self, df: Any, name: str) -> None:
         self._temp_views[name] = df
