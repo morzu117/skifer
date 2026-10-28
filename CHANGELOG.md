@@ -155,6 +155,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sts_demo_catalog`: a metric view accepts a view as its source, so `LEVEL1_PUBLISHES_METRIC_VIEW =
   True`. The same test showed that Unity Catalog refuses `.` in a tag key: the candidate tag is
   `certification = CANDIDATE` (the Plan 41 mirror's key), not `skifer.certification`.
+- (Plan 44, S05.2) `skifer.candidates.validator.CandidateValidator` judges a candidate on three
+  explainable criteria, each reason carrying `code`, `observed`, `threshold` and `verdict`:
+  coherence (`residue_present`, `invalid_schema`, `missing_table` against the knowledge index,
+  `undeclared_join`, `unsafe_fanout` with the agent's own rules, `source_not_certified` through the
+  environment's certification gate), frequency (`min_requests`, `min_distinct_requesters` — never a
+  success when no pseudonymised requester exists: `requesters_unavailable` — and `min_days`, distinct
+  UTC days of successful answers) and stability (share of identical result hashes over
+  `stability_runs` runs of the published definition, each recorded as a `stability` run).
+  `ValidationReport.outcome` is `needs_review` on incoherence, `pending` while frequency is not
+  reached (state untouched, no event, no query), `needs_review` on instability, else `validated`;
+  `semantic_layer_version` is the `sha256:v1:` of `semantic_catalog.yaml` at each judgment.
+  `ValidationThresholds` rejects negative thresholds and a stability outside `[0, 1]`.
 
 ### Fixed
 
