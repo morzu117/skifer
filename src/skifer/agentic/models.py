@@ -115,6 +115,10 @@ class AgentResponse:
         "needs_clarification"— nom inconnu, l'agent demande une précision.
         "no_model"           — aucun modèle ne couvre le sujet.
         "error"              — erreur technique.
+        "candidate"          — hors semantic layer : métrique candidate calculée,
+                               marquée CANDIDATE (MetricCandidateAgent, Plan 44).
+        "candidate_refused"  — hors semantic layer, refus typé : le code
+                               CandidateRefusal est dans policy_reasons.
 
     Attributs:
         question:               Question originale.
@@ -127,6 +131,7 @@ class AgentResponse:
         clarification_question: Question posée à l'utilisateur si ambiguïté.
         suggestions:            Alternatives proposées (noms du YAML).
         candidates:             Modèles candidats en cas d'ambiguïté.
+        candidate_id:           Métrique candidate (Plan 44) ; sans lien avec `candidates`.
     """
     question: str
     mode: str = "query"
@@ -143,6 +148,7 @@ class AgentResponse:
     policy_reasons: tuple[str, ...] | None = None
     recommended_action: str | None = None
     evidence: Any = None
+    candidate_id: str | None = None
 
     @property
     def success(self) -> bool:

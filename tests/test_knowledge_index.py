@@ -133,3 +133,20 @@ def test_neighbors_skip_removed_nodes(tmp_path):
     index = KnowledgeIndex.from_store(store)
     assert index.neighbors(a.node_id) == []
     assert [h.node.node_id for h in index.search("b")] == []
+
+
+def test_get_and_edges_expose_live_graph_only():
+    nodes = _graph()
+    amount, country = nodes[0], nodes[1]
+    edges = [
+        Edge.build(kind="joins", from_id=amount.node_id, to_id=country.node_id, keys=("a", "b"),
+                   source="pipeline"),
+        Edge.build(kind="derives", from_id=amount.node_id, to_id="column:gone", source="pipeline"),
+    ]
+    index = KnowledgeIndex(nodes, edges)
+    assert index.get(amount.node_id) == amount
+    assert index.get("column:gone") is None
+    assert [e.kind for e in index.edges()] == ["joins"]
+    assert index.edges(kinds=["derives"]) == []
+    assert index.edges(node_ids=[amount.node_id]) == []
+    assert len(index.edges(node_ids=[amount.node_id, country.node_id], kinds=["joins"])) == 1

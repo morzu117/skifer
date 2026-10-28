@@ -85,6 +85,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CAT.SCHEMA ...] [--dry-run] [--json]` and `skifer knowledge search "QUESTION" [--kind] [--domain] [-k]
   [--json]` (exit codes `0` / `1` / `2`). `examples/03_semantic_and_question`'s `total_revenue` metric
   now declares French synonyms, so `search "chiffre d'affaires par pays"` finds it.
+- (Plan 44, S03.1) `agentic.candidate_agent`: `MetricCandidateAgent` (fallback outside the semantic
+  layer) — knowledge-index search, a compact context in score order (promoted candidates first, at
+  most 8 tables and 40 columns per table, neighbouring metrics, rules, `joins`/`shortcut` edges), a
+  system prompt whose grammar (filter operators, column operations, aggregates) comes from
+  `core/op_catalog.py` without `expr:` or the `sql` filter, closed JSON parsing of the proposal
+  (`parse_proposal`), and the `CandidateRefusal` codes. A question with no `table`/`column` hit is
+  refused `no_table_found` without any LLM call. `AgentResponse` gains `candidate_id` (distinct from
+  the existing `candidates`) and the `candidate` / `candidate_refused` modes; `KnowledgeIndex` gains
+  `get()` and `edges()`. `tests/fakes/fake_llm.py` adds a scripted, network-free `FakeLLM`.
 
 ### Fixed
 
