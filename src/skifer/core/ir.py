@@ -265,6 +265,7 @@ class ParsedSemanticSeed:
     entity: str | None = None
     default_time_dimension: str | None = None
     dimensions: tuple[str, ...] = field(default_factory=tuple)
+    source_candidate_id: str | None = None   # Plan 44: the candidate this pipeline promotes
 
     def __post_init__(self):
         object.__setattr__(self, "dimensions", tuple(self.dimensions))
@@ -461,6 +462,7 @@ def parse_to_ir(schema_dict: dict) -> ParsedSchema:
             entity=raw_semantic.get("entity"),
             default_time_dimension=raw_semantic.get("default_time_dimension"),
             dimensions=tuple(raw_semantic.get("dimensions", [])),
+            source_candidate_id=raw_semantic.get("source_candidate_id"),
         )
 
     return ParsedSchema(

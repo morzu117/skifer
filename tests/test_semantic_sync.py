@@ -638,3 +638,106 @@ def test_an_unchanged_contract_with_unsnapshotted_attributes_reports_no_drift(tm
     assert first.contract_diff is None
 
     assert _sync(tmp_path, FULL_CONTRACT_SYNC_YAML).contract_diff is None
+
+
+# --- Plan 44, S06.3: source_candidate_id and the 'certified' hook ----------------------
+
+
+def _candidate_pipeline(candidate_id: str) -> str:
+    from tests.test_cli import DRIFT_SYNC_YAML
+
+    return DRIFT_SYNC_YAML.replace(
+        "semantic:\n  model_key: orders_sync\n",
+        f"semantic:\n  model_key: orders_sync\n  source_candidate_id: {candidate_id}\n",
+    )
+
+
+def test_source_candidate_id_is_validated_and_propagated_to_draft_metadata():
+    import pytest as _pytest
+
+    from skifer.core.ir import parse_to_ir
+    from skifer.core.schema_loader import parse_schema
+    from skifer.semantic.draft_builder import SemanticDraftBuilder
+    from skifer.semantic.output_projection import OutputProjector
+    from tests.test_candidates_validator import make_candidate
+
+    candidate_id = make_candidate().candidate_id
+    schema = parse_to_ir(parse_schema(_candidate_pipeline(candidate_id)))
+    assert schema.semantic.source_candidate_id == candidate_id
+    payload = SemanticDraftBuilder("unused").build_draft(OutputProjector().project(schema), schema)
+    assert payload["models"][0]["metadata"]["source_candidate_id"] == candidate_id
+
+    for bad in ("candidate:v1:abc", "model:sales.orders", "42"):
+        with _pytest.raises(ValueError, match="source_candidate_id"):
+            parse_schema(_candidate_pipeline(bad))
+
+
+def test_draft_without_source_candidate_id_is_unchanged():
+    from skifer.core.ir import parse_to_ir
+    from skifer.core.schema_loader import parse_schema
+    from skifer.semantic.draft_builder import SemanticDraftBuilder
+    from skifer.semantic.output_projection import OutputProjector
+    from tests.test_cli import DRIFT_SYNC_YAML
+
+    schema = parse_to_ir(parse_schema(DRIFT_SYNC_YAML))
+    assert schema.semantic.source_candidate_id is None
+    payload = SemanticDraftBuilder("unused").build_draft(OutputProjector().project(schema), schema)
+    assert "source_candidate_id" not in payload["models"][0]["metadata"]
+    assert "source_candidate_id" not in str(payload)
+
+
+def test_promote_records_certified_event(tmp_path, monkeypatch):
+    from skifer.candidates import SqliteCandidateStore
+    from skifer.candidates.store import DEFAULT_CANDIDATES_DB
+    from skifer.candidates.validator import semantic_layer_version
+    from skifer.cli import SEMANTIC_EXIT_OK, run_semantic_sync
+    from tests.test_candidates_validator import make_candidate
+
+    monkeypatch.chdir(tmp_path)
+    candidate = make_candidate(state="promoted")
+    store = SqliteCandidateStore(DEFAULT_CANDIDATES_DB)
+    store.upsert_candidate(candidate)
+    store.close()
+    pipeline = tmp_path / "pipeline.yaml"
+    pipeline.write_text(_candidate_pipeline(candidate.candidate_id), encoding="utf-8")
+
+    assert run_semantic_sync(str(pipeline), mode="promote") == SEMANTIC_EXIT_OK
+
+    store = SqliteCandidateStore(DEFAULT_CANDIDATES_DB)
+    (event,) = store.list_events(metric_id=candidate.candidate_id)
+    store.close()
+    assert (event.event_type, event.previous_state, event.new_state) == (
+        "certified", "promoted", "promoted")
+    assert event.decided_by == "system:semantic_sync_promote"
+    assert event.evidence == {"model_key": "orders_sync"}
+    assert event.semantic_layer_version == semantic_layer_version(
+        str(tmp_path / "semantic_models"))
+    assert event.semantic_layer_version != semantic_layer_version(None)
+
+
+def test_promote_survives_unavailable_candidate_store(tmp_path, monkeypatch, caplog):
+    import logging
+
+    from skifer import cli
+    from skifer.cli import SEMANTIC_EXIT_OK, run_semantic_sync
+    from tests.test_candidates_validator import make_candidate
+
+    monkeypatch.chdir(tmp_path)
+    candidate_id = make_candidate().candidate_id
+    pipeline = tmp_path / "pipeline.yaml"
+    pipeline.write_text(_candidate_pipeline(candidate_id), encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="skifer.candidates"):
+        assert run_semantic_sync(str(pipeline), mode="promote") == SEMANTIC_EXIT_OK
+    assert "Candidate store unavailable" in caplog.text
+    assert (tmp_path / "semantic_models" / "orders_sync.yaml").exists()
+
+    def broken():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "_candidate_store_for_certification", broken)
+    (tmp_path / "semantic_models" / "orders_sync.yaml").unlink()  # promote again
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="skifer.candidates"):
+        assert run_semantic_sync(str(pipeline), mode="promote") == SEMANTIC_EXIT_OK
+    assert "OSError" in caplog.text and "disk full" not in caplog.text

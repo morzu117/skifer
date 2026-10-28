@@ -589,6 +589,12 @@ accepted in `semantic`. This metadata is projected into a draft semantic model
 without starting Spark or calling an LLM — see
 [Semantic Layer → Projected semantic models](semantic.md#projected-semantic-models-plan-29).
 
+A pipeline drafted from a metric candidate (Plan 44) also carries
+`semantic.source_candidate_id: candidate:v1:<64 hex>`. It is copied into the
+draft's `metadata`, and `skifer semantic sync --promote` then appends a
+`certified` event to that candidate's history — best-effort: an unavailable
+candidate store logs a warning and never fails the promotion.
+
 Plan 31 keeps the legacy string owner valid and adds the structured
 `team`/`steward`/`domain`/`contact` form shown above. Contract lifecycle status
 is `draft`, `active` (the default), or `deprecated`; reviewers and inclusive ISO

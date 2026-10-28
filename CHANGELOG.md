@@ -200,6 +200,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, S06.3) The pipeline `semantic:` seed accepts an optional `source_candidate_id`
+  (`candidate:v1:<64 hex>`, validated at load), kept on `ParsedSemanticSeed` and copied into the
+  managed draft's `metadata` — absent otherwise, so a pipeline that never was a candidate keeps the
+  same draft byte for byte. When `skifer semantic sync --promote` writes such a model, it appends a
+  `certified` event to the candidate's history (`decided_by="system:semantic_sync_promote"`, the
+  recomputed `semantic_layer_version`). Best-effort: an absent store, an unknown candidate or any
+  failure logs a WARNING on `skifer.candidates` with the error class only, never fails the promotion.
 
 ### Fixed
 

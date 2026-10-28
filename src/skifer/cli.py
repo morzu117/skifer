@@ -1971,7 +1971,61 @@ def run_semantic_sync(pipeline_path: str, *, mode: str) -> int:
         f"[semantic.sync] Promoted managed draft '{model_key}' to curated model "
         f"'{curated_path.name}' and updated semantic_catalog.yaml."
     )
+    if schema.semantic is not None and schema.semantic.source_candidate_id:
+        _record_candidate_certified(schema.semantic.source_candidate_id, model_key, models_dir)
     return SEMANTIC_EXIT_OK
+
+
+def _candidate_store_for_certification():
+    """The local candidate registry, or ``None`` when there is none to record into."""
+    from skifer.candidates.store import DEFAULT_CANDIDATES_DB, SqliteCandidateStore
+
+    if not os.path.exists(DEFAULT_CANDIDATES_DB):
+        return None
+    return SqliteCandidateStore(DEFAULT_CANDIDATES_DB)
+
+
+def _record_candidate_certified(candidate_id: str, model_key: str, models_dir: str) -> None:
+    """Append a ``certified`` event for the promoted candidate (Plan 44, S06).
+
+    Best-effort, like the Plan 31 indexing hooks: the model is already promoted,
+    so an unavailable store or an unknown candidate is a WARNING, never a failure.
+    """
+    import logging
+    import uuid
+    from datetime import datetime, timezone
+
+    log = logging.getLogger("skifer.candidates")
+    store = None
+    try:
+        from skifer.candidates import CertificationEvent
+        from skifer.candidates.validator import semantic_layer_version
+
+        store = _candidate_store_for_certification()
+        if store is None:
+            log.warning("Candidate store unavailable: no 'certified' event for %s.", candidate_id)
+            return
+        candidate = store.get_candidate(candidate_id)
+        if candidate is None:
+            log.warning("Unknown candidate %s: no 'certified' event recorded.", candidate_id)
+            return
+        store.append_event(CertificationEvent(
+            event_id=uuid.uuid4().hex, metric_id=candidate_id,
+            metric_name=candidate.metric_name, event_type="certified",
+            previous_state=candidate.state, new_state=candidate.state,
+            decided_by="system:semantic_sync_promote", evidence={"model_key": model_key},
+            semantic_layer_version=semantic_layer_version(models_dir),
+            event_at=datetime.now(timezone.utc),
+        ))
+    except Exception as exc:
+        log.warning("Could not record the 'certified' event for %s (%s).", candidate_id,
+                    type(exc).__name__)
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
 
 
 def run_semantic_validate(pipeline_path: str, model_path: str) -> int:
