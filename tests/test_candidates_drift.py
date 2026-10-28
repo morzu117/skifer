@@ -274,3 +274,81 @@ def test_window_and_arguments_are_validated(stores):
         drift(stores, since=datetime(2026, 10, 1))
     with pytest.raises(ValueError, match="min_sample"):
         drift(stores, min_sample=-1)
+
+
+# --- S07.2: skifer candidates drift ------------------------------------------------------
+
+
+def cli_args(**overrides):
+    import argparse
+
+    values = dict(candidates_command="drift", since=None, until=None, json=True,
+                  environment=None, usage_store="missing.db", config=None,
+                  models_dir="semantic_models")
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def run_cli(stores, capsys, *, env_config=None, **overrides):
+    from skifer.cli import run_candidates_drift
+
+    candidates, events = stores
+
+    code = run_candidates_drift(
+        cli_args(**overrides), candidate_store=candidates, usage_store=events,
+        index=certified_index(), catalog_models=list(CATALOG), environment="dev",
+        env_config=env_config if env_config is not None else {"candidates_min_sample": 0},
+        clock=lambda: UNTIL)
+    return code, capsys.readouterr()
+
+
+def test_cli_drift_defaults_to_last_seven_days_and_exits_zero(stores, capsys):
+    from skifer.cli import CANDIDATES_EXIT_OK
+
+    populate(stores)
+    code, out = run_cli(stores, capsys, env_config={
+        "candidates_min_sample": 0,
+        "candidates_drift_thresholds": {"fallback_rate": 0.01}})  # far exceeded, never applied
+    assert code == CANDIDATES_EXIT_OK
+    report = json.loads(out.out)
+    assert report["thresholds_applied"] is False
+    assert report["signals"][0]["window"] == [SINCE.isoformat(), UNTIL.isoformat()]
+    assert report["signals"][0]["value"] == pytest.approx(0.4)
+
+
+def test_cli_drift_usage_and_technical_errors(stores, capsys):
+    from skifer.cli import CANDIDATES_EXIT_ERROR, CANDIDATES_EXIT_USAGE
+
+    code, out = run_cli(stores, capsys, since=UNTIL.isoformat(), until=SINCE.isoformat())
+    assert code == CANDIDATES_EXIT_USAGE and "--since must be before --until" in out.err
+    code, out = run_cli(stores, capsys, since="2026-10-01T00:00:00")
+    assert code == CANDIDATES_EXIT_USAGE and "timezone" in out.err
+    code, out = run_cli(stores, capsys, until="yesterday")
+    assert code == CANDIDATES_EXIT_USAGE
+    code, out = run_cli(stores, capsys, env_config={"candidates_min_sample": -1})
+    assert code == CANDIDATES_EXIT_ERROR and "candidates_min_sample" in out.err
+
+
+def test_cli_drift_text_and_missing_usage_store(stores, capsys, tmp_path, monkeypatch):
+    from skifer.cli import run_candidates_drift
+
+    monkeypatch.chdir(tmp_path)
+    populate(stores)
+    candidates, _ = stores
+    code = run_candidates_drift(
+        cli_args(json=False), candidate_store=candidates, index=certified_index(),
+        catalog_models=list(CATALOG), environment="dev", env_config={}, clock=lambda: UNTIL)
+    text = capsys.readouterr().out
+    assert code == 0
+    assert "thresholds not applied" in text
+    assert "fallback_rate: inconclusive (evidence_unavailable)" in text
+    assert not (tmp_path / "missing.db").exists()  # a missing store is never created
+
+
+def test_catalog_metric_ids_reads_the_semantic_catalog(tmp_path):
+    from skifer.cli import _catalog_metric_ids
+
+    (tmp_path / "semantic_catalog.yaml").write_text(
+        "models:\n  - {key: sales, metrics: [revenue_net, orders]}\n  - {key: empty}\n")
+    assert _catalog_metric_ids(str(tmp_path)) == ["sales.orders", "sales.revenue_net"]
+    assert _catalog_metric_ids(str(tmp_path / "nowhere")) == []
