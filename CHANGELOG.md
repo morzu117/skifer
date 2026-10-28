@@ -204,6 +204,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, S09.3) `skifer knowledge benchmark --config bm25 --config hybrid:<model> … [--json]
+  [--db] [--candidates-db] [--model-cache]` and `skifer.knowledge.benchmark.benchmark(store,
+  questions, configs=)`: per config `recall@5`, `recall@10`, `mean_rank`, `not_found`,
+  `latency_ms_p50` (monotonic clock) and `index_build_s`, on the family A reference questions.
+  Dense vectors are computed in memory, the benchmark writes nothing. `bm25` runs without the
+  embeddings extra; `dense:`/`hybrid:` without it fail with the S08 error (exit `1`); an unknown
+  config is exit `2`.
 - (Plan 44, S09.2) `skifer candidates evaluate [--json] [--mlflow]` and
   `skifer.candidates.reference.evaluate(hub, index, store, k_values=(5, 10))` → `EvaluationReport`
   (`reference_set_version`, `semantic_layer_version`, `question_count`, `metrics`, `failures`).

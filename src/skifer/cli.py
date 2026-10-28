@@ -476,6 +476,18 @@ def main() -> None:
     knowledge_search_parser.add_argument("--json", action="store_true", help="Print hits as JSON.")
     knowledge_search_parser.add_argument("--db", default=".skifer_knowledge.db",
                                          help="SQLite knowledge store.")
+    knowledge_benchmark_parser = knowledge_subparsers.add_parser(
+        "benchmark", help="Compare search configs on the reference set (decides D7).")
+    knowledge_benchmark_parser.add_argument(
+        "--config", action="append", required=True, dest="configs", metavar="CONFIG",
+        help="bm25 | dense:<model> | hybrid:<model> (repeatable).")
+    knowledge_benchmark_parser.add_argument("--json", action="store_true", help="Print JSON.")
+    knowledge_benchmark_parser.add_argument("--db", default=".skifer_knowledge.db",
+                                            help="SQLite knowledge store.")
+    knowledge_benchmark_parser.add_argument("--candidates-db", default=".skifer_candidates.db",
+                                            help="SQLite candidate store holding the set.")
+    knowledge_benchmark_parser.add_argument("--model-cache", default=None, metavar="PATH",
+                                            help="Local model cache; nothing is downloaded.")
 
     candidates_parser = subparsers.add_parser(
         "candidates",
@@ -1225,11 +1237,13 @@ def run_knowledge_command(args: argparse.Namespace, *, store=None, engine=None) 
     from skifer.knowledge.sync import validate_domain
 
     command = getattr(args, "knowledge_command", None)
-    if command not in ("sync", "search"):
+    if command not in ("sync", "search", "benchmark"):
         print("Knowledge command missing. Use 'skifer knowledge --help'.", file=sys.stderr)
         return KNOWLEDGE_EXIT_USAGE
     if command == "search":
         return _knowledge_search(args, store=store)
+    if command == "benchmark":
+        return _knowledge_benchmark(args, store=store)
     try:
         domains = [validate_domain(value) for value in args.schema] if args.schema else None
     except ValueError:
@@ -1241,6 +1255,52 @@ def run_knowledge_command(args: argparse.Namespace, *, store=None, engine=None) 
         print(f"[knowledge] {exc}", file=sys.stderr)
         return KNOWLEDGE_EXIT_USAGE
     return _knowledge_sync(args, domains, store=store, engine=engine)
+
+
+def _knowledge_benchmark(args, *, store=None, questions=None, load_embedder=None) -> int:
+    """``skifer knowledge benchmark``: ``0`` ok, ``1`` technical (missing extra), ``2`` usage."""
+    from skifer.knowledge.benchmark import benchmark, parse_config
+
+    try:
+        for config in args.configs:
+            parse_config(config)
+    except ValueError as exc:
+        print(f"[knowledge] {exc}", file=sys.stderr)
+        return KNOWLEDGE_EXIT_USAGE
+    opened = []
+    try:
+        if store is None:
+            from skifer.knowledge.store import SqliteKnowledgeStore
+
+            store = SqliteKnowledgeStore(args.db)
+            opened.append(store)
+        if questions is None:
+            from skifer.candidates.store import SqliteCandidateStore
+
+            questions = []
+            if os.path.exists(args.candidates_db):
+                candidates = SqliteCandidateStore(args.candidates_db)
+                opened.append(candidates)
+                questions = candidates.list_references(family="A")
+        results = benchmark(store, questions, configs=args.configs,
+                            model_cache=args.model_cache, load_embedder=load_embedder)
+    except Exception as exc:
+        print(f"[knowledge] benchmark failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return KNOWLEDGE_EXIT_ERROR
+    finally:
+        for resource in opened:
+            with contextlib.suppress(Exception):
+                resource.close()
+    if args.json:
+        print(json.dumps(results, ensure_ascii=False, sort_keys=True))
+        return KNOWLEDGE_EXIT_OK
+    columns = ("recall@5", "recall@10", "mean_rank", "not_found", "latency_ms_p50",
+               "index_build_s")
+    print("config\t" + "\t".join(columns))
+    for config, row in results.items():
+        print(config + "\t" + "\t".join("n/a" if row[c] is None else str(row[c])
+                                        for c in columns))
+    return KNOWLEDGE_EXIT_OK
 
 
 def _knowledge_sync(args, domains, *, store=None, engine=None) -> int:
