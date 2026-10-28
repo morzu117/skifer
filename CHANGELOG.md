@@ -68,6 +68,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   row only when its fingerprint or `removed` flag differs) and `list_knowledge_rows`. Upserts are
   diffed against stored fingerprints first, so an unchanged node or edge is never sent; removal is a
   soft delete. `default_knowledge_store(engine)` picks SQLite locally or without a catalog.
+- (Plan 44, S02.3) `KnowledgeSynchronizer.sync(dry_run=False)` rebuilds the graph from, in priority
+  order, the Plan 31 metadata registry (tables, columns, `derives`/`joins` lineage), the semantic
+  catalog and its models (read in batch — `SemanticEngine`'s lazy start-up is untouched; metrics and
+  dimensions become `certified` nodes, `relationships` become weight-1 `shortcut` edges, as do pipeline
+  joins), registered rules (docstring as text) and Unity Catalog (`reference` nodes, bounded by
+  `domains` or the environment's `knowledge_domains`, plus `system.access.table_lineage` when readable).
+  A higher source is never overwritten by a lower one. Writes are fingerprint-diffed, an object gone
+  from a source is soft-deleted, and an unreadable schema or lineage table is listed in
+  `SyncReport.unavailable` — never raised, and it removes nothing.
 
 ### Fixed
 

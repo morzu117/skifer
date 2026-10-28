@@ -21,6 +21,7 @@ from .store import (
     SqliteKnowledgeStore,
     default_knowledge_store,
 )
+from .sync import KnowledgeSynchronizer
 
 __all__ = [
     "EDGE_KINDS",
@@ -29,6 +30,7 @@ __all__ = [
     "DeltaKnowledgeStore",
     "Edge",
     "KnowledgeStore",
+    "KnowledgeSynchronizer",
     "Node",
     "SearchHit",
     "SqliteKnowledgeStore",
