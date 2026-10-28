@@ -117,6 +117,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   canonical JSON. Filter values quoted by the question or by a residue message are replaced by `?`.
   A failed execution is refused `execution_failed`, recorded as a run carrying only the exception
   class name, and rejects the candidate if it already existed and may still be rejected.
+- (Plan 44, S03.4) `MetricCandidateAgent.ask()` answers with `AgentResponse(mode="candidate",
+  candidate_id=…, evidence=SemanticEvidence(...))`: evidence `schema_version` `"2"`, one
+  `MetricEvidence` with `certification="CANDIDATE"` and the `candidate_id`, the hash of the SQL
+  actually executed (never its text), filter shapes with `<redacted>` values, and per-source
+  certification snapshots — so the provenance line never says "certifié le" for a candidate. The
+  environment's certification gate (`semantic_certification_policy`) applies to the candidate's source
+  tables before anything is compiled: in `enforce`, an uncertified source returns the existing gate's
+  decision (`access_denied`, `DENY`, `MISSING`) and nothing runs. The whole question runs in one
+  `skifer.candidate.build` span whose `trace_id` is recorded on the candidate, its event and its run
+  (`None` without tracing); a tracer failure never changes the answer.
 
 ### Fixed
 

@@ -42,7 +42,10 @@ from skifer.core.ir import parse_to_ir
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, COLUMN_OPS, FILTER_OPERATORS
 from skifer.core.schema_loader import parse_schema
 from skifer.core.sql_compiler import compile_select
-from skifer.semantic.evidence import hash_sql
+from skifer.observability.tracing import NoOpTracer, configured_span_scope, set_span_attribute
+from skifer.semantic.access_policy import SemanticAccessDenied
+from skifer.semantic.dependencies import SemanticDependency
+from skifer.semantic.evidence import MetricEvidence, SemanticEvidence, hash_sql
 from skifer.semantic.domain import parse_relationships
 from skifer.semantic.planner import MetricRef, PlannedJoin, SemanticPlanner, find_unsafe_fanout
 
@@ -844,9 +847,31 @@ class MetricCandidateAgent:
         *,
         requester_id: str | None = None,
         trace_id: str | None = None,
+        consumer_context: Any = None,
     ) -> AgentResponse:
-        """Compile, run bounded, persist the candidate and its run."""
+        """Certification gate, compile, run bounded, persist the candidate and its run."""
+        try:
+            mode, _, deps, certifications, policy = (
+                self.semantic._enforce_certification_gate_with_evaluation(
+                    f"candidate.{proposal.metric_name}",
+                    {},
+                    consumer_context,
+                    deps=tuple(SemanticDependency(dataset=t) for t in proposal.tables_used),
+                )
+            )
+        except SemanticAccessDenied as exc:
+            return AgentResponse(
+                question=question,
+                mode="error",
+                explanation=proposal.metric_description or "",
+                error=str(exc),
+                access_denied=True,
+                policy_decision=exc.decision.value,
+                policy_reasons=exc.reasons,
+                recommended_action=exc.recommended_action,
+            )
         sql = self.compile(proposal)
+        compiled_at = self._now()
         started = time.monotonic()
         try:
             frame, rows = self._execute(sql)
@@ -859,7 +884,8 @@ class MetricCandidateAgent:
                 question, CandidateRefusal.EXECUTION_FAILED,
                 f"The candidate metric could not be computed ({type(exc).__name__}).",
             )
-        duration_ms = int((time.monotonic() - started) * 1000)
+        duration_seconds = time.monotonic() - started
+        duration_ms = int(duration_seconds * 1000)
         now = self._now()
         candidate, _ = self._persist(
             question, proposal, requester_id=requester_id, trace_id=trace_id, now=now
@@ -869,6 +895,40 @@ class MetricCandidateAgent:
             purpose="answer", result_hash=result_hash(rows), row_count=len(rows),
             duration_ms=duration_ms, trace_id=trace_id,
         ))
+        from skifer.semantic.semantic import SemanticEngine
+
+        evidence = SemanticEvidence(
+            evidence_id=str(uuid.uuid4()),
+            trace_id=trace_id,
+            model_keys=(),
+            metrics=(MetricEvidence(
+                name=candidate.metric_name,
+                model_key=candidate.candidate_id,
+                definition_hash=candidate.fingerprint,
+                source_columns=candidate.columns_used,
+                lineage_status="resolved" if candidate.columns_used else "unresolved",
+                certification="CANDIDATE",
+                candidate_id=candidate.candidate_id,
+            ),),
+            dimensions=tuple(
+                str(column) for column in (proposal.schema_dict.get("aggregate") or {}).get(
+                    "group_by"
+                ) or ()
+            ),
+            normalized_filters=_redacted_filters(proposal.schema_dict),
+            sources=SemanticEngine._source_evidence(
+                _Sources(proposal.tables_used), deps, certifications, policy=policy, mode=mode
+            ),
+            policy=policy,
+            sql_hash=hash_sql(sql),
+            sql_text=None,
+            sql_redacted=True,
+            statement_id=None,
+            compiled_at=compiled_at,
+            executed_at=now,
+            execution_status="succeeded",
+            execution_duration_seconds=duration_seconds,
+        )
         return AgentResponse(
             question=question,
             mode="candidate",
@@ -877,6 +937,7 @@ class MetricCandidateAgent:
             result=FormattedResult(
                 format=ResponseFormat.TABLE, data=frame, title=candidate.metric_name
             ),
+            evidence=evidence,
             candidate_id=candidate.candidate_id,
         )
 
@@ -895,12 +956,31 @@ class MetricCandidateAgent:
 
     # --- entry point -----------------------------------------------------------------
 
+    def _resolved_tracer(self) -> Any:
+        return self._tracer or getattr(self.semantic, "tracer", None) or NoOpTracer()
+
     def ask(
         self,
         question: str,
         *,
         consumer_context: Any = None,
         requester_id: str | None = None,
+    ) -> AgentResponse:
+        """One question, one ``skifer.candidate.build`` span; business output never depends on it."""
+        with configured_span_scope(self._resolved_tracer(), CANDIDATE_SPAN_NAME) as span:
+            trace_id = getattr(span, "trace_id", None)
+            response = self._ask(question, consumer_context, requester_id, trace_id)
+            set_span_attribute(span, "status", response.mode)
+            if response.policy_decision is not None:
+                set_span_attribute(span, "decision", response.policy_decision)
+            evidence = response.evidence
+            if evidence is not None:
+                set_span_attribute(span, "sql_hash", evidence.sql_hash)
+                set_span_attribute(span, "evidence_id", evidence.evidence_id)
+            return response
+
+    def _ask(
+        self, question: str, consumer_context: Any, requester_id: str | None, trace_id: str | None
     ) -> AgentResponse:
         hits = self.index.search(question, k=SEARCH_K)
         if not any(hit.node.kind in ("table", "column") for hit in hits):
@@ -911,7 +991,34 @@ class MetricCandidateAgent:
         outcome = self.propose(question, hits)
         if isinstance(outcome, AgentResponse):
             return outcome
-        return self.answer(question, outcome, requester_id=requester_id)
+        return self.answer(
+            question, outcome, requester_id=requester_id, trace_id=trace_id,
+            consumer_context=consumer_context,
+        )
+
+
+class _Sources:
+    """The ``resolved.sources`` shape ``SemanticEngine._source_evidence`` reads."""
+
+    def __init__(self, sources: tuple[str, ...]):
+        self.sources = sources
+
+
+def _redacted_filters(schema_dict: dict) -> tuple[dict, ...]:
+    """Filter shapes for the evidence: column and operator, never the value."""
+    shapes: list[dict] = []
+
+    def collect(container: Any) -> Any:
+        for shape in _shape_items(container):
+            if "column" in shape:
+                entry = {"column": shape["column"], "operator": shape["operator"]}
+                if "value" in shape:
+                    entry["value"] = "<redacted>"
+                shapes.append(entry)
+        return container
+
+    _walk_filter_locations(copy.deepcopy(schema_dict), collect)
+    return tuple(shapes)
 
 
 def result_hash(rows: list[dict[str, Any]]) -> str:

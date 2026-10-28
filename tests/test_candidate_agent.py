@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -519,20 +520,38 @@ class SpyBackend(FakeBackend):
         return _Frame(self, self.rows)
 
 
+class _Context:
+    def __init__(self, env):
+        self.env = env
+
+    def env_config(self):
+        return self.env
+
+
 class _Core:
-    def __init__(self, backend):
+    def __init__(self, backend, env=None):
         self._backend = backend
+        self._context = _Context(env or {})
 
     def _get_backend(self):
         return self._backend
 
 
-class SpySemantic:
-    def __init__(self, backend):
-        self.core = _Core(backend)
+def SpySemantic(backend, env=None, certification_store=None):
+    """A real SemanticEngine (real certification gate) without a catalogue on disk."""
+    from datetime import datetime, timezone
+    import time
 
-    def _get_model(self, key):
-        raise ValueError(key)
+    from skifer.semantic.semantic import SemanticEngine
+
+    engine = SemanticEngine.__new__(SemanticEngine)
+    engine.core = _Core(backend, env)
+    engine.certification_store = certification_store
+    engine._utc_now = lambda: datetime(2026, 10, 28, 12, tzinfo=timezone.utc)
+    engine._monotonic = time.monotonic
+    engine.certification_warning_count = 0
+    engine._catalog, engine._cache = {}, {}
+    return engine
 
 
 @pytest.fixture
@@ -688,3 +707,186 @@ def candidate_id_for_schema(schema_dict):
 
     parsed = parse_schema(yaml.safe_dump(schema_dict))
     return candidate_id_for(fingerprint_candidate(parameterize_filters(parsed)[0]))
+
+
+# --- S03.4: response, evidence, tracing and certification gate ---------------------------
+
+from skifer.observability.tracing import InMemoryTracer, NoOpTracer  # noqa: E402
+from skifer.semantic.evidence import hash_sql  # noqa: E402
+from skifer.serving._response_serializer import _certification_text  # noqa: E402
+
+CANARY = "ZZCANARY_VALUE_42"
+
+
+def test_response_evidence_is_candidate_v2(store):
+    response, backend, _ = run_agent(store, revenue_by_country())
+    evidence = response.evidence
+    assert evidence.schema_version == "2"
+    [metric] = evidence.metrics
+    assert metric.certification == "CANDIDATE"
+    assert metric.candidate_id == response.candidate_id
+    assert metric.definition_hash == store.get_candidate(response.candidate_id).fingerprint
+    assert evidence.sql_hash == hash_sql(backend.executed[-1])
+    assert evidence.sql_text is None and evidence.sql_redacted is True
+    assert evidence.execution_status == "succeeded"
+    assert [s.dataset for s in evidence.sources] == [ORDERS]
+    payload = evidence.to_dict()
+    assert payload["schema_version"] == "2"
+    assert payload["metrics"][0]["certification"] == "CANDIDATE"
+    text = _certification_text(payload["sources"], payload["metrics"])
+    assert "certifié le" not in text
+
+
+def test_no_filter_value_leaks_anywhere(tmp_path):
+    db = tmp_path / "leak.db"
+    store = SqliteCandidateStore(str(db))
+    tracer = InMemoryTracer()
+    try:
+        payload = revenue_by_country(CANARY, where_groups=[[f"country:in:{CANARY},BE"]])
+        backend = SpyBackend()
+        agent = MetricCandidateAgent(SpySemantic(backend), FakeLLM(payload), sales_graph(), store,
+                                     tracer=tracer)
+        response = agent.ask(f"amount per country for {CANARY}", requester_id="alice")
+        assert response.mode == "candidate"
+        assert CANARY in backend.executed[-1]           # the value does run…
+    finally:
+        store.close()
+    import sqlite3
+
+    connection = sqlite3.connect(str(db))
+    try:
+        tables = [r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        dump = json.dumps([
+            list(row) for table in tables for row in connection.execute(f"SELECT * FROM {table}")
+        ], default=str)
+    finally:
+        connection.close()
+    assert CANARY not in dump                            # …but is never stored,
+    spans = json.dumps([
+        {"name": span.name, "attributes": span.attributes, "events": span.events}
+        for span in tracer.spans
+    ], default=str)
+    assert CANARY not in spans                           # traced,
+    assert CANARY not in json.dumps(response.evidence.to_dict(), default=str)  # or attested.
+
+
+def _business_view(store, response):
+    candidate = store.get_candidate(response.candidate_id).to_dict()
+    for key in ("trace_id", "created_at", "updated_at", "last_requested_at"):
+        candidate.pop(key)
+    runs = [
+        {k: v for k, v in run.to_dict().items()
+         if k not in ("run_id", "trace_id", "duration_ms", "executed_at")}
+        for run in store.list_runs(response.candidate_id)
+    ]
+    return response.mode, response.candidate_id, response.policy_reasons, candidate, runs
+
+
+def test_trace_id_recorded_and_behaviour_tracing_independent(tmp_path):
+    views, trace_ids = [], []
+    for name, tracer in [("noop", NoOpTracer()), ("memory", InMemoryTracer())]:
+        store = SqliteCandidateStore(str(tmp_path / f"{name}.db"))
+        try:
+            agent = MetricCandidateAgent(SpySemantic(SpyBackend()), FakeLLM(revenue_by_country()),
+                                         sales_graph(), store, tracer=tracer)
+            response = agent.ask("amount per country in FR")
+            views.append(_business_view(store, response))
+            candidate = store.get_candidate(response.candidate_id)
+            [run] = store.list_runs(response.candidate_id)
+            trace_ids.append((candidate.trace_id, run.trace_id, response.evidence.trace_id))
+        finally:
+            store.close()
+        if name == "memory":
+            [span] = [s for s in tracer.spans if s.name == CANDIDATE_SPAN_NAME]
+            assert trace_ids[-1] == (span.trace_id,) * 3
+            assert span.attributes["status"] == "candidate"
+    assert trace_ids[0] == (None, None, None)
+    assert views[0] == views[1]
+
+
+def test_tracing_failure_never_changes_the_answer(store):
+    class BrokenTracer:
+        def start_span(self, name, *, attributes=None):
+            raise RuntimeError("exporter down")
+
+    agent = MetricCandidateAgent(SpySemantic(SpyBackend()), FakeLLM(revenue_by_country()),
+                                 sales_graph(), store, tracer=BrokenTracer())
+    response = agent.ask("amount per country in FR")
+    assert response.mode == "candidate"
+    assert store.get_candidate(response.candidate_id).trace_id is None
+
+
+def test_certification_gate_applies_to_candidate_sources(store):
+    backend = SpyBackend()
+    semantic = SpySemantic(backend, env={"semantic_certification_policy": "enforce"})
+    llm = FakeLLM(revenue_by_country())
+    response = MetricCandidateAgent(semantic, llm, sales_graph(), store).ask(
+        "amount per country in FR")
+    assert response.mode == "error"
+    assert response.access_denied is True
+    assert response.policy_decision == "DENY"
+    assert "MISSING" in response.policy_reasons
+    assert ORDERS in response.recommended_action
+    assert backend.executed == []
+    assert store.list_candidates() == []
+
+    warn = SpySemantic(SpyBackend(), env={"semantic_certification_policy": "warn"})
+    response = MetricCandidateAgent(warn, FakeLLM(revenue_by_country()), sales_graph(),
+                                    store).ask("amount per country in FR")
+    assert response.mode == "candidate"
+    assert response.evidence.policy.decision.value == "WARN"
+    assert warn.certification_warning_count == 1
+
+
+# --- real Spark chain: compile_select -> EXPLAIN -> execution ----------------------------
+
+EXAMPLE_DATA = os.path.join(os.path.dirname(__file__), "..", "examples",
+                            "05_rules_join_aggregate", "data")
+
+
+def test_end_to_end_candidate_on_example_data(spark, tmp_path):
+    from skifer.core.spark_backend import SparkBackend
+
+    spark.sql("CREATE DATABASE IF NOT EXISTS plan44_candidates")
+    for name in ("orders", "customers"):
+        (spark.read.option("header", "true").option("inferSchema", "true")
+         .csv(os.path.join(EXAMPLE_DATA, f"{name}.csv"))
+         .write.mode("overwrite").saveAsTable(f"plan44_candidates.{name}"))
+    orders, customers = "plan44_candidates.orders", "plan44_candidates.customers"
+    nodes, edges = [_table(orders, "orders"), _table(customers, "customers and their region")], []
+    for table, columns in [(orders, ["order_id", "customer_id", "amount"]),
+                           (customers, ["customer_id", "customer_name", "region"])]:
+        for column_name in columns:
+            column = _column(table, column_name, column_name.replace("_", " "))
+            nodes.append(column)
+            edges.append(_has_column(table, column))
+    proposal = {"metric_name": "amount_by_region", "metric_description": "Order amount per region",
+                "schema_dict": {
+                    "tables": [{"name": orders, "alias": "o"},
+                               {"name": customers, "alias": "c", "filter": ["region:not_equals:XX"]}],
+                    "join": [{"table_from": ["o", "customer_id"], "table_to": ["c", "customer_id"],
+                              "type": "inner"}],
+                    "aggregate": {"group_by": ["region"],
+                                  "measures": [["amount", "total_amount", "sum"]]}}}
+    backend = SparkBackend(spark=spark, is_local=True)
+    store = SqliteCandidateStore(str(tmp_path / "e2e.db"))
+    try:
+        agent = MetricCandidateAgent(SpySemantic(backend), FakeLLM(proposal),
+                                     KnowledgeIndex(nodes, edges), store)
+        response = agent.ask("total amount per region")
+        assert response.mode == "candidate", response.explanation
+        rows = {r["region"]: r["total_amount"] for r in
+                (row.asDict() for row in response.result.data.collect())}
+        expected = (
+            spark.table(orders).join(spark.table(customers), "customer_id")
+            .groupBy("region").sum("amount").collect()
+        )
+        assert rows == {r["region"]: r["sum(amount)"] for r in expected}
+        candidate = store.get_candidate(response.candidate_id)
+        assert candidate.coherence == {
+            "undeclared_join": [f"{orders}.customer_id={customers}.customer_id"]}
+        [run] = store.list_runs(candidate.candidate_id)
+        assert run.row_count == len(rows) and run.error_type is None
+    finally:
+        store.close()
+        spark.sql("DROP DATABASE IF EXISTS plan44_candidates CASCADE")
