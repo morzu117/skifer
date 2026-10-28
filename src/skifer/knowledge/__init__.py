@@ -15,13 +15,23 @@ from .models import (
     SearchHit,
     SyncReport,
 )
+from .store import (
+    DeltaKnowledgeStore,
+    KnowledgeStore,
+    SqliteKnowledgeStore,
+    default_knowledge_store,
+)
 
 __all__ = [
     "EDGE_KINDS",
     "NODE_KINDS",
     "NODE_STATUSES",
+    "DeltaKnowledgeStore",
     "Edge",
+    "KnowledgeStore",
     "Node",
     "SearchHit",
+    "SqliteKnowledgeStore",
     "SyncReport",
+    "default_knowledge_store",
 ]

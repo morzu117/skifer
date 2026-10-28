@@ -61,6 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closed `NODE_KINDS` / `NODE_STATUSES`, `sha256:v1:` content fingerprint verified at construction),
   `Edge` (id derived from kind, endpoints and join keys, weight in `(0, 1]`), `SearchHit` and
   `SyncReport`. Importing the package loads neither Spark nor `sentence_transformers`.
+- (Plan 44, S02.2) `knowledge.store`: `KnowledgeStore` Protocol, `SqliteKnowledgeStore`
+  (`.skifer_knowledge.db`, git-ignored) and `DeltaKnowledgeStore` (`<catalog>._skifer_knowledge`,
+  tables `knowledge_nodes` / `knowledge_edges`, Change Data Feed on, no column `DEFAULT`) over new
+  named `SparkBackend` primitives `upsert_knowledge_rows` (`MERGE INTO` on the id, rewriting a matched
+  row only when its fingerprint or `removed` flag differs) and `list_knowledge_rows`. Upserts are
+  diffed against stored fingerprints first, so an unchanged node or edge is never sent; removal is a
+  soft delete. `default_knowledge_store(engine)` picks SQLite locally or without a catalog.
 
 ### Fixed
 

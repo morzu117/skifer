@@ -714,6 +714,56 @@ class SparkBackend:
             pass
         return False
 
+    # --- Plan 44: knowledge graph ------------------------------------------------------
+    # The store diffs fingerprints before writing; the MERGE condition is a second
+    # guard so an unchanged row is never rewritten even when it is sent again.
+
+    def upsert_knowledge_rows(
+        self, schema: str, table: str, rows: list[dict], id_column: str
+    ) -> None:
+        """MERGE rows on ``id_column``; a matched row is rewritten only if it changed."""
+        from skifer.core.sql_compiler import quote_fqn, quote_ident
+        from skifer.knowledge.store import TABLE_COLUMNS, delta_columns_ddl, delta_create_table_sql
+
+        if table not in TABLE_COLUMNS:
+            raise ValueError(f"Unknown knowledge table {table!r}.")
+        if not rows:
+            return
+        qualified = f"{quote_fqn(schema)}.{quote_ident(table)}"
+        self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_fqn(schema)}")
+        self._spark.sql(delta_create_table_sql(qualified, table))
+        view_name = f"_skifer_{table}_src"
+        self._spark.createDataFrame(
+            rows, schema=delta_columns_ddl(table)
+        ).createOrReplaceTempView(view_name)
+        key = quote_ident(id_column)
+        self._spark.sql(
+            f"MERGE INTO {qualified} t USING {view_name} s ON t.{key} = s.{key} "
+            "WHEN MATCHED AND (t.fingerprint <> s.fingerprint OR t.removed <> s.removed) "
+            "THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
+        )
+
+    def list_knowledge_rows(self, schema: str, table: str, **filters: str) -> list[dict]:
+        """Equality filters on known columns; an absent table reads as empty."""
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
+        from skifer.knowledge.store import ID_COLUMNS, TABLE_COLUMNS
+
+        if table not in TABLE_COLUMNS:
+            raise ValueError(f"Unknown knowledge table {table!r}.")
+        if not self._spark.catalog.tableExists(f"{schema}.{table}"):
+            return []
+        known = {column for column, _ in TABLE_COLUMNS[table]}
+        clauses = []
+        for column, value in sorted(filters.items()):
+            if column not in known:
+                raise ValueError(f"Unknown column {column!r} for table {table!r}.")
+            clauses.append(f"{quote_ident(column)} = '{escape_sql_string(value)}'")
+        query = f"SELECT * FROM {quote_fqn(schema)}.{quote_ident(table)}"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += f" ORDER BY {quote_ident(ID_COLUMNS[table])}"
+        return [row.asDict(recursive=True) for row in self._spark.sql(query).collect()]
+
     def get_current_user(self) -> str | None:
         try:
             rows = self._spark.sql("SELECT current_user()").collect()
