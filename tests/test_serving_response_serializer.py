@@ -384,3 +384,122 @@ def test_provenance_of_a_single_certified_source_stays_concise():
     assert text.splitlines()[1] == (
         "Provenance : source gold.orders · certifié le 2026-09-04 · fraîcheur 30 s"
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan 44 S00: certification carried by the metric (D4)
+# ---------------------------------------------------------------------------
+
+from dataclasses import replace  # noqa: E402
+
+from skifer.semantic.evidence import MetricEvidence  # noqa: E402
+from skifer.serving._markdown_renderer import hub_response_to_markdown  # noqa: E402
+from skifer.serving._response_serializer import (  # noqa: E402
+    _certification_text,
+    semantic_evidence_to_dict,
+)
+
+_CANDIDATE_ID = "candidate:v1:0123456789abcdef0123456789abcdef"
+
+
+def _metric(**overrides):
+    values = {
+        "name": "total_amount",
+        "model_key": "sales.orders",
+        "definition_hash": "definition-1",
+        "source_columns": ("gold.fact_orders.amount",),
+    }
+    values.update(overrides)
+    return MetricEvidence(**values)
+
+
+def _evidence_with(metrics=(), **source_overrides):
+    base = _evidence()
+    source = replace(base.sources[0], **source_overrides)
+    return replace(base, metrics=tuple(metrics), sources=(source,))
+
+
+def _kpi_response(evidence):
+    result = FormattedResult(format=ResponseFormat.KPI, data=None, kpi_value=42)
+    return AgentResponse(question="q", mode="query", result=result, evidence=evidence)
+
+
+def test_candidate_metric_on_certified_sources_is_not_announced_certified():
+    evidence = _evidence_with(
+        metrics=(_metric(), _metric(name="n", certification="CANDIDATE", candidate_id=_CANDIDATE_ID))
+    )
+    assert evidence.sources[0].certification_status == "CERTIFIED"
+
+    text = hub_response_to_text(_kpi_response(evidence))
+
+    assert "certifié le" not in text
+    assert "métrique non certifiée (candidate 0123456789ab)" in text
+
+    two = _evidence_with(
+        metrics=(
+            _metric(certification="CANDIDATE", candidate_id=_CANDIDATE_ID),
+            _metric(name="n", certification="CANDIDATE", candidate_id="candidate:v1:ff"),
+        )
+    )
+    assert "2 métriques non certifiées" in hub_response_to_text(_kpi_response(two))
+    assert "certifié le" not in hub_response_to_text(_kpi_response(two))
+
+
+@pytest.mark.parametrize(
+    ("source_overrides", "expected"),
+    [
+        ({}, "Provenance : source gold.fact_orders · certifié le 2026-09-04 · fraîcheur 2 h"),
+        (
+            {"certification_status": "UNCERTIFIED"},
+            "Provenance : source gold.fact_orders · certification incomplète : "
+            "gold.fact_orders uncertified · fraîcheur 2 h",
+        ),
+        (
+            {"certified_at": None},
+            "Provenance : source gold.fact_orders · certification inconnue · fraîcheur 2 h",
+        ),
+    ],
+)
+def test_certified_metrics_keep_previous_provenance_text(source_overrides, expected):
+    for metrics in ((), (_metric(),)):
+        evidence = _evidence_with(metrics=metrics, **source_overrides)
+
+        assert hub_response_to_text(_kpi_response(evidence)).splitlines()[-1] == expected
+
+
+def test_text_and_json_agree_on_candidate_metric():
+    evidence = _evidence_with(
+        metrics=(_metric(certification="CANDIDATE", candidate_id=_CANDIDATE_ID),)
+    )
+    response = _kpi_response(evidence)
+
+    payload = semantic_evidence_to_dict(evidence)
+    markdown = hub_response_to_markdown(response)
+    text = hub_response_to_text(response)
+
+    assert payload["metrics"][0]["certification"] == "CANDIDATE"
+    for channel in (markdown, text):
+        assert "non certifiée" in channel
+        assert "certifié le" not in channel
+        assert "certifiée le" not in channel
+
+    certified = _kpi_response(_evidence_with(metrics=(_metric(),)))
+    assert semantic_evidence_to_dict(certified.evidence)["metrics"][0]["certification"] == "CERTIFIED"
+    assert "✅ certifiée le 2026-09-04" in hub_response_to_markdown(certified)
+
+
+def test_v1_evidence_dict_reads_as_certified():
+    v1_metric = {
+        "name": "total_amount",
+        "model_key": "sales.orders",
+        "definition_hash": "definition-1",
+        "source_columns": ["gold.fact_orders.amount"],
+        "lineage_status": "resolved",
+    }
+    v1_source = {
+        "dataset": "gold.fact_orders",
+        "certification_status": "CERTIFIED",
+        "certified_at": "2026-09-04T12:00:00+00:00",
+    }
+
+    assert _certification_text([v1_source], [v1_metric]) == "certifié le 2026-09-04"

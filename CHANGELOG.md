@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SemanticEvidence.to_dict()` allowlist. Evidence `schema_version` and the serving envelope's
   `EVIDENCE_SCHEMA_VERSION` move from `"1"` to `"2"`; every metric the catalogue produces today is
   `CERTIFIED`, so no existing answer changes.
+- (Plan 44, S00.2) The provenance line (`hub_response_to_text`) and the serving Markdown provenance
+  block (`hub_response_to_markdown`) read the metric certification axis: as soon as one metric is
+  `CANDIDATE`, the answer reads "métrique non certifiée (candidate <12-char id>)" (or "N métriques
+  non certifiées"), never "certifié le …", even when every source table is certified. Answers whose
+  metrics are all `CERTIFIED` — and evidence serialized at schema version `"1"` — keep their
+  previous text byte for byte.
 
 ### Fixed
 

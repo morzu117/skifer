@@ -154,7 +154,7 @@ def _provenance_line(evidence: dict[str, Any]) -> str:
         return "Provenance : " + " · ".join(parts)
 
     parts.append(_sources_text(sources))
-    parts.append(_certification_text(sources))
+    parts.append(_certification_text(sources, evidence.get("metrics") or []))
     parts.append(_freshness_text(_oldest_age(sources)))
 
     decision = evidence["policy"]["decision"]
@@ -171,7 +171,37 @@ def _sources_text(sources: list[dict[str, Any]]) -> str:
     return f"source {shown}" if len(names) == 1 else f"{len(names)} sources : {shown}"
 
 
-def _certification_text(sources: list[dict[str, Any]]) -> str:
+_CANDIDATE_ID_PREFIX = "candidate:v1:"
+
+
+def _candidate_metric_text(metrics: list[dict[str, Any]]) -> str | None:
+    """Name the uncertified metrics of an answer, or ``None`` if all are certified.
+
+    A candidate metric computed over certified tables is still not a certified
+    answer (Plan 44, D4): this axis wins over the certification of the sources.
+    An evidence serialized before schema version "2" has no ``certification``
+    key and reads as ``CERTIFIED``.
+    """
+    candidates = [
+        metric for metric in metrics
+        if metric.get("certification", "CERTIFIED") == "CANDIDATE"
+    ]
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        return f"{len(candidates)} métriques non certifiées"
+    candidate_id = candidates[0].get("candidate_id") or ""
+    if candidate_id.startswith(_CANDIDATE_ID_PREFIX):
+        candidate_id = candidate_id[len(_CANDIDATE_ID_PREFIX):]
+    return f"métrique non certifiée (candidate {candidate_id[:12]})"
+
+
+def _certification_text(
+    sources: list[dict[str, Any]], metrics: list[dict[str, Any]] = ()
+) -> str:
+    candidate_text = _candidate_metric_text(list(metrics))
+    if candidate_text is not None:
+        return candidate_text
     uncertified = [
         source for source in sources if source["certification_status"] != "CERTIFIED"
     ]
