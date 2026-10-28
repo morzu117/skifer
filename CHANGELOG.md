@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non certifiées"), never "certifié le …", even when every source table is certified. Answers whose
   metrics are all `CERTIFIED` — and evidence serialized at schema version `"1"` — keep their
   previous text byte for byte.
+- (Plan 44, S01.1) New `skifer.candidates` package: `MetricCandidate`, `CandidateRun`,
+  `CertificationEvent` and `ReferenceQuestion` frozen dataclasses, validated at construction
+  (aware datetimes, closed states/event types/purposes/families, `request_count >= 1`,
+  `stability_score` in `[0, 1]`, SQL-safe `metric_name`, error recorded by class name only),
+  serialized by field-by-field allowlist with symmetric `*_from_row` readers.
+  `check_transition()` enforces the closed state machine; `None → candidate` is the only creation.
 
 ### Fixed
 
