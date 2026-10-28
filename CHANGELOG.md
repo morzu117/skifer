@@ -204,6 +204,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, S09.1) Reference question set — `skifer.candidates.reference`. `bootstrap_from_models`
+  builds family A from the semantic catalogue with frozen templates (`TEMPLATES_FR`,
+  `REFERENCE_SET_VERSION = "v1"`): one question per (label | synonym) and template, the dimension
+  being the model's first one; `question_id` is the `sha256:v1:` of the question and its expected
+  answer, so two bootstraps give the same ids and the second writes nothing. No LLM is involved.
+  `on_certified` (called by the `semantic sync --promote` hook) adds a family A question on the
+  certified metric; `on_rejected` (called by `CandidateService.reject`) adds a family C `refuse`
+  question when the candidate's coherence failed — both best-effort, a failing hook logs its class
+  name and never fails the decision. `add_reference` imports a human-verified question and refuses
+  an expected answer without exactly its family's keys. CLI:
+  `skifer candidates reference bootstrap | add --family --question --expected-file | list
+  [--family] [--json]` (`0` ok · `1` technical · `2` usage, naming the expected key).
 - (Plan 44, S08.2) `KnowledgeIndex.search(..., mode="bm25" | "dense" | "hybrid")` — `bm25` stays
   the default (S02 tests unchanged). `dense` ranks by cosine to the query vector, `hybrid` is the
   reciprocal rank fusion of the BM25 and dense rankings; both need an embedder injected with

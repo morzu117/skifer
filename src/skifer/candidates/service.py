@@ -404,7 +404,7 @@ class CandidateService:
         evidence: dict | None = None, version: str | None = None, **changes: Any,
     ) -> MetricCandidate:
         now = self._now()
-        self.store.append_event(CertificationEvent(
+        self.store.append_event(event := CertificationEvent(
             event_id=uuid.uuid4().hex, metric_id=candidate.candidate_id,
             metric_name=candidate.metric_name, event_type=new_state,
             previous_state=candidate.state, new_state=new_state, decided_by=identity,
@@ -414,6 +414,10 @@ class CandidateService:
         ))
         updated = replace(candidate, state=new_state, reviewer=identity, updated_at=now, **changes)
         self.store.upsert_candidate(updated)
+        if new_state == "rejected":  # Plan 44, S09: an incoherent rejection feeds family C
+            from .reference import on_rejected, run_hook
+
+            run_hook(on_rejected, event, self.store)
         return updated
 
     def _validator(self) -> Any:
