@@ -14,15 +14,18 @@ both levels publish the same SQL.
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass, replace
+from datetime import datetime
 import re
-from typing import Any
+from typing import Any, Callable
+import uuid
 
 from skifer.core.ir import parse_to_ir
 from skifer.core.sql_compiler import compile_select, sql_literal
 from skifer.semantic.evidence import hash_sql
 from skifer.semantic.metric_views import MetricViewTranslationError, metric_view_ddl
 
-from .models import MetricCandidate
+from .models import ALLOWED_TRANSITIONS, CandidateRun, CertificationEvent, MetricCandidate
 
 # S05.1 / risk R1 — verified live on sts_demo_catalog (Pro/Serverless warehouse,
 # 2026-10-28): a metric view accepts a view as its `source`, MEASURE() reads it
@@ -35,6 +38,11 @@ CANDIDATES_SCHEMA_SUFFIX = "_candidates"
 CANDIDATE_TAG_KEY = "certification"
 CANDIDATE_TAG_VALUE = "CANDIDATE"
 METRIC_VIEW_SUFFIX = "_metrics"
+VALIDATOR_DECIDED_BY = "agent:validator_v1"
+SHORTCUT_WEIGHT = 0.8
+LOCAL_METRIC_VIEW_NOTE = (
+    "metric view skipped: metric views only exist in Unity Catalog (catalog: null)"
+)
 
 _PLACEHOLDER = re.compile(r"\{\{\s*p\d+\s*\}\}")
 # A measure is re-aggregated by the metric view over the already grouped view:
@@ -214,3 +222,172 @@ def tag_ddl(object_fqn: str) -> str:
         f"ALTER VIEW {object_fqn} SET TAGS "
         f"({sql_literal(CANDIDATE_TAG_KEY)} = {sql_literal(CANDIDATE_TAG_VALUE)})"
     )
+
+
+def level1_ddl(candidate: MetricCandidate, catalog: str | None, schema: str) -> tuple[str, ...]:
+    """Every level 1 statement, in order: schema, view, [metric view], tags.
+
+    All of them are built before any runs, so a ``MetricViewTranslationError``
+    leaves nothing half published. Without a catalog there is no Unity Catalog:
+    no metric view and no tags, only the Spark SQL view.
+    """
+    target_schema = ".".join(
+        f"`{part}`" for part in ([catalog] if catalog else []) + [candidates_schema(schema)]
+    )
+    view = level1_view_fqn(candidate, catalog, schema)
+    statements = [f"CREATE SCHEMA IF NOT EXISTS {target_schema}", level1_view_ddl(
+        candidate, catalog, schema)]
+    if not catalog:
+        return tuple(statements)
+    tagged = [view]
+    if LEVEL1_PUBLISHES_METRIC_VIEW:
+        statements.append(level1_metric_view_ddl(candidate, catalog, schema))
+        tagged.append(level1_metric_view_fqn(candidate, catalog, schema))
+    statements.extend(tag_ddl(fqn) for fqn in tagged)
+    return tuple(statements)
+
+
+def promote_level1(
+    candidate: MetricCandidate, *, backend: Any, catalog: str | None, schema: str,
+    dry_run: bool = False,
+) -> tuple[str, ...]:
+    """Emit the level 1 DDL through ``backend.execute_sql``; ``dry_run`` only returns it."""
+    statements = level1_ddl(candidate, catalog, schema)
+    if not dry_run:
+        for statement in statements:
+            backend.execute_sql(statement)
+    return statements
+
+
+def _unquoted(fqn: str) -> str:
+    return fqn.replace("`", "")
+
+
+def level1_index_entries(candidate: MetricCandidate) -> tuple[Any, list]:
+    """The ``metric`` node S03 finds again, and one ``shortcut`` edge per join."""
+    from skifer.knowledge.models import Edge, Node
+
+    text = " ".join(
+        part for part in (candidate.metric_description, candidate.origin_question) if part
+    )
+    node = Node.build(kind="metric", fqn=f"cand:{candidate.metric_name}",
+                      label=candidate.metric_name, text=text, status="candidate",
+                      source="candidate")
+    edges = []
+    for left, right, keys in candidate.joins_used:
+        left_key, _, right_key = keys.partition("=")
+        edges.append(Edge.build(kind="shortcut", from_id=f"table:{left}", to_id=f"table:{right}",
+                                keys=(left_key, right_key), weight=SHORTCUT_WEIGHT,
+                                source="candidate"))
+    return node, edges
+
+
+@dataclass(frozen=True)
+class PromotionResult:
+    candidate_id: str
+    previous_state: str
+    new_state: str
+    statements: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    error_type: str | None = None
+
+
+def apply_report(
+    report: Any,
+    *,
+    store: Any,
+    backend: Any,
+    catalog: str | None,
+    schema: str,
+    clock: Callable[[], datetime],
+    knowledge_store: Any = None,
+    dry_run: bool = False,
+) -> PromotionResult:
+    """Turn a ``ValidationReport`` into transitions, level 1 DDL and index entries.
+
+    ``pending`` changes nothing. ``needs_review`` writes one event. ``validated``
+    publishes, then writes ``candidate → validated → promoted`` (or only
+    ``validated → promoted`` for a candidate validated by an earlier run whose
+    DDL failed). A DDL failure is a ``promotion`` run with its error class; the
+    candidate keeps its state. ``dry_run`` writes nothing anywhere.
+    """
+    candidate = store.get_candidate(report.candidate_id)
+    if candidate is None:
+        raise KeyError(f"Unknown candidate {report.candidate_id!r}.")
+    state = candidate.state
+    if report.outcome == "pending":
+        return PromotionResult(candidate.candidate_id, state, state)
+    if report.outcome == "needs_review":
+        return _needs_review(candidate, store, clock, report, report.to_dict(), dry_run=dry_run)
+
+    from skifer.semantic.metric_views import MetricViewTranslationError
+
+    try:
+        statements = level1_ddl(candidate, catalog, schema)
+    except MetricViewTranslationError as exc:
+        evidence = {"reason": "metric_view_translation", "message": str(exc),
+                    "report": report.to_dict()}
+        return _needs_review(candidate, store, clock, report, evidence, dry_run=dry_run)
+    notes = () if catalog else (LOCAL_METRIC_VIEW_NOTE,)
+    if dry_run:
+        return PromotionResult(candidate.candidate_id, state, "promoted", statements, notes)
+    try:
+        for statement in statements:
+            backend.execute_sql(statement)
+    except Exception as exc:
+        store.append_run(CandidateRun(
+            run_id=uuid.uuid4().hex, candidate_id=candidate.candidate_id, executed_at=clock(),
+            purpose="promotion", error_type=type(exc).__name__,
+        ))
+        return PromotionResult(candidate.candidate_id, state, state, statements, notes,
+                               error_type=type(exc).__name__)
+
+    now = clock()
+    steps = [("validated", {"outcome": "validated"})] if state == "candidate" else []
+    steps.append(("promoted", report.to_dict()))
+    previous = state
+    for new_state, evidence in steps:
+        _event(store, candidate, previous, new_state, evidence, report, now)
+        previous = new_state
+    published_metric_view = (
+        _unquoted(level1_metric_view_fqn(candidate, catalog, schema))
+        if catalog and LEVEL1_PUBLISHES_METRIC_VIEW else None
+    )
+    store.upsert_candidate(replace(
+        candidate, state="promoted", updated_at=now,
+        published_view=_unquoted(level1_view_fqn(candidate, catalog, schema)),
+        published_metric_view=published_metric_view,
+    ))
+    if knowledge_store is not None:
+        node, edges = level1_index_entries(candidate)
+        knowledge_store.upsert_nodes([node])
+        if edges:
+            knowledge_store.upsert_edges(edges)
+    return PromotionResult(candidate.candidate_id, state, "promoted", statements, notes)
+
+
+def _needs_review(
+    candidate: MetricCandidate, store: Any, clock: Callable[[], datetime], report: Any,
+    evidence: dict, *, dry_run: bool,
+) -> PromotionResult:
+    state = candidate.state
+    if "needs_review" not in ALLOWED_TRANSITIONS[state]:
+        return PromotionResult(candidate.candidate_id, state, state)
+    if not dry_run:
+        now = clock()
+        _event(store, candidate, state, "needs_review", evidence, report, now)
+        store.upsert_candidate(replace(candidate, state="needs_review", updated_at=now))
+    return PromotionResult(candidate.candidate_id, state, "needs_review")
+
+
+def _event(
+    store: Any, candidate: MetricCandidate, previous: str, new_state: str, evidence: dict,
+    report: Any, now: datetime,
+) -> None:
+    store.append_event(CertificationEvent(
+        event_id=uuid.uuid4().hex, metric_id=candidate.candidate_id,
+        metric_name=candidate.metric_name, event_type=new_state, previous_state=previous,
+        new_state=new_state, decided_by=VALIDATOR_DECIDED_BY, justification=None,
+        evidence=evidence, replaced_by_metric=None, replaces_metric=None,
+        semantic_layer_version=report.semantic_layer_version, trace_id=None, event_at=now,
+    ))

@@ -167,6 +167,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reached (state untouched, no event, no query), `needs_review` on instability, else `validated`;
   `semantic_layer_version` is the `sha256:v1:` of `semantic_catalog.yaml` at each judgment.
   `ValidationThresholds` rejects negative thresholds and a stability outside `[0, 1]`.
+- (Plan 44, S05.3) `skifer.candidates.promotion.promote_level1` emits, in order, `CREATE SCHEMA IF NOT
+  EXISTS <schema>_candidates`, the view, the metric view (when `LEVEL1_PUBLISHES_METRIC_VIEW` and a
+  catalog are set) and the `certification = CANDIDATE` tags — never anything outside
+  `<schema>_candidates`. Every statement is built before the first one runs. Without a catalog only
+  the Spark SQL view is created, and the result notes the skipped metric view. `apply_report` turns
+  a `ValidationReport` into its transitions: `candidate → validated → promoted` (the second event by
+  `agent:validator_v1`, evidence = the serialized report), `validated → promoted` for a candidate an
+  earlier run validated, `→ needs_review` with one event (also on a `MetricViewTranslationError`,
+  reason `metric_view_translation`), nothing on `pending`. A failed DDL is recorded as a run of the
+  new purpose `promotion` with its error class, and the candidate keeps its state. A promotion fills
+  `published_view`/`published_metric_view` and adds to the knowledge index a `metric` node of status
+  `candidate` and one `shortcut` edge per join (`source="candidate"`, `weight=0.8`).
 
 ### Fixed
 

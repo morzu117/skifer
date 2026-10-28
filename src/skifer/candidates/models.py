@@ -36,7 +36,7 @@ EVENT_TYPES = (
     "created", "validated", "needs_review", "promoted", "under_review", "demoted",
     "rejected", "replaced", "reactivated", "certification_requested", "certified",
 )
-RUN_PURPOSES = ("answer", "stability", "evaluation")
+RUN_PURPOSES = ("answer", "stability", "evaluation", "promotion")
 REFERENCE_FAMILIES = ("A", "B", "C")
 REFERENCE_SOURCES = ("yaml_bootstrap", "promoted", "rejected", "human")
 DECIDER_PREFIXES = ("human:", "agent:", "system:")
