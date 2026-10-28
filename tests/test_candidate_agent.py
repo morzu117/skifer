@@ -218,3 +218,257 @@ def test_parse_proposal_is_closed(text):
     with pytest.raises(ProposalError):
         parse_proposal(text)
 
+
+
+# --- S03.2: validation and correction loop -------------------------------------------
+
+def revenue_by_country(country="FR", **extra):
+    schema = {
+        "tables": [{"name": ORDERS, "alias": "o", "filter": [f"country:equals:{country}"]}],
+        "aggregate": {"group_by": ["country"], "measures": [["amount", "revenue", "sum"]]},
+    }
+    schema.update(extra)
+    return {"metric_name": "revenue_by_country", "metric_description": "Revenue per country",
+            "schema_dict": schema}
+
+
+def revenue_by_segment():
+    return {"metric_name": "revenue_by_segment", "schema_dict": {
+        "tables": [{"name": ORDERS, "alias": "o"}, {"name": CUSTOMERS, "alias": "c"}],
+        "join": [{"table_from": ["o", "customer_id"], "table_to": ["c", "id"], "type": "left"}],
+        "aggregate": {"group_by": ["segment"], "measures": [["amount", "revenue", "sum"]]},
+    }}
+
+
+def _propose(*responses, semantic=None, question="revenue per country"):
+    llm = FakeLLM(*responses)
+    agent = make_agent(llm=llm)
+    agent.semantic = semantic
+    return agent.propose(question, agent.index.search(question, k=20)), llm
+
+
+def test_valid_schema_dict_is_normalized_and_described():
+    proposal, llm = _propose(revenue_by_country())
+    assert len(llm.calls) == 1
+    assert proposal.metric_name == "revenue_by_country"
+    assert proposal.origin == "schema_dict"
+    assert proposal.tables_used == (ORDERS,)
+    assert proposal.schema_dict["tables"][0]["filter"] == [
+        {"column": "country", "operator": "equals", "value": "FR"}
+    ]
+    assert proposal.residues == () and proposal.coherence == {}
+
+
+def test_correction_loop_recovers_on_second_attempt():
+    invalid = revenue_by_country()
+    invalid["schema_dict"]["aggregate"]["measures"] = [["amount", "revenue", "median"]]
+    proposal, llm = _propose(invalid, revenue_by_country())
+    assert proposal.attempts == 2
+    assert len(llm.calls) == 2
+    assert "median" in llm.calls[1]["user"]
+    assert "rejected" in llm.calls[1]["user"]
+
+
+def test_three_invalid_attempts_refuse():
+    invalid = revenue_by_country()
+    invalid["schema_dict"]["aggregate"]["measures"] = [["amount", "revenue", "median"]]
+    llm = FakeLLM("not json", invalid, {"metric_name": "x"}, revenue_by_country())
+    agent = make_agent(llm=llm)
+    response = agent.propose("revenue", agent.index.search("revenue", k=20))
+    assert response.mode == "candidate_refused"
+    assert response.policy_reasons == (CandidateRefusal.INVALID_AFTER_RETRIES.value,)
+    assert len(llm.calls) == MAX_CORRECTION_ATTEMPTS == 3
+
+
+class _EnvSemantic:
+    def __init__(self, allow_raw_sql):
+        env = {"allow_raw_sql": allow_raw_sql}
+        self.core = type("Core", (), {"_context": type("Ctx", (), {"env_config": lambda s: env})()})()
+
+    def _get_model(self, key):
+        raise ValueError(key)
+
+
+FORBIDDEN = {
+    "sink": (revenue_by_country(sink={"type": "postgres"}), CandidateRefusal.INVALID_AFTER_RETRIES),
+    "business_rules": (revenue_by_country(business_rules=["flag_high_value"]),
+                       CandidateRefusal.INVALID_AFTER_RETRIES),
+    "table_source": ({"metric_name": "m", "schema_dict": {
+        "tables": [{"name": ORDERS, "source": {"type": "csv", "path": "/tmp/x"}}],
+        "keep_all_columns": True}}, CandidateRefusal.INVALID_AFTER_RETRIES),
+    "expr": ({"metric_name": "m", "schema_dict": {
+        "tables": [{"name": ORDERS, "alias": "o"}],
+        "select_final": [["amount", "doubled", ["expr:amount * 2"]]]}},
+        CandidateRefusal.RAW_SQL_REJECTED),
+    "sql_filter": (revenue_by_country(where=["country:sql:1=1"]), CandidateRefusal.RAW_SQL_REJECTED),
+}
+
+
+@pytest.mark.parametrize("allow_raw_sql", [pytest.param(True, id="allow_raw_sql=True"),
+                                           pytest.param(False, id="allow_raw_sql=False")])
+@pytest.mark.parametrize("case", sorted(FORBIDDEN))
+def test_forbidden_keys_and_raw_sql_rejected(case, allow_raw_sql):
+    payload, code = FORBIDDEN[case]
+    response, llm = _propose(payload, payload, payload, semantic=_EnvSemantic(allow_raw_sql))
+    assert response.mode == "candidate_refused"
+    assert response.policy_reasons == (code.value,)
+    assert len(llm.calls) == 3
+
+
+def test_unknown_table_refused_before_compile(monkeypatch):
+    import skifer.agentic.candidate_agent as module
+
+    compiled = []
+    monkeypatch.setattr(module, "parse_schema", lambda *a, **k: compiled.append(a))
+    payload = {"metric_name": "m", "schema_dict": {"tables": [{"name": "main.secret.salaries"}]}}
+    response, llm = _propose(payload, payload, payload)
+    assert response.policy_reasons == (CandidateRefusal.UNKNOWN_TABLE.value,)
+    assert "main.secret.salaries" in response.explanation
+    assert compiled == []
+
+
+def test_join_with_declared_edge_is_accepted_and_recorded():
+    proposal, _ = _propose(revenue_by_segment())
+    assert proposal.joins_used == ((ORDERS, CUSTOMERS, "customer_id=id"),)
+    assert proposal.tables_used == (CUSTOMERS, ORDERS)
+    assert proposal.coherence == {}
+
+
+def test_undeclared_join_with_keys_is_kept_in_coherence():
+    payload = revenue_by_segment()
+    payload["schema_dict"]["join"][0]["table_to"] = ["c", "segment"]
+    proposal, _ = _propose(payload)
+    assert proposal.coherence == {"undeclared_join": [f"{ORDERS}.customer_id={CUSTOMERS}.segment"]}
+
+
+@pytest.mark.parametrize("join", [
+    {"table_from": "o", "table_to": "c", "type": "cross"},
+    {"table_from": "o", "table_to": "c"},
+])
+def test_join_without_key_is_refused_without_retry(join):
+    payload = revenue_by_segment()
+    payload["schema_dict"]["join"] = [join]
+    response, llm = _propose(payload, revenue_by_segment())
+    assert response.policy_reasons == (CandidateRefusal.JOIN_WITHOUT_KEY.value,)
+    assert len(llm.calls) == 1
+
+
+# --- sql path through the Plan 43 mapper ----------------------------------------------
+
+
+def test_sql_answer_is_mapped_never_executed_as_text():
+    pytest.importorskip("sqlglot")
+    sql = f"SELECT country, SUM(amount) AS revenue FROM {ORDERS} WHERE country = 'FR' GROUP BY country"
+    proposal, _ = _propose({"metric_name": "revenue_by_country", "sql": sql})
+    assert proposal.origin == "sql"
+    assert proposal.tables_used == (ORDERS,)
+    assert proposal.schema_dict["aggregate"]["measures"] == [
+        {"source": "amount", "target": "revenue", "func": "sum"}
+    ]
+
+
+def test_lag_is_blocking_residue():
+    pytest.importorskip("sqlglot")
+    lag = {"metric_name": "prev_amount",
+           "sql": f"SELECT order_id, LAG(amount) OVER (ORDER BY order_id) AS prev FROM {ORDERS}"}
+    response, llm = _propose(lag, lag, lag)
+    assert response.policy_reasons == (CandidateRefusal.BLOCKING_RESIDUE.value,)
+    assert "window_function_unsupported" in response.explanation
+    assert len(llm.calls) == 3
+
+
+def test_non_blocking_residue_is_carried_by_the_proposal():
+    pytest.importorskip("sqlglot")
+    sql = (f"SELECT country, SUM(amount) AS revenue FROM {ORDERS} "
+           "WHERE country NOT IN ('FR', 'BE') GROUP BY country")
+    proposal, _ = _propose({"metric_name": "revenue_outside", "sql": sql})
+    assert [r["code"] for r in proposal.residues] == ["not_in_nullable_pitfall"]
+    assert all(r["blocking"] is False for r in proposal.residues)
+
+
+def test_sql_path_disabled_without_analyzer_extra(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "sqlglot", None)
+    sql_answer = {"metric_name": "m", "sql": f"SELECT country FROM {ORDERS}"}
+    response, llm = _propose(sql_answer, sql_answer, sql_answer)
+    assert response.policy_reasons == (CandidateRefusal.SQL_PATH_UNAVAILABLE.value,)
+    proposal, _ = _propose(sql_answer, revenue_by_country())
+    assert proposal.origin == "schema_dict" and proposal.attempts == 2
+
+
+# --- fanout -------------------------------------------------------------------------
+
+LINES = "main.sales.order_lines"
+
+
+class _ModelSemantic:
+    def __init__(self, models):
+        self.models = models
+        self.loaded = []
+
+    def _get_model(self, key):
+        self.loaded.append(key)
+        if key not in self.models:
+            raise ValueError(key)
+        return self.models[key]
+
+
+def fanout_world():
+    nodes, edges = [], []
+    for table, columns in [(ORDERS, ["order_id", "amount", "country"]),
+                           (LINES, ["line_id", "order_id", "sku"])]:
+        nodes.append(_table(table))
+        for name in columns:
+            column = _column(table, name)
+            nodes.append(column)
+            edges.append(_has_column(table, column))
+    for model, table, metric in [("orders", ORDERS, "revenue"), ("order_lines", LINES, "lines")]:
+        node = Node.build(kind="metric", fqn=f"{model}.{metric}", label=metric,
+                          status="certified", source="semantic")
+        nodes.append(node)
+        edges.append(Edge.build(kind="belongs_to", from_id=node.node_id, to_id=f"table:{table}",
+                                source="semantic"))
+    semantic = _ModelSemantic({
+        "orders": {"key": "orders", "table": ORDERS, "grain": ["order"],
+                   "entities": [{"name": "order", "type": "primary", "key": "order_id"}],
+                   "relationships": [{"name": "order_lines", "from_entity": "order",
+                                      "to_model": "order_lines", "to_entity": "order",
+                                      "cardinality": "one_to_many", "join_type": "left"}]},
+        "order_lines": {"key": "order_lines", "table": LINES, "grain": ["line"],
+                        "entities": [{"name": "line", "type": "primary", "key": "line_id"},
+                                     {"name": "order", "type": "foreign", "key": "order_id"}]},
+        "unrelated": {"key": "unrelated", "table": "main.other.t"},
+    })
+    return KnowledgeIndex(nodes, edges), semantic
+
+
+def test_fanout_refused_with_planner_message():
+    index, semantic = fanout_world()
+    payload = {"metric_name": "revenue_by_sku", "schema_dict": {
+        "tables": [{"name": ORDERS, "alias": "o"}, {"name": LINES, "alias": "l"}],
+        "join": [{"table_from": ["o", "order_id"], "table_to": ["l", "order_id"]}],
+        "aggregate": {"group_by": ["sku"], "measures": [["amount", "revenue", "sum"]]},
+    }}
+    llm = FakeLLM(payload, revenue_by_country())
+    agent = MetricCandidateAgent(semantic, llm, index, None)
+    response = agent.propose("revenue per sku", agent.index.search("revenue sku", k=20))
+    assert response.policy_reasons == (CandidateRefusal.UNSAFE_FANOUT.value,)
+    assert response.explanation == (
+        "Unsafe fanout: metric grain 'order' crosses one_to_many relationship 'order_lines'."
+    )
+    assert len(llm.calls) == 1
+    assert "unrelated" not in semantic.loaded
+
+
+def test_metric_on_the_many_side_is_not_a_fanout():
+    index, semantic = fanout_world()
+    payload = {"metric_name": "lines_per_country", "schema_dict": {
+        "tables": [{"name": ORDERS, "alias": "o"}, {"name": LINES, "alias": "l"}],
+        "join": [{"table_from": ["o", "order_id"], "table_to": ["l", "order_id"]}],
+        "aggregate": {"group_by": ["country"], "measures": [["line_id", "lines", "count"]]},
+    }}
+    agent = MetricCandidateAgent(semantic, FakeLLM(payload), index, None)
+    proposal = agent.propose("lines", agent.index.search("lines", k=20))
+    assert proposal.joins_used == ((ORDERS, LINES, "order_id=order_id"),)
+    assert proposal.coherence == {}

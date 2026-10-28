@@ -9,12 +9,20 @@ filter value, and a refusal says what is missing instead of guessing.
 
 from __future__ import annotations
 
+import copy
+from dataclasses import dataclass, field
 from enum import Enum
 import json
 import re
 from typing import Any
 
+import yaml
+
+from skifer.candidates.redaction import _shape_items, _walk_filter_locations
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, COLUMN_OPS, FILTER_OPERATORS
+from skifer.core.schema_loader import parse_schema
+from skifer.semantic.domain import parse_relationships
+from skifer.semantic.planner import MetricRef, PlannedJoin, SemanticPlanner, find_unsafe_fanout
 
 from .models import AgentResponse
 
@@ -78,11 +86,43 @@ _RECOMMENDED_ACTIONS = {
 
 
 class ProposalError(ValueError):
-    """A proposal the LLM can correct; the message is sent back for the next attempt."""
+    """A rejected proposal; the message is sent back to the LLM when ``retryable``."""
 
-    def __init__(self, code: CandidateRefusal, message: str):
+    def __init__(self, code: CandidateRefusal, message: str, *, retryable: bool = True):
         super().__init__(message)
         self.code = code
+        self.retryable = retryable
+
+
+@dataclass(frozen=True)
+class ValidatedProposal:
+    """A proposal that passed every check; ``schema_dict`` is ``parse_schema``'s output."""
+
+    metric_name: str
+    metric_description: str | None
+    schema_dict: dict
+    origin: str                                   # "schema_dict" | "sql"
+    residues: tuple[dict, ...]
+    tables_used: tuple[str, ...]
+    joins_used: tuple[tuple[str, str, str], ...]
+    coherence: dict = field(default_factory=dict)
+    attempts: int = 1
+
+
+class _GrainSource:
+    """Lets ``SemanticPlanner._fanout_error`` word its message for a table without a model."""
+
+    def __init__(self, semantic: Any):
+        self._semantic = semantic
+
+    def _get_model(self, model_key: str) -> dict:
+        try:
+            return self._semantic._get_model(model_key)
+        except Exception:
+            return {}
+
+
+_NO_DOMAIN_GRAPH = object()   # the planner is only used to word a fanout message
 
 
 def _system_prompt() -> str:
@@ -272,6 +312,337 @@ class MetricCandidateAgent:
             )
         return message
 
+    # --- validation ------------------------------------------------------------------
+
+    def validate(self, payload: dict[str, Any], *, attempts: int = 1) -> ValidatedProposal:
+        """Steps 4.1–4.8 of the spec; raises ``ProposalError`` on the first failure."""
+        residues: tuple[dict, ...] = ()
+        if "sql" in payload:
+            schema, residues = self._schema_from_sql(payload["sql"])
+            origin = "sql"
+        else:
+            schema, origin = copy.deepcopy(payload["schema_dict"]), "schema_dict"
+        self._check_keys(schema)
+        self._check_tables(schema)
+        self._check_raw_sql(schema)
+        try:
+            parsed = parse_schema(yaml.safe_dump(schema, sort_keys=False, allow_unicode=True))
+        except Exception as exc:
+            raise ProposalError(
+                CandidateRefusal.INVALID_AFTER_RETRIES,
+                f"The schema validator rejected the schema_dict: {type(exc).__name__}: {exc}",
+            ) from None
+        aliases = {
+            key: table["name"]
+            for table in parsed["tables"]
+            for key in (table.get("alias") or table["name"], table["name"])
+        }
+        joins_used, planned, undeclared = self._check_joins(parsed, aliases)
+        self._check_fanout(parsed, aliases, planned)
+        coherence = {"undeclared_join": undeclared} if undeclared else {}
+        return ValidatedProposal(
+            metric_name=payload["metric_name"],
+            metric_description=payload.get("metric_description"),
+            schema_dict=parsed,
+            origin=origin,
+            residues=residues,
+            tables_used=tuple(sorted({table["name"] for table in parsed["tables"]})),
+            joins_used=joins_used,
+            coherence=coherence,
+            attempts=attempts,
+        )
+
+    @staticmethod
+    def _schema_from_sql(sql: str) -> tuple[dict, tuple[dict, ...]]:
+        """Translate a SELECT with the Plan 43 mapper; the SQL text itself never runs."""
+        try:
+            import sqlglot
+            from skifer.analyzer.frontends import split_sql_text
+            from skifer.analyzer.mapper import map_statement
+            from skifer.analyzer.parser import DEFAULT_DIALECT, Statement
+        except ImportError:
+            raise ProposalError(
+                CandidateRefusal.SQL_PATH_UNAVAILABLE,
+                "The 'sql' answer form needs the optional [analyzer] extra, which is not "
+                "installed; answer with a 'schema_dict' instead.",
+            ) from None
+        statements = split_sql_text(sql, "<candidate>")
+        if len(statements) != 1:
+            raise ProposalError(
+                CandidateRefusal.INVALID_AFTER_RETRIES, "The 'sql' form holds exactly one SELECT."
+            )
+        try:
+            ast = sqlglot.parse_one(statements[0].text, dialect=DEFAULT_DIALECT)
+        except Exception as exc:
+            raise ProposalError(
+                CandidateRefusal.INVALID_AFTER_RETRIES,
+                f"The SQL does not parse: {type(exc).__name__}.",
+            ) from None
+        mapped = map_statement(
+            Statement(source_path="<candidate>", line=1, text=statements[0].text, ast=ast)
+        )
+        blocking = mapped.blocking_residues
+        if blocking:
+            names = ", ".join(f"'{residue.code}' ({residue.message})" for residue in blocking)
+            raise ProposalError(
+                CandidateRefusal.BLOCKING_RESIDUE,
+                f"The SQL has no declarative equivalent: blocking residue {names}.",
+            )
+        if mapped.schema_dict is None:
+            raise ProposalError(
+                CandidateRefusal.INVALID_AFTER_RETRIES, "The SQL could not be translated."
+            )
+        residues = tuple(
+            {"code": residue.code, "message": residue.message, "blocking": False}
+            for residue in mapped.residues
+        )
+        return mapped.schema_dict, residues
+
+    @staticmethod
+    def _check_keys(schema: Any) -> None:
+        if not isinstance(schema, dict):
+            raise ProposalError(CandidateRefusal.INVALID_AFTER_RETRIES, "schema_dict must be an object.")
+        forbidden = sorted(set(schema) - ALLOWED_SCHEMA_KEYS)
+        if forbidden:
+            raise ProposalError(
+                CandidateRefusal.INVALID_AFTER_RETRIES,
+                f"Keys not allowed in a candidate: {forbidden}; allowed: "
+                f"{sorted(ALLOWED_SCHEMA_KEYS)}.",
+            )
+        tables = schema.get("tables")
+        if not isinstance(tables, list) or not tables:
+            raise ProposalError(
+                CandidateRefusal.INVALID_AFTER_RETRIES, "'tables' must be a non-empty list."
+            )
+        for table in tables:
+            if not isinstance(table, dict):
+                raise ProposalError(
+                    CandidateRefusal.INVALID_AFTER_RETRIES, "Each table must be an object."
+                )
+            extra = sorted(set(table) - ALLOWED_TABLE_KEYS)
+            if extra:
+                raise ProposalError(
+                    CandidateRefusal.INVALID_AFTER_RETRIES,
+                    f"Table keys not allowed in a candidate: {extra}; allowed: "
+                    f"{sorted(ALLOWED_TABLE_KEYS)}.",
+                )
+
+    def _check_tables(self, schema: dict) -> None:
+        for table in schema["tables"]:
+            name = table.get("name")
+            if not isinstance(name, str) or self.index.get(f"table:{name}") is None:
+                raise ProposalError(
+                    CandidateRefusal.UNKNOWN_TABLE,
+                    f"Table {name!r} is not in the knowledge index; use only the context tables.",
+                )
+
+    @staticmethod
+    def _check_raw_sql(schema: dict) -> None:
+        """No ``expr:`` anywhere and no ``sql`` filter, whatever ``allow_raw_sql`` says."""
+        def walk(value: Any) -> None:
+            if isinstance(value, str):
+                if value.strip().lower().startswith("expr:"):
+                    raise ProposalError(
+                        CandidateRefusal.RAW_SQL_REJECTED,
+                        "'expr:' is not allowed in a candidate; use catalog operations.",
+                    )
+            elif isinstance(value, dict):
+                if any(str(key).strip().lower() == "expr" for key in value):
+                    raise ProposalError(
+                        CandidateRefusal.RAW_SQL_REJECTED,
+                        "'expr' is not allowed in a candidate; use catalog operations.",
+                    )
+                for item in value.values():
+                    walk(item)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(schema)
+        operators: list[str] = []
+
+        def collect(container: Any) -> Any:
+            operators.extend(
+                shape["operator"] for shape in _shape_items(container) if "operator" in shape
+            )
+            return container
+
+        _walk_filter_locations(copy.deepcopy(schema), collect)
+        if "sql" in operators:
+            raise ProposalError(
+                CandidateRefusal.RAW_SQL_REJECTED,
+                "The 'sql' filter operator is not allowed in a candidate.",
+            )
+
+    # --- joins and fanout ------------------------------------------------------------
+
+    def _check_joins(
+        self, parsed: dict, aliases: dict[str, str]
+    ) -> tuple[tuple[tuple[str, str, str], ...], tuple[PlannedJoin, ...], list[str]]:
+        joins_used, planned, undeclared = [], [], []
+        for join in parsed.get("join") or []:
+            left = aliases.get(join.get("table_from"))
+            right = aliases.get(join.get("table_to"))
+            left_key, right_key = join.get("on_from"), join.get("on_to")
+            if (
+                str(join.get("type") or "left").lower() == "cross"
+                or not left_key or not right_key
+                or not isinstance(left_key, str) or not isinstance(right_key, str)
+            ):
+                raise ProposalError(
+                    CandidateRefusal.JOIN_WITHOUT_KEY,
+                    f"The join between {join.get('table_from')!r} and {join.get('table_to')!r} "
+                    "names no key.",
+                    retryable=False,
+                )
+            if left is None or right is None:
+                raise ProposalError(
+                    CandidateRefusal.INVALID_AFTER_RETRIES,
+                    "A join references an alias that is not among the tables.",
+                )
+            joins_used.append((left, right, f"{left_key}={right_key}"))
+            relationship = self._relationship(left, left_key, right, right_key)
+            if relationship is not None:
+                planned.append(relationship)
+                continue
+            if not self._edge_declares(left, left_key, right, right_key):
+                undeclared.append(f"{left}.{left_key}={right}.{right_key}")
+            planned.append(PlannedJoin(
+                relationship_name=f"{left}.{left_key}={right}.{right_key}",
+                source_model=self._model_node(left), target_model=self._model_node(right),
+                source_entity=left_key, target_entity=right_key,
+                source_key_columns=(left_key,), target_key_columns=(right_key,),
+                cardinality="unknown", join_type="left",
+            ))
+        return tuple(joins_used), tuple(planned), undeclared
+
+    def _edge_declares(self, left: str, left_key: str, right: str, right_key: str) -> bool:
+        ends = {(left, left_key), (right, right_key)}
+        for edge in self.index.edges(kinds=["joins", "shortcut"]):
+            if edge.kind == "shortcut" and len(edge.keys) == 2:
+                pair = {
+                    (edge.from_id.split(":", 1)[1], edge.keys[0]),
+                    (edge.to_id.split(":", 1)[1], edge.keys[1]),
+                }
+            elif edge.kind == "joins":
+                pair = {
+                    tuple(edge.from_id.split(":", 1)[1].rsplit(".", 1)),
+                    tuple(edge.to_id.split(":", 1)[1].rsplit(".", 1)),
+                }
+            else:
+                continue
+            if pair == ends:
+                return True
+        return False
+
+    def _semantic_models(self, table: str) -> list[tuple[str, dict]]:
+        """Semantic models over ``table``, found through the index — loaded lazily, one by one."""
+        if self.semantic is None:
+            return []
+        keys = sorted({
+            node.fqn.rsplit(".", 1)[0]
+            for node, _ in self.index.neighbors(
+                f"table:{table}", max_depth=1, kinds=["metric", "dimension"]
+            )
+            if node.source == "semantic"
+        })
+        models = []
+        for key in keys:
+            try:
+                model = self.semantic._get_model(key)
+            except Exception:
+                continue
+            if model.get("table") == table:
+                models.append((key, model))
+        return models
+
+    def _model_node(self, table: str) -> str:
+        models = self._semantic_models(table)
+        return models[0][0] if len(models) == 1 else f"table:{table}"
+
+    def _relationship(
+        self, left: str, left_key: str, right: str, right_key: str
+    ) -> PlannedJoin | None:
+        ends = {(left, left_key), (right, right_key)}
+        for table in (left, right):
+            for key, model in self._semantic_models(table):
+                entity_keys = {
+                    entity.get("name"): entity.get("key") for entity in model.get("entities") or []
+                }
+                for relationship in parse_relationships(model):
+                    target_key = relationship.to_entity.model_key
+                    try:
+                        target = self.semantic._get_model(target_key)
+                    except Exception:
+                        continue
+                    target_entities = {
+                        entity.get("name"): entity.get("key")
+                        for entity in target.get("entities") or []
+                    }
+                    from_column = entity_keys.get(relationship.from_entity.entity_name)
+                    to_column = target_entities.get(relationship.to_entity.entity_name)
+                    if {(table, from_column), (target.get("table"), to_column)} != ends:
+                        continue
+                    return PlannedJoin(
+                        relationship_name=relationship.name,
+                        source_model=key, target_model=target_key,
+                        source_entity=relationship.from_entity.entity_name,
+                        target_entity=relationship.to_entity.entity_name,
+                        source_key_columns=(str(from_column),),
+                        target_key_columns=(str(to_column),),
+                        cardinality=relationship.cardinality,
+                        join_type="inner" if relationship.join_type == "inner" else "left",
+                    )
+        return None
+
+    def _check_fanout(
+        self, parsed: dict, aliases: dict[str, str], planned: tuple[PlannedJoin, ...]
+    ) -> None:
+        aggregate = parsed.get("aggregate")
+        if not planned or not isinstance(aggregate, dict):
+            return
+        tables = sorted({table["name"] for table in parsed["tables"]})
+        metrics = []
+        for measure in aggregate.get("measures") or []:
+            source = measure.get("source") if isinstance(measure, dict) else None
+            if not isinstance(source, str) or source == "*":
+                continue
+            owners = [t for t in tables if self.index.get(f"column:{t}.{source}") is not None]
+            if len(owners) != 1:
+                continue
+            model = self._model_node(owners[0])
+            metrics.append(MetricRef(model_key=model, name=str(measure.get("target")),
+                                     reference=str(measure.get("target"))))
+        risk = find_unsafe_fanout(tuple(metrics), planned)
+        if risk is None:
+            return
+        planner = SemanticPlanner(_GrainSource(self.semantic), graph=_NO_DOMAIN_GRAPH)
+        message = str(planner._fanout_error(risk.metric, risk.join, risk.forward))
+        raise ProposalError(CandidateRefusal.UNSAFE_FANOUT, message, retryable=False)
+
+    # --- correction loop -------------------------------------------------------------
+
+    def propose(self, question: str, hits: list) -> ValidatedProposal | AgentResponse:
+        """At most ``MAX_CORRECTION_ATTEMPTS`` LLM calls; a correctable error is sent back."""
+        context = self.build_context(hits)
+        system = _system_prompt()
+        error: ProposalError | None = None
+        for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+            text = self.llm.complete(
+                system, self.build_user_message(question, context, None if error is None else str(error)),
+                temperature=0.0,
+            )
+            try:
+                return self.validate(parse_proposal(text), attempts=attempt)
+            except ProposalError as exc:
+                if not exc.retryable:
+                    return self._refusal(question, exc.code, str(exc))
+                error = exc
+        return self._refusal(
+            question, error.code,
+            f"No valid metric after {MAX_CORRECTION_ATTEMPTS} attempts; last error: {error}",
+        )
+
     # --- refusals ------------------------------------------------------------------
 
     @staticmethod
@@ -300,7 +671,10 @@ class MetricCandidateAgent:
                 question, CandidateRefusal.NO_TABLE_FOUND,
                 "No indexed table or column matches this question, so no metric can be built.",
             )
-        raise NotImplementedError("Proposal validation and execution are not implemented yet.")
+        outcome = self.propose(question, hits)
+        if isinstance(outcome, AgentResponse):
+            return outcome
+        raise NotImplementedError("Execution and persistence are not implemented yet.")
 
 
 def _metric_entry(node: Any) -> dict[str, Any]:

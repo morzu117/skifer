@@ -94,6 +94,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused `no_table_found` without any LLM call. `AgentResponse` gains `candidate_id` (distinct from
   the existing `candidates`) and the `candidate` / `candidate_refused` modes; `KnowledgeIndex` gains
   `get()` and `edges()`. `tests/fakes/fake_llm.py` adds a scripted, network-free `FakeLLM`.
+- (Plan 44, S03.2) `MetricCandidateAgent.validate()` / `propose()`: closed-JSON proposal checked in
+  order — the `sql` form goes through the Plan 43 mapper (a blocking residue such as
+  `window_function_unsupported` is refused `blocking_residue`; non-blocking residues are kept; without
+  the `[analyzer]` extra the form is refused `sql_path_unavailable` while `schema_dict` keeps working),
+  keys outside `ALLOWED_SCHEMA_KEYS` / table keys other than `name`/`alias`/`filter`/`filter_groups`,
+  tables absent from the knowledge index (`unknown_table`), `expr:` and the `sql` filter operator
+  (`raw_sql_rejected`, whatever `allow_raw_sql` says), then `parse_schema`. Those errors go back to the
+  LLM, at most 3 calls; the last error's code is the refusal. A join without keys (or `cross`) is
+  refused `join_without_key`; a keyed join matching no `joins`/`shortcut` edge nor semantic
+  relationship is accepted and noted `undeclared_join` in `coherence`. Cardinalities come from the
+  `relationships` of the semantic models over the joined tables (loaded lazily through the index), and
+  `find_unsafe_fanout` refuses a fanout with the planner's own message (`unsafe_fanout`).
 
 ### Fixed
 
