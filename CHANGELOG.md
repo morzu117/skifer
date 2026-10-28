@@ -189,6 +189,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `candidates_stability_runs`, `candidates_min_stability`) and are validated when `config.yaml`
   loads: a negative count, `candidates_stability_runs < 1` or a stability outside `[0, 1]` is an
   error.
+- (Plan 44, S06.1) `skifer.candidates.service.CandidateService` is the single implementation of a
+  human decision on a candidate: `list`, `show` (an allowlisted `CandidateView` with the criteria of
+  the last validation report, the same for `display()` and `--json`), `history` (chronological,
+  events sharing a timestamp ordered by their state chain), `reject` (`candidate`/`validated`/
+  `needs_review` → `rejected`) and `review` (`promoted` → `under_review`, with an optional signal).
+  Typed errors name the next action: `UnknownCandidateError`, `StateConflictError` for a forbidden
+  transition, `StaleCandidateError` when the semantic layer changed since the last validation
+  (never for `reject`), `DeciderIdentityError`. The decider is `human:<HMAC pseudonym>` — without
+  `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
+  `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
+  also stores the measured `stability_score` on the candidate.
 
 ### Fixed
 

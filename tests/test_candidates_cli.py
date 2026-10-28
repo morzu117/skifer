@@ -96,6 +96,7 @@ def test_validate_promotes_and_prints_json(world, capsys):
     assert (row["outcome"], row["previous_state"], row["new_state"]) == (
         "validated", "candidate", "promoted")
     assert store.get_candidate(candidate.candidate_id).state == "promoted"
+    assert store.get_candidate(candidate.candidate_id).stability_score == 1.0
     assert any(sql.startswith("CREATE OR REPLACE VIEW `semantic_candidates`")
                for sql in backend.executed)
     assert row["notes"] == ["metric view skipped: metric views only exist in Unity Catalog "

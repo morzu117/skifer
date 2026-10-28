@@ -479,6 +479,13 @@ class ConfigurationManager:
                     if "candidate_fallback" in env_config:
                         candidate_fallback_mode(env_config, env_name=env_name)
                     candidate_validation_thresholds(env_config, env_name=env_name)
+                    if "candidates_decider_identity" in env_config:
+                        identity = env_config["candidates_decider_identity"]
+                        if identity not in {"hmac", "plain"}:
+                            raise ValueError(
+                                "Invalid candidates_decider_identity for environment "
+                                f"'{env_name}': {identity!r}. Expected 'hmac' or 'plain'."
+                            )
                     if "candidates_store_questions" in env_config:
                         mode = env_config["candidates_store_questions"]
                         if mode not in {"full", "redacted"}:

@@ -314,6 +314,11 @@ def apply_report(
     candidate = store.get_candidate(report.candidate_id)
     if candidate is None:
         raise KeyError(f"Unknown candidate {report.candidate_id!r}.")
+    measured = report.criterion("stability").reasons[0] if hasattr(report, "criterion") else {}
+    if measured.get("code") == "min_stability" and not dry_run:
+        # The score is the candidate's, whatever the outcome: arbitration shows it.
+        candidate = replace(candidate, stability_score=float(measured["observed"]))
+        store.upsert_candidate(candidate)
     state = candidate.state
     if report.outcome == "pending":
         return PromotionResult(candidate.candidate_id, state, state)
