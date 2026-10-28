@@ -10,10 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import re
 from typing import Any
+
+from .redaction import fingerprint_normal_form
 
 
 CANDIDATE_STATES = (
@@ -164,6 +167,27 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+def fingerprint_candidate(schema_dict: dict) -> str:
+    """``sha256:v1:`` fingerprint of a candidate's structure.
+
+    Order that carries no meaning (tables by alias, a table's filters, groups,
+    ``group_by``, measures by target) is sorted, every filter value becomes
+    ``"?"`` and presentation keys (``dev_limit``, ``description``) are dropped:
+    two questions differing only by a filter value are the same metric.
+    """
+    form = fingerprint_normal_form(schema_dict, canonical_json)
+    digest = hashlib.sha256(canonical_json(form).encode("utf-8")).hexdigest()
+    return f"{HASH_PREFIX}{digest}"
+
+
+def candidate_id_for(fingerprint: str) -> str:
+    """Content-derived candidate identifier: ``candidate:v1:<sha256(fingerprint)>``."""
+    if not isinstance(fingerprint, str) or not fingerprint.startswith(HASH_PREFIX):
+        raise ValueError(f"fingerprint must start with {HASH_PREFIX!r}; got {fingerprint!r}.")
+    digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+    return f"{CANDIDATE_ID_PREFIX}{digest}"
+
+
 # --- row decoding helpers -----------------------------------------------------------
 
 
@@ -245,6 +269,10 @@ class MetricCandidate:
         _json_dict(m, "schema_dict", self.schema_dict)
         _prefixed(m, "sql_hash", self.sql_hash, (HASH_PREFIX,))
         _prefixed(m, "fingerprint", self.fingerprint, (HASH_PREFIX,))
+        if self.fingerprint != fingerprint_candidate(self.schema_dict):
+            raise _fail(m, "fingerprint", "does not match the structure of schema_dict.")
+        if self.candidate_id != candidate_id_for(self.fingerprint):
+            raise _fail(m, "candidate_id", "is not derived from the fingerprint.")
         _string_tuple(m, "tables_used", self.tables_used)
         _string_tuple(m, "columns_used", self.columns_used)
         if not isinstance(self.joins_used, tuple):

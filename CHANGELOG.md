@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `stability_score` in `[0, 1]`, SQL-safe `metric_name`, error recorded by class name only),
   serialized by field-by-field allowlist with symmetric `*_from_row` readers.
   `check_transition()` enforces the closed state machine; `None → candidate` is the only creation.
+- (Plan 44, S01.2) `fingerprint_candidate(schema_dict)` hashes a candidate's structure
+  (`sha256:v1:`, canonical JSON): non-semantic order is sorted (tables by alias, filters, groups,
+  `group_by`, measures by target), every filter value becomes `"?"`, `dev_limit`/`description` are
+  dropped — two questions differing only by a filter value are the same metric.
+  `candidate_id_for()` derives `candidate:v1:<sha256(fingerprint)>`; `MetricCandidate` refuses a
+  fingerprint or id that does not match its `schema_dict`. New `candidates.redaction`:
+  `parameterize_filters()` replaces every value in `tables[].filter`, `filter_groups`, `where`,
+  `where_groups` and `aggregate.having` (string, dict and mapping forms) by `{{ pN }}` and returns
+  the values separately for an immediate re-run only; a raw `sql` filter is refused.
+  `question_hash()` (NFKC, case-folded, whitespace-collapsed) and `requester_pseudonym()` (delegates
+  to the tracing `TraceAttributePolicy`, `None` without an HMAC secret).
 
 ### Fixed
 

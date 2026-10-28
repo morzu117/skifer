@@ -14,11 +14,14 @@ from .models import (
     MetricCandidate,
     ReferenceQuestion,
     candidate_from_row,
+    candidate_id_for,
     check_transition,
     event_from_row,
+    fingerprint_candidate,
     reference_from_row,
     run_from_row,
 )
+from .redaction import parameterize_filters, question_hash, requester_pseudonym
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
@@ -29,8 +32,13 @@ __all__ = [
     "MetricCandidate",
     "ReferenceQuestion",
     "candidate_from_row",
+    "candidate_id_for",
     "check_transition",
     "event_from_row",
+    "fingerprint_candidate",
+    "parameterize_filters",
+    "question_hash",
     "reference_from_row",
+    "requester_pseudonym",
     "run_from_row",
 ]

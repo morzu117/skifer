@@ -15,14 +15,18 @@ from skifer.candidates.models import (
     MetricCandidate,
     ReferenceQuestion,
     candidate_from_row,
+    candidate_id_for,
     check_transition,
     event_from_row,
+    fingerprint_candidate,
     reference_from_row,
     run_from_row,
 )
 
 NOW = datetime(2026, 10, 28, 12, tzinfo=timezone.utc)
-CANDIDATE_ID = "candidate:v1:" + "a" * 64
+SCHEMA = {"tables": [{"name": "gold.orders", "alias": "o"}]}
+FINGERPRINT = fingerprint_candidate(SCHEMA)
+CANDIDATE_ID = candidate_id_for(FINGERPRINT)
 HASH = "sha256:v1:" + "b" * 64
 
 
@@ -33,9 +37,9 @@ def make_candidate(**overrides) -> MetricCandidate:
         metric_description="Revenue per region",
         origin_question="What is the revenue per region?",
         origin_question_hash=HASH,
-        schema_dict={"tables": [{"name": "gold.orders", "alias": "o"}]},
+        schema_dict=SCHEMA,
         sql_hash=HASH,
-        fingerprint=HASH,
+        fingerprint=FINGERPRINT,
         tables_used=("gold.orders",),
         columns_used=("gold.orders.amount", "gold.orders.region"),
         joins_used=(("o", "c", "customer_id"),),
