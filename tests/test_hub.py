@@ -353,3 +353,189 @@ def test_llm_classify_intent_system_prompt_lists_only_configured_intents():
     assert "lineage" not in system_prompt
     assert "builder" not in system_prompt
     assert "dictionary" not in system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Plan 44 S04 — candidate fallback routing (off | shadow | on)
+# ---------------------------------------------------------------------------
+
+import dataclasses  # noqa: E402
+import json  # noqa: E402
+
+from skifer.agentic.hub import SHADOW_CANDIDATE_NOTE, _should_fallback  # noqa: E402
+from skifer.serving._response_serializer import hub_response_to_text  # noqa: E402
+
+CANDIDATE_ID = "candidate:v1:" + "ab" * 32
+
+
+class _EnvSemantic:
+    """Only what the hub reads: the active environment's configuration."""
+
+    def __init__(self, **env):
+        self.env = env
+
+    def _env_config(self):
+        return dict(self.env)
+
+
+def _candidate_response(question, **_kwargs):
+    return AgentResponse(question=question, mode="candidate", candidate_id=CANDIDATE_ID,
+                         explanation="Revenue per segment")
+
+
+def _fallback_hub(genbi_response, mode=None, agent=None):
+    genbi = MagicMock()
+    genbi.ask.side_effect = lambda q, **kw: dataclasses.replace(genbi_response, question=q)
+    env = {} if mode is None else {"candidate_fallback": mode}
+    agent = agent if agent is not None else MagicMock()
+    hub = AgenticHub(semantic_engine=_EnvSemantic(**env), genbi_agent=genbi,
+                     candidate_agent=agent)
+    return hub, genbi, agent
+
+
+GENBI_ANSWERS = {
+    "query": AgentResponse(question="", mode="query", explanation="ok"),
+    "view": AgentResponse(question="", mode="view", result="cat.sch.v"),
+    "ambiguous": AgentResponse(question="", mode="ambiguous", candidates=["a", "b"]),
+    "error": AgentResponse(question="", mode="error", error="boom"),
+    "needs_clarification_with_suggestion": AgentResponse(
+        question="", mode="needs_clarification", suggestions=["revenue"]),
+    "access_denied": AgentResponse(question="", mode="error", access_denied=True,
+                                   policy_decision="DENY", policy_reasons=("MISSING",)),
+    "access_denied_no_model": AgentResponse(question="", mode="no_model", access_denied=True),
+    "no_model": AgentResponse(question="", mode="no_model", explanation="nothing"),
+    "needs_clarification_empty": AgentResponse(question="", mode="needs_clarification"),
+}
+
+
+@pytest.mark.parametrize(("case", "expected"), [
+    ("query", False), ("view", False), ("ambiguous", False), ("error", False),
+    ("needs_clarification_with_suggestion", False), ("access_denied", False),
+    ("access_denied_no_model", False), ("no_model", True), ("needs_clarification_empty", True),
+])
+def test_should_fallback_matrix(case, expected):
+    assert _should_fallback(GENBI_ANSWERS[case]) is expected
+    hub, _, agent = _fallback_hub(GENBI_ANSWERS[case], mode="on")
+    agent.ask.side_effect = _candidate_response
+    response = hub.ask("chiffre d'affaires par segment client")
+    assert agent.ask.called is expected
+    assert (response.mode == "candidate") is expected
+
+
+def test_should_fallback_ignores_non_genbi_responses():
+    assert _should_fallback(LineageResponse(question="q", mode="trace")) is False
+
+
+@pytest.mark.parametrize("case", sorted(GENBI_ANSWERS))
+def test_off_mode_is_byte_identical(case):
+    baseline_hub, _, _ = _fallback_hub(GENBI_ANSWERS[case])
+    baseline_hub._candidate_agent = None
+    baseline = baseline_hub.ask("chiffre d'affaires par segment client")
+    for hub in (
+        _fallback_hub(GENBI_ANSWERS[case])[0],             # agent present, key absent
+        _fallback_hub(GENBI_ANSWERS[case], mode="off")[0],  # explicit off
+        _fallback_hub(GENBI_ANSWERS[case], mode=False)[0],  # YAML's bare `off`
+    ):
+        response = hub.ask("chiffre d'affaires par segment client")
+        assert dataclasses.asdict(response) == dataclasses.asdict(baseline)
+        assert hub_response_to_text(response) == hub_response_to_text(baseline)
+
+
+def test_off_mode_never_touches_agent_or_store():
+    store = MagicMock()
+    agent = MagicMock()
+    agent.store = store
+    for mode in (None, "off"):
+        hub, _, _ = _fallback_hub(GENBI_ANSWERS["no_model"], mode=mode, agent=agent)
+        hub.ask("chiffre d'affaires par segment client")
+    agent.ask.assert_not_called()
+    assert store.method_calls == []
+
+
+def test_shadow_returns_genbi_and_persists_candidate(tmp_path):
+    from tests.test_candidate_agent import (
+        SpyBackend, SpySemantic, revenue_by_country, sales_graph,
+    )
+    from tests.fakes.fake_llm import FakeLLM
+    from skifer.agentic.candidate_agent import MetricCandidateAgent
+    from skifer.candidates import SqliteCandidateStore
+
+    store = SqliteCandidateStore(str(tmp_path / "shadow.db"))
+    try:
+        agent = MetricCandidateAgent(SpySemantic(SpyBackend()), FakeLLM(revenue_by_country()),
+                                     sales_graph(), store)
+        genbi_answer = GENBI_ANSWERS["no_model"]
+        hub, _, _ = _fallback_hub(genbi_answer, mode="shadow", agent=agent)
+        response = hub.ask("amount per country in FR")
+        [candidate] = store.list_candidates()
+        short_id = candidate.candidate_id.rsplit(":", 1)[-1][:12]
+        expected = dataclasses.replace(
+            genbi_answer, question="amount per country in FR",
+            explanation="nothing " + SHADOW_CANDIDATE_NOTE.format(short_id=short_id),
+        )
+        assert dataclasses.asdict(response) == dataclasses.asdict(expected)
+        assert response.mode == "no_model" and response.candidate_id is None
+        assert len(store.list_runs(candidate.candidate_id)) == 1
+    finally:
+        store.close()
+
+
+def test_shadow_without_candidate_leaves_explanation_untouched():
+    hub, _, agent = _fallback_hub(GENBI_ANSWERS["no_model"], mode="shadow")
+    agent.ask.return_value = AgentResponse(question="q", mode="candidate_refused",
+                                           policy_reasons=("no_table_found",))
+    response = hub.ask("chiffre d'affaires par segment client")
+    assert response.explanation == "nothing"
+
+
+def test_shadow_swallows_agent_failure(caplog):
+    hub, _, agent = _fallback_hub(GENBI_ANSWERS["needs_clarification_empty"], mode="shadow")
+    agent.ask.side_effect = RuntimeError("secret value FR-123 in the message")
+    baseline_hub, _, _ = _fallback_hub(GENBI_ANSWERS["needs_clarification_empty"])
+    baseline_hub._candidate_agent = None
+    with caplog.at_level("WARNING"):
+        response = hub.ask("chiffre d'affaires par segment client")
+    baseline = baseline_hub.ask("chiffre d'affaires par segment client")
+    assert dataclasses.asdict(response) == dataclasses.asdict(baseline)
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("RuntimeError" in message for message in messages) == 1
+    assert not any("FR-123" in message for message in messages)
+
+
+def test_promoted_candidate_is_reused_not_duplicated(tmp_path):
+    from tests.test_candidate_agent import (
+        ORDERS, SpyBackend, SpySemantic, revenue_by_country, sales_graph,
+    )
+    from tests.fakes.fake_llm import FakeLLM
+    from skifer.agentic.candidate_agent import MetricCandidateAgent
+    from skifer.candidates import SqliteCandidateStore
+    from skifer.knowledge import Edge, KnowledgeIndex, Node
+
+    store = SqliteCandidateStore(str(tmp_path / "reuse.db"))
+    try:
+        first = MetricCandidateAgent(SpySemantic(SpyBackend()), FakeLLM(revenue_by_country("FR")),
+                                     sales_graph(), store).ask("amount per country in FR")
+        created = store.get_candidate(first.candidate_id)
+        promoted = dataclasses.replace(created, state="promoted")
+        store.upsert_candidate(promoted)
+
+        base = sales_graph()
+        node = Node.build(kind="metric", fqn=promoted.candidate_id, label=promoted.metric_name,
+                          text="Revenue per country", status="candidate", source="candidate")
+        nodes = [base.get(i) for i in sorted(base._nodes)] + [node]
+        edges = base.edges() + [Edge.build(kind="belongs_to", from_id=node.node_id,
+                                           to_id=f"table:{ORDERS}", source="candidate")]
+        llm = FakeLLM(revenue_by_country("BE"))
+        agent = MetricCandidateAgent(SpySemantic(SpyBackend()), llm,
+                                     KnowledgeIndex(nodes, edges), store)
+        hub, _, _ = _fallback_hub(GENBI_ANSWERS["no_model"], mode="on", agent=agent)
+        response = hub.ask("amount per country in BE")
+
+        assert response.candidate_id == promoted.candidate_id
+        [candidate] = store.list_candidates()
+        assert candidate.request_count == 2 and candidate.state == "promoted"
+        context = llm.calls[0]["user"].split("Context (the only tables you may use):\n", 1)[1]
+        assert list(json.loads(context))[0] == "promoted_candidates"
+        assert json.loads(context)["promoted_candidates"][0]["name"] == promoted.candidate_id
+    finally:
+        store.close()

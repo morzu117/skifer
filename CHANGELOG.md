@@ -127,6 +127,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decision (`access_denied`, `DENY`, `MISSING`) and nothing runs. The whole question runs in one
   `skifer.candidate.build` span whose `trace_id` is recorded on the candidate, its event and its run
   (`None` without tracing); a tracer failure never changes the answer.
+- (Plan 44, S04.1) Hub routing to the candidate fallback, per environment:
+  `candidate_fallback: off | shadow | on` (default `off`; YAML's bare `off`/`on` booleans are read as
+  those words; any other value fails at config load). `AgenticHub` gains `candidate_agent=`; the
+  fallback triggers only when GenBI answers `no_model`, or `needs_clarification` with no suggestion
+  (pure `_should_fallback`) — never on a result, an ambiguity, an error or a policy refusal. `shadow`
+  builds and persists the candidate but returns GenBI's answer with the explanation completed by
+  "Une réponse non certifiée a été préparée (candidate <id court>)." (an agent failure is logged by
+  class name and changes nothing); `on` returns the agent's answer. `build_hub` builds the agent, its
+  knowledge index and its candidate store only when `candidate_fallback` is not `off`.
+  `MetricCandidateAgent` now keeps the context's key order in the prompt, so promoted candidates come
+  first as the S03 contract says (they were sorted after `joins`).
 
 ### Fixed
 

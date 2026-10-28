@@ -13,6 +13,7 @@ Routage déterministe (mots-clés) en priorité, fallback LLM optionnel.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 from typing import TYPE_CHECKING, Any, Union
@@ -46,6 +47,7 @@ from ..observability.tracing import (
 from ..semantic.llm_provider import llm_span_scope
 
 if TYPE_CHECKING:
+    from .candidate_agent import MetricCandidateAgent
     from ..capabilities.invoker import CapabilityInvoker
     from ..semantic.llm_provider import LLMProvider
 
@@ -58,6 +60,26 @@ HubResponse = Union[
     DictionaryResponse,
     BuilderResponse,
 ]
+
+SHADOW_CANDIDATE_NOTE = "Une réponse non certifiée a été préparée (candidate {short_id})."
+
+
+def _should_fallback(response: Any) -> bool:
+    """GenBI found nothing: no model, or an unknown name with nothing close to suggest.
+
+    Every other answer — a result, an ambiguity, an error, and above all a policy
+    refusal — is legitimate and is never routed around by a candidate metric.
+    """
+    if not isinstance(response, AgentResponse) or response.access_denied:
+        return False
+    if response.mode == "no_model":
+        return True
+    return response.mode == "needs_clarification" and not response.suggestions
+
+
+def _short_candidate_id(candidate_id: str) -> str:
+    return candidate_id.rsplit(":", 1)[-1][:12]
+
 
 # ---------------------------------------------------------------------------
 # Keyword sets — déterministe, sans LLM
@@ -137,6 +159,7 @@ class AgenticHub:
         session_title: str = "SkiferHub",
         profile: UserProfile | None = None,
         capability_invoker: "CapabilityInvoker | None" = None,
+        candidate_agent: "MetricCandidateAgent | None" = None,
     ) -> None:
         self._semantic_engine = semantic_engine
         self._llm_provider = llm_provider
@@ -157,6 +180,7 @@ class AgenticHub:
         self._history = SessionHistory(session_title=session_title)
         self._profile: UserProfile | None = profile
         self._capability_invoker = capability_invoker
+        self._candidate_agent = candidate_agent
 
     # ------------------------------------------------------------------
     # Public API
@@ -325,6 +349,42 @@ class AgenticHub:
             logger.warning("LLM intent classification failed", exc_info=True)
         return None
 
+    def _candidate_fallback_mode(self) -> str:
+        """``candidate_fallback`` of the active environment, ``off`` when unknown."""
+        from ..core.config import candidate_fallback_mode
+
+        engine = self._semantic_engine
+        if engine is None and self._genbi is not None:
+            engine = getattr(self._genbi, "semantic", None)
+        reader = getattr(engine, "_env_config", None)
+        env_config = reader() if callable(reader) else None
+        return candidate_fallback_mode(env_config if isinstance(env_config, dict) else None)
+
+    def _candidate_fallback(
+        self, response: HubResponse, question: str, consumer_context: Any
+    ) -> HubResponse:
+        """``off``: GenBI as is. ``shadow``: build the candidate, answer GenBI. ``on``: answer it."""
+        mode = self._candidate_fallback_mode()
+        if mode == "off" or not _should_fallback(response):
+            return response
+        requester_id = getattr(consumer_context, "consumer_id", None)
+        if mode == "on":
+            return self._candidate_agent.ask(
+                question, consumer_context=consumer_context, requester_id=requester_id
+            )
+        try:
+            candidate = self._candidate_agent.ask(
+                question, consumer_context=consumer_context, requester_id=requester_id
+            )
+        except Exception as exc:
+            logger.warning("[AgenticHub] Shadow candidate failed: %s", type(exc).__name__)
+            return response
+        if candidate.mode != "candidate" or not candidate.candidate_id:
+            return response
+        note = SHADOW_CANDIDATE_NOTE.format(short_id=_short_candidate_id(candidate.candidate_id))
+        explanation = f"{response.explanation} {note}" if response.explanation else note
+        return dataclasses.replace(response, explanation=explanation)
+
     def _dispatch(
         self,
         intent: str,
@@ -344,9 +404,14 @@ class AgenticHub:
             )
 
         def _fallback_to_genbi() -> HubResponse:
-            return self._genbi.ask(
+            response = self._genbi.ask(
                 resolved_question,
                 consumer_context=kwargs.get("consumer_context"),
+            )
+            if self._candidate_agent is None:
+                return response
+            return self._candidate_fallback(
+                response, resolved_question, kwargs.get("consumer_context")
             )
 
         # Un intent déterminé par le fallback LLM (question libre, pas de

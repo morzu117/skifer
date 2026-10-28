@@ -216,6 +216,29 @@ def parse_lineage_config(config: dict | None) -> LineageConfig:
     )
 
 
+
+CANDIDATE_FALLBACK_MODES = ("off", "shadow", "on")
+
+
+def candidate_fallback_mode(env_config: dict | None, *, env_name: str | None = None) -> str:
+    """``candidate_fallback`` of an environment: ``off`` (default), ``shadow`` or ``on``.
+
+    YAML 1.1 reads a bare ``off``/``on`` as a boolean, so ``False``/``True`` are
+    accepted as those two words; anything else is a configuration error.
+    """
+    value = (env_config or {}).get("candidate_fallback", "off")
+    if value is False:
+        value = "off"
+    elif value is True:
+        value = "on"
+    if value not in CANDIDATE_FALLBACK_MODES:
+        where = f" for environment '{env_name}'" if env_name else ""
+        raise ValueError(
+            f"Invalid candidate_fallback{where}: {value!r}. Expected one of "
+            f"{list(CANDIDATE_FALLBACK_MODES)}."
+        )
+    return value
+
 class ConfigurationManager:
     """
     Manages the loading and retrieval of configuration from a YAML file.
@@ -414,6 +437,8 @@ class ConfigurationManager:
                                 f"'{env_name}': {autonomy!r}. Expected 'shadow' or "
                                 "'supervised'; guarded is deliberately not configurable in v1."
                             )
+                    if "candidate_fallback" in env_config:
+                        candidate_fallback_mode(env_config, env_name=env_name)
                     if "candidates_store_questions" in env_config:
                         mode = env_config["candidates_store_questions"]
                         if mode not in {"full", "redacted"}:

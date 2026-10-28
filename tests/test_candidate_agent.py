@@ -194,6 +194,10 @@ def test_user_message_carries_question_context_and_previous_error():
     assert '"tables": []' in message
     assert "Unknown keys ['sink']." in message
 
+    context = {"promoted_candidates": [], "tables": [], "joins": []}
+    rendered = MetricCandidateAgent.build_user_message("q", context)
+    assert rendered.index('"promoted_candidates"') < rendered.index('"tables"') < rendered.index('"joins"')
+
 
 # --- closed JSON -------------------------------------------------------------------
 

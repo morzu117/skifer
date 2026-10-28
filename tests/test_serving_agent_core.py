@@ -315,6 +315,53 @@ def test_build_hub_uses_the_llm_endpoint_from_model_config():
     fake_llm.get_llm_provider.assert_called_once_with("databricks", model="my-chat-endpoint")
 
 
+def _build_hub_with_env(env):
+    engine = MagicMock(name="engine")
+    semantic = MagicMock(name="semantic")
+    semantic._env_config.return_value = env
+    fake_core = MagicMock()
+    fake_core.SkiferEngine.return_value = engine
+    fake_semantic_module = MagicMock()
+    fake_semantic_module.SemanticEngine.return_value = semantic
+    fake_hub_module = MagicMock()
+    fake_candidate_agent, fake_candidates, fake_knowledge = MagicMock(), MagicMock(), MagicMock()
+    fake_modules = {
+        "skifer.core.core": fake_core,
+        "skifer.observability.certification_store": MagicMock(),
+        "skifer.semantic.llm_provider": MagicMock(),
+        "skifer.semantic.semantic": fake_semantic_module,
+        "skifer.agentic.hub": fake_hub_module,
+        "skifer.agentic.candidate_agent": fake_candidate_agent,
+        "skifer.candidates": fake_candidates,
+        "skifer.knowledge": fake_knowledge,
+    }
+    with patch.dict(sys.modules, fake_modules):
+        build_hub({})
+    return engine, fake_hub_module, fake_candidate_agent, fake_candidates, fake_knowledge
+
+
+@pytest.mark.parametrize("env", [{}, {"candidate_fallback": "off"}, {"candidate_fallback": False}])
+def test_build_hub_skips_candidate_agent_when_off(env):
+    _, hub_module, agent_module, candidates, knowledge = _build_hub_with_env(env)
+    assert "candidate_agent" not in hub_module.AgenticHub.call_args.kwargs
+    assert agent_module.method_calls == [] and not agent_module.MetricCandidateAgent.called
+    assert not candidates.default_candidate_store.called
+    assert not knowledge.default_knowledge_store.called
+    assert not knowledge.KnowledgeIndex.from_store.called
+
+
+@pytest.mark.parametrize("mode", ["shadow", "on"])
+def test_build_hub_builds_candidate_agent_when_enabled(mode):
+    engine, hub_module, agent_module, candidates, knowledge = _build_hub_with_env(
+        {"candidate_fallback": mode}
+    )
+    candidates.default_candidate_store.assert_called_once_with(engine)
+    knowledge.default_knowledge_store.assert_called_once_with(engine)
+    assert hub_module.AgenticHub.call_args.kwargs["candidate_agent"] is (
+        agent_module.MetricCandidateAgent.return_value
+    )
+
+
 # ---------------------------------------------------------------------------
 # business_labels() — presentation only, never fails the answer
 # ---------------------------------------------------------------------------
