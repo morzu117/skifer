@@ -130,6 +130,7 @@ class FakeBackend:
         self._candidate_sql = []  # DDL the real backend would run, for assertions
         self._knowledge_tables = {}  # {(schema, table): {id: row}} — Plan 44 S02
         self._knowledge_writes = []  # [(table, [ids])] — one entry per write call
+        self._knowledge_alters = []  # [(table, (columns,))] — Plan 44 S08 ADD COLUMNS
 
     def _append_certification(self, kind: str, row: dict) -> None:
         if not any(existing.get("event_id", existing.get("definition_hash")) == row.get("event_id", row.get("definition_hash")) for existing in self._certification[kind]):
@@ -262,15 +263,32 @@ class FakeBackend:
         if not rows:
             return
         stored = self._knowledge_tables.setdefault((schema, table), {})
+        self.ensure_knowledge_columns(schema, table)
         written = []
         for row in rows:
             current = stored.get(row[id_column])
-            if current is None or (current["fingerprint"], current["removed"]) != (
-                row["fingerprint"], row["removed"]
+            if current is None or (current["fingerprint"], current["removed"],
+                                   current.get("embedding_model")) != (
+                row["fingerprint"], row["removed"], row.get("embedding_model")
             ):
                 stored[row[id_column]] = dict(row)
                 written.append(row[id_column])
         self._knowledge_writes.append((table, written))
+
+    def ensure_knowledge_columns(self, schema, table):
+        """Same contract as SparkBackend: add the missing columns in place, keep every row."""
+        from skifer.knowledge.store import ADDED_COLUMNS
+
+        stored = self._knowledge_tables.get((schema, table), {})
+        present = set().union(*(row.keys() for row in stored.values())) if stored else None
+        missing = [] if present is None else [
+            column for column in ADDED_COLUMNS.get(table, ()) if column not in present]
+        for row in stored.values():
+            for column in missing:
+                row[column] = None
+        if missing:
+            self._knowledge_alters.append((table, tuple(missing)))
+        return missing
 
     def list_knowledge_rows(self, schema, table, **filters):
         rows = self._knowledge_tables.get((schema, table), {})

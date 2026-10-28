@@ -724,6 +724,7 @@ class SparkBackend:
         """MERGE rows on ``id_column``; a matched row is rewritten only if it changed."""
         from skifer.core.sql_compiler import quote_fqn, quote_ident
         from skifer.knowledge.store import TABLE_COLUMNS, delta_columns_ddl, delta_create_table_sql
+        from skifer.knowledge.store import ADDED_COLUMNS
 
         if table not in TABLE_COLUMNS:
             raise ValueError(f"Unknown knowledge table {table!r}.")
@@ -732,6 +733,7 @@ class SparkBackend:
         qualified = f"{quote_fqn(schema)}.{quote_ident(table)}"
         self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_fqn(schema)}")
         self._spark.sql(delta_create_table_sql(qualified, table))
+        self.ensure_knowledge_columns(schema, table)
         view_name = f"_skifer_{table}_src"
         self._spark.createDataFrame(
             rows, schema=delta_columns_ddl(table)
@@ -739,9 +741,29 @@ class SparkBackend:
         key = quote_ident(id_column)
         self._spark.sql(
             f"MERGE INTO {qualified} t USING {view_name} s ON t.{key} = s.{key} "
-            "WHEN MATCHED AND (t.fingerprint <> s.fingerprint OR t.removed <> s.removed) "
+            "WHEN MATCHED AND (t.fingerprint <> s.fingerprint OR t.removed <> s.removed)"
+            + (" OR NOT (t.embedding_model <=> s.embedding_model)"
+               if table in ADDED_COLUMNS else "") + " "
             "THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
         )
+
+    def ensure_knowledge_columns(self, schema: str, table: str) -> list[str]:
+        """``ALTER TABLE … ADD COLUMNS`` for the columns a pre-S08 table lacks; returns them.
+
+        The table is migrated in place, never recreated: no row is lost.
+        """
+        from skifer.core.sql_compiler import quote_fqn, quote_ident
+        from skifer.knowledge.store import ADDED_COLUMNS, TABLE_COLUMNS, _DELTA_TYPES
+
+        qualified = f"{quote_fqn(schema)}.{quote_ident(table)}"
+        present = {field.lower() for field in self._spark.table(qualified).columns}
+        kinds = dict(TABLE_COLUMNS[table])
+        missing = [column for column in ADDED_COLUMNS.get(table, ()) if column not in present]
+        if missing:
+            columns = ", ".join(f"{quote_ident(column)} {_DELTA_TYPES[kinds[column]]}"
+                                for column in missing)
+            self._spark.sql(f"ALTER TABLE {qualified} ADD COLUMNS ({columns})")
+        return missing
 
     def list_knowledge_rows(self, schema: str, table: str, **filters: str) -> list[dict]:
         """Equality filters on known columns; an absent table reads as empty."""

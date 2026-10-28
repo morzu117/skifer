@@ -459,6 +459,12 @@ def main() -> None:
                                        help="Rule module to import so its rules are indexed (repeatable).")
     knowledge_sync_parser.add_argument("--config", default=None, metavar="PATH",
                                        help="Path to config.yaml, used with --schema.")
+    knowledge_sync_parser.add_argument(
+        "--embed", default=None, metavar="MODEL",
+        help="Also embed new or changed nodes (multilingual-e5-small | bge-m3); "
+             "needs the [knowledge-embeddings] extra.")
+    knowledge_sync_parser.add_argument("--model-cache", default=None, metavar="PATH",
+                                       help="Local model cache; nothing is ever downloaded.")
     knowledge_search_parser = knowledge_subparsers.add_parser(
         "search", help="Find the tables, columns, metrics and rules relevant to a question."
     )
@@ -1028,6 +1034,11 @@ def _knowledge_sync(args, domains, *, store=None, engine=None) -> int:
     from skifer.knowledge.store import SqliteKnowledgeStore, default_knowledge_store
     from skifer.knowledge.sync import KnowledgeSynchronizer
     from skifer.observability.metadata_store import SqliteMetadataStore
+    from skifer.knowledge.embeddings import SUPPORTED_MODELS
+
+    if getattr(args, "embed", None) and args.embed not in SUPPORTED_MODELS:
+        print(f"[knowledge] --embed expects one of {sorted(SUPPORTED_MODELS)}", file=sys.stderr)
+        return KNOWLEDGE_EXIT_USAGE
 
     try:
         if engine is None and domains:
@@ -1037,13 +1048,26 @@ def _knowledge_sync(args, domains, *, store=None, engine=None) -> int:
         if store is None:
             store = default_knowledge_store(engine) if engine is not None else SqliteKnowledgeStore(args.db)
         metadata = SqliteMetadataStore(args.metadata_db) if os.path.exists(args.metadata_db) else None
+        embedder = None
+        if getattr(args, "embed", None):
+            from skifer.knowledge import embeddings
+
+            embedder = embeddings.load_embedder(args.embed, cache_dir=args.model_cache)
         report = KnowledgeSynchronizer(
             store, engine=engine, metadata_store=metadata, domains=domains,
             models_dir=os.path.abspath(args.models_dir),
         ).sync(dry_run=args.dry_run)
+        embedded = None
+        if embedder is not None:
+            embedded = (len(store.nodes_to_embed(embedder.model_name)) if args.dry_run
+                        else embeddings.embed_nodes(store, embedder))
     except Exception as exc:
         print(f"[knowledge] sync failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return KNOWLEDGE_EXIT_ERROR
+    if args.json and embedded is not None:
+        print(json.dumps({**report.to_dict(), "embedded": embedded, "embedding_model": args.embed},
+                         ensure_ascii=False, sort_keys=True))
+        return KNOWLEDGE_EXIT_OK
     if args.json:
         print(json.dumps(report.to_dict(), ensure_ascii=False, sort_keys=True))
     else:
@@ -1052,6 +1076,8 @@ def _knowledge_sync(args, domains, *, store=None, engine=None) -> int:
               f"unchanged={report.unchanged} removed={report.removed}")
         for item in report.unavailable:
             print(f"[knowledge] unavailable: {item}")
+        if embedded is not None:
+            print(f"{prefix}embedded={embedded} model={args.embed}")
     return KNOWLEDGE_EXIT_OK
 
 

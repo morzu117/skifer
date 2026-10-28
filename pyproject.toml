@@ -100,6 +100,11 @@ analyzer = [
     "sqlglot>=25",
 ]
 
+# --- Embeddings denses du knowledge index (Plan 44, S08 ; import strictement paresseux) ---
+knowledge-embeddings = [
+    "sentence-transformers>=3",
+]
+
 # --- API locale (imports strictement paresseux) ---
 api = [
     "fastapi>=0.110",
