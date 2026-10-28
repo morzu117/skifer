@@ -106,6 +106,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relationship is accepted and noted `undeclared_join` in `coherence`. Cardinalities come from the
   `relationships` of the semantic models over the joined tables (loaded lazily through the index), and
   `find_unsafe_fanout` refuses a fanout with the planner's own message (`unsafe_fanout`).
+- (Plan 44, S03.3) `MetricCandidateAgent.answer()`: the only SQL sent to the backend is
+  `compile_select(parse_to_ir(<validated schema>), allow_raw_sql=False)` — first as `EXPLAIN`, then
+  run with `limit(row_limit)` in a worker bounded by `timeout_seconds` (a timeout abandons the worker
+  and is recorded as `TimeoutError`). The validated schema is parameterized before it is stored; the
+  same fingerprint counts one more request (`request_count`, pseudonymized `distinct_requesters`,
+  `last_requested_at`) instead of creating a second candidate, otherwise a `MetricCandidate` in state
+  `candidate` and a `created` event by `agent:candidate_agent_v1` are written. Every answer appends a
+  `CandidateRun(purpose="answer")` whose `result_hash` is the `sha256:v1:` of the rows as sorted
+  canonical JSON. Filter values quoted by the question or by a residue message are replaced by `?`.
+  A failed execution is refused `execution_failed`, recorded as a run carrying only the exception
+  class name, and rejects the candidate if it already existed and may still be rejected.
 
 ### Fixed
 

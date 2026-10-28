@@ -472,3 +472,219 @@ def test_metric_on_the_many_side_is_not_a_fanout():
     proposal = agent.propose("lines", agent.index.search("lines", k=20))
     assert proposal.joins_used == ((ORDERS, LINES, "order_id=order_id"),)
     assert proposal.coherence == {}
+
+
+# --- S03.3: execution and persistence ---------------------------------------------------
+
+import threading  # noqa: E402
+
+from skifer.candidates import SqliteCandidateStore  # noqa: E402
+from skifer.core.ir import parse_to_ir  # noqa: E402
+from skifer.core.schema_loader import parse_schema  # noqa: E402
+from skifer.core.sql_compiler import compile_select  # noqa: E402
+from skifer.observability.tracing import TraceAttributePolicy  # noqa: E402
+from tests.fakes.fake_backend import FakeBackend  # noqa: E402
+
+import yaml  # noqa: E402
+
+ROWS = [{"country": "FR", "revenue": 120.5}]
+
+
+class _Frame:
+    def __init__(self, backend, rows):
+        self.backend, self.rows = backend, rows
+
+    def limit(self, n):
+        self.backend.limits.append(n)
+        return _Frame(self.backend, self.rows[:n])
+
+    def collect(self):
+        return list(self.rows)
+
+
+class SpyBackend(FakeBackend):
+    """Records every SQL text; fails or blocks on demand."""
+
+    def __init__(self, rows=ROWS, *, error=None, block=None):
+        super().__init__()
+        self.executed, self.limits = [], []
+        self.rows, self.error, self.block = rows, error, block
+
+    def execute_sql(self, sql):
+        self.executed.append(sql)
+        if self.block is not None and not sql.startswith("EXPLAIN"):
+            self.block.wait(5)
+        if self.error is not None and not sql.startswith("EXPLAIN"):
+            raise self.error
+        return _Frame(self, self.rows)
+
+
+class _Core:
+    def __init__(self, backend):
+        self._backend = backend
+
+    def _get_backend(self):
+        return self._backend
+
+
+class SpySemantic:
+    def __init__(self, backend):
+        self.core = _Core(backend)
+
+    def _get_model(self, key):
+        raise ValueError(key)
+
+
+@pytest.fixture
+def store(tmp_path):
+    candidate_store = SqliteCandidateStore(str(tmp_path / "candidates.db"))
+    yield candidate_store
+    candidate_store.close()
+
+
+def run_agent(store, *responses, backend=None, question="amount per country in FR", **kwargs):
+    backend = backend or SpyBackend()
+    llm = FakeLLM(*responses)
+    requester_id = kwargs.pop("requester_id", None)
+    agent = MetricCandidateAgent(SpySemantic(backend), llm, sales_graph(), store, **kwargs)
+    return agent.ask(question, requester_id=requester_id), backend, llm
+
+
+def expected_sql(schema_dict):
+    return compile_select(parse_to_ir(parse_schema(yaml.safe_dump(schema_dict))),
+                          allow_raw_sql=False)
+
+
+def test_only_compiled_sql_reaches_backend(store):
+    pytest.importorskip("sqlglot")
+    llm_sql = (f"SELECT country, SUM(amount) AS revenue FROM {ORDERS} "
+               "WHERE country = 'FR' GROUP BY country")
+    response, backend, _ = run_agent(store, {"metric_name": "revenue_by_country", "sql": llm_sql})
+    assert response.mode == "candidate"
+    mapped = {"tables": [{"name": ORDERS, "alias": "orders", "filter": ["country:equals:FR"]}],
+              "aggregate": {"group_by": ["country"],
+                            "measures": [{"source": "amount", "target": "revenue",
+                                          "func": "sum"}]}}
+    compiled = expected_sql(mapped)
+    assert backend.executed == ["EXPLAIN " + compiled, compiled]
+    assert llm_sql not in backend.executed
+
+    response, backend, _ = run_agent(store, revenue_by_country())
+    compiled = expected_sql(revenue_by_country()["schema_dict"])
+    assert backend.executed == ["EXPLAIN " + compiled, compiled]
+
+
+def test_answer_is_bounded_and_persisted_as_candidate(store):
+    rows = [{"country": c, "revenue": float(i)} for i, c in enumerate("ABCDEFGH")]
+    response, backend, _ = run_agent(store, revenue_by_country(), backend=SpyBackend(rows),
+                                     row_limit=3)
+    assert backend.limits == [3]
+    assert response.mode == "candidate" and response.error is None
+    assert response.result.title == "revenue_by_country"
+    candidate = store.get_candidate(response.candidate_id)
+    assert candidate.state == "candidate"
+    assert candidate.request_count == 1
+    assert candidate.tables_used == (ORDERS,)
+    assert candidate.columns_used == (f"{ORDERS}.amount", f"{ORDERS}.country")
+    assert candidate.business_rules_refs == ()
+    [event] = store.list_events(metric_id=response.candidate_id)
+    assert (event.event_type, event.previous_state, event.new_state, event.decided_by) == (
+        "created", None, "candidate", "agent:candidate_agent_v1")
+    [run] = store.list_runs(response.candidate_id)
+    assert run.purpose == "answer" and run.row_count == 3 and run.error_type is None
+    assert run.result_hash.startswith("sha256:v1:")
+
+
+def test_result_hash_ignores_row_order():
+    from skifer.agentic.candidate_agent import result_hash
+
+    a, b = {"x": 1, "y": "a"}, {"y": "b", "x": 2}
+    assert result_hash([a, b]) == result_hash([b, a])
+    assert result_hash([a]) != result_hash([b])
+
+
+def test_same_structure_different_values_dedupes(store):
+    first, _, _ = run_agent(store, revenue_by_country("FR"), question="amount per country in FR")
+    second, _, _ = run_agent(store, revenue_by_country("BE"), question="amount per country in BE")
+    assert first.candidate_id == second.candidate_id
+    [candidate] = store.list_candidates()
+    assert candidate.request_count == 2
+    assert len(store.list_runs(candidate.candidate_id)) == 2
+    assert [e.event_type for e in store.list_events(metric_id=candidate.candidate_id)] == ["created"]
+
+
+def test_distinct_requesters_are_pseudonymized(store):
+    policy = TraceAttributePolicy(user_identity="hmac", hmac_secret="test-secret")
+    run_agent(store, revenue_by_country("FR"), policy=policy, requester_id="alice@corp")
+    run_agent(store, revenue_by_country("BE"), policy=policy, requester_id="bob@corp")
+    run_agent(store, revenue_by_country("DE"), policy=policy, requester_id="alice@corp")
+    [candidate] = store.list_candidates()
+    assert candidate.request_count == 3
+    assert len(candidate.distinct_requesters) == 2
+    assert not any("corp" in r for r in candidate.distinct_requesters)
+    run_agent(store, revenue_by_country("IT"), requester_id="carol@corp")
+    assert len(store.list_candidates()[0].distinct_requesters) == 2
+
+
+def test_non_blocking_residue_kept_on_candidate(store):
+    pytest.importorskip("sqlglot")
+    sql = (f"SELECT country, SUM(amount) AS revenue FROM {ORDERS} "
+           "WHERE country NOT IN ('ZZCANARY', 'BE') GROUP BY country")
+    response, _, _ = run_agent(store, {"metric_name": "revenue_outside", "sql": sql})
+    candidate = store.get_candidate(response.candidate_id)
+    assert [r["code"] for r in candidate.residues] == ["not_in_nullable_pitfall"]
+    assert not candidate.auto_promotable
+
+
+def test_question_values_are_not_stored(store):
+    response, _, _ = run_agent(store, revenue_by_country("ZZCANARY"),
+                               question="amount by country for ZZCANARY please")
+    candidate = store.get_candidate(response.candidate_id)
+    assert candidate.origin_question == "amount by country for ? please"
+    assert "ZZCANARY" not in json.dumps(candidate.to_dict())
+
+
+def test_execution_failure_records_class_name_only(store):
+    error = RuntimeError("AnalysisException near 'ZZCANARY': secret detail")
+    response, _, _ = run_agent(store, revenue_by_country("ZZCANARY"),
+                               backend=SpyBackend(error=error))
+    assert response.mode == "candidate_refused"
+    assert response.policy_reasons == (CandidateRefusal.EXECUTION_FAILED.value,)
+    assert "secret detail" not in response.explanation
+    assert "ZZCANARY" not in response.explanation
+    assert store.list_candidates() == []
+    candidate_id = candidate_id_for_schema(revenue_by_country()["schema_dict"])
+    [run] = store.list_runs(candidate_id)
+    assert run.error_type == "RuntimeError"
+    assert run.result_hash is None and run.row_count is None
+    assert store.list_events(metric_id=candidate_id) == []
+
+
+def test_execution_failure_rejects_an_existing_candidate(store):
+    created, _, _ = run_agent(store, revenue_by_country("FR"))
+    failed, _, _ = run_agent(store, revenue_by_country("BE"),
+                             backend=SpyBackend(error=ValueError("boom")))
+    assert failed.policy_reasons == (CandidateRefusal.EXECUTION_FAILED.value,)
+    candidate = store.get_candidate(created.candidate_id)
+    assert candidate.state == "rejected"
+    assert [e.event_type for e in store.list_events(metric_id=created.candidate_id)] == [
+        "created", "rejected"]
+
+
+def test_execution_timeout_is_a_typed_refusal(store):
+    gate = threading.Event()
+    try:
+        response, _, _ = run_agent(store, revenue_by_country(),
+                                   backend=SpyBackend(block=gate), timeout_seconds=0.05)
+    finally:
+        gate.set()
+    assert response.policy_reasons == (CandidateRefusal.EXECUTION_FAILED.value,)
+    [run] = store.list_runs(candidate_id_for_schema(revenue_by_country()["schema_dict"]))
+    assert run.error_type == "TimeoutError"
+
+
+def candidate_id_for_schema(schema_dict):
+    from skifer.candidates import candidate_id_for, fingerprint_candidate, parameterize_filters
+
+    parsed = parse_schema(yaml.safe_dump(schema_dict))
+    return candidate_id_for(fingerprint_candidate(parameterize_filters(parsed)[0]))

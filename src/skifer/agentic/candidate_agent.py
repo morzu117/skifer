@@ -10,21 +10,43 @@ filter value, and a refusal says what is missing instead of guessing.
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from enum import Enum
+import hashlib
 import json
 import re
+import threading
+import time
 from typing import Any
+import uuid
 
 import yaml
 
-from skifer.candidates.redaction import _shape_items, _walk_filter_locations
+from skifer.candidates.models import (
+    ALLOWED_TRANSITIONS,
+    CandidateRun,
+    CertificationEvent,
+    MetricCandidate,
+    candidate_id_for,
+    fingerprint_candidate,
+)
+from skifer.candidates.redaction import (
+    _shape_items,
+    _walk_filter_locations,
+    parameterize_filters,
+    question_hash,
+    requester_pseudonym,
+)
+from skifer.core.ir import parse_to_ir
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, COLUMN_OPS, FILTER_OPERATORS
 from skifer.core.schema_loader import parse_schema
+from skifer.core.sql_compiler import compile_select
+from skifer.semantic.evidence import hash_sql
 from skifer.semantic.domain import parse_relationships
 from skifer.semantic.planner import MetricRef, PlannedJoin, SemanticPlanner, find_unsafe_fanout
 
-from .models import AgentResponse
+from .models import AgentResponse, FormattedResult, ResponseFormat
 
 
 CANDIDATE_SPAN_NAME = "skifer.candidate.build"
@@ -643,6 +665,221 @@ class MetricCandidateAgent:
             f"No valid metric after {MAX_CORRECTION_ATTEMPTS} attempts; last error: {error}",
         )
 
+    # --- execution -------------------------------------------------------------------
+
+    def compile(self, proposal: ValidatedProposal) -> str:
+        """The only SQL that ever runs: ``compile_select`` of the validated schema."""
+        return compile_select(parse_to_ir(proposal.schema_dict), allow_raw_sql=False)
+
+    def _execute(self, sql: str) -> tuple[Any, list[dict[str, Any]]]:
+        """``EXPLAIN`` then the statement, bounded by ``row_limit`` and ``timeout_seconds``.
+
+        On timeout the worker thread is abandoned, not killed: the caller gets its
+        answer on time and the backend finishes or cancels the job on its own.
+        """
+        backend = self.semantic.core._get_backend()
+        box: dict[str, Any] = {}
+
+        def run() -> None:
+            try:
+                backend.execute_sql("EXPLAIN " + sql)
+                frame = backend.execute_sql(sql).limit(self.row_limit)
+                box["rows"] = [_row_dict(row) for row in frame.collect()]
+                box["frame"] = frame
+            except BaseException as exc:  # re-raised in the caller's thread
+                box["error"] = exc
+
+        worker = threading.Thread(target=run, name="skifer-candidate-execution", daemon=True)
+        worker.start()
+        worker.join(self.timeout_seconds)
+        if worker.is_alive():
+            raise TimeoutError()
+        if "error" in box:
+            raise box["error"]
+        return box["frame"], box["rows"]
+
+    # --- persistence -----------------------------------------------------------------
+
+    def _now(self) -> datetime:
+        return self._clock() if self._clock is not None else datetime.now(timezone.utc)
+
+    def _columns_used(self, proposal: ValidatedProposal) -> tuple[str, ...]:
+        schema = proposal.schema_dict
+        names: set[str] = set()
+
+        def collect(container: Any) -> Any:
+            names.update(shape["column"] for shape in _shape_items(container) if "column" in shape)
+            return container
+
+        _walk_filter_locations(copy.deepcopy(schema), collect)
+        for join in schema.get("join") or []:
+            names.update(str(join[key]) for key in ("on_from", "on_to") if join.get(key))
+        aggregate = schema.get("aggregate") or {}
+        names.update(str(column) for column in aggregate.get("group_by") or [])
+        for measure in aggregate.get("measures") or []:
+            if isinstance(measure, dict) and measure.get("source") not in (None, "*"):
+                names.add(str(measure["source"]))
+        for key in ("select_final", "add_columns"):
+            for item in schema.get(key) or []:
+                source = item.get("source") if isinstance(item, dict) else (
+                    item[0] if isinstance(item, list) and item else None
+                )
+                if isinstance(source, str):
+                    names.add(source)
+        return tuple(sorted(
+            f"{table}.{name}"
+            for name in names
+            for table in proposal.tables_used
+            if self.index.get(f"column:{table}.{name}") is not None
+        ))
+
+    def _persist(
+        self,
+        question: str,
+        proposal: ValidatedProposal,
+        *,
+        requester_id: str | None,
+        trace_id: str | None,
+        now: datetime,
+    ) -> tuple[MetricCandidate, bool]:
+        """Create the candidate or count one more request; never stores a filter value."""
+        schema, values = parameterize_filters(proposal.schema_dict)
+        fingerprint = fingerprint_candidate(schema)
+        candidate_id = candidate_id_for(fingerprint)
+        requester = requester_pseudonym(requester_id, self.policy)
+        existing = self.store.find_by_fingerprint(fingerprint)
+        if existing is not None:
+            requesters = existing.distinct_requesters
+            if requester is not None and requester not in requesters:
+                requesters = tuple(sorted((*requesters, requester)))
+            candidate = replace(
+                existing,
+                request_count=existing.request_count + 1,
+                distinct_requesters=requesters,
+                last_requested_at=now,
+                updated_at=now,
+            )
+            self.store.upsert_candidate(candidate)
+            return candidate, False
+        candidate = MetricCandidate(
+            candidate_id=candidate_id,
+            metric_name=proposal.metric_name,
+            metric_description=proposal.metric_description,
+            origin_question=_without_values(question, values),
+            origin_question_hash=question_hash(question),
+            schema_dict=schema,
+            sql_hash=hash_sql(compile_select(parse_to_ir(schema), allow_raw_sql=False)),
+            fingerprint=fingerprint,
+            tables_used=proposal.tables_used,
+            columns_used=self._columns_used(proposal),
+            joins_used=proposal.joins_used,
+            business_rules_refs=(),
+            residues=tuple(
+                {**residue, "message": _without_values(residue["message"], values)}
+                for residue in proposal.residues
+            ),
+            state="candidate",
+            request_count=1,
+            distinct_requesters=() if requester is None else (requester,),
+            stability_score=None,
+            coherence=proposal.coherence or None,
+            trace_id=trace_id,
+            reviewer=None,
+            published_view=None,
+            published_metric_view=None,
+            created_at=now,
+            updated_at=now,
+            last_requested_at=now,
+        )
+        self.store.upsert_candidate(candidate)
+        self.store.append_event(CertificationEvent(
+            event_id=uuid.uuid4().hex,
+            metric_id=candidate_id,
+            metric_name=proposal.metric_name,
+            event_type="created",
+            previous_state=None,
+            new_state="candidate",
+            decided_by=DECIDED_BY,
+            justification=None,
+            evidence={"origin": proposal.origin, "attempts": proposal.attempts},
+            replaced_by_metric=None,
+            replaces_metric=None,
+            semantic_layer_version=None,
+            trace_id=trace_id,
+            event_at=now,
+        ))
+        return candidate, True
+
+    def _record_failure(
+        self, proposal: ValidatedProposal, exc: BaseException, *, duration_ms: int,
+        trace_id: str | None, now: datetime,
+    ) -> None:
+        """A failed run is recorded by class name; an existing candidate is rejected."""
+        schema, _ = parameterize_filters(proposal.schema_dict)
+        fingerprint = fingerprint_candidate(schema)
+        candidate_id = candidate_id_for(fingerprint)
+        self.store.append_run(CandidateRun(
+            run_id=uuid.uuid4().hex, candidate_id=candidate_id, executed_at=now,
+            purpose="answer", duration_ms=duration_ms, trace_id=trace_id,
+            error_type=type(exc).__name__,
+        ))
+        existing = self.store.find_by_fingerprint(fingerprint)
+        if existing is None or "rejected" not in ALLOWED_TRANSITIONS[existing.state]:
+            return
+        self.store.upsert_candidate(replace(existing, state="rejected", updated_at=now))
+        self.store.append_event(CertificationEvent(
+            event_id=uuid.uuid4().hex, metric_id=candidate_id, metric_name=existing.metric_name,
+            event_type="rejected", previous_state=existing.state, new_state="rejected",
+            decided_by=DECIDED_BY, justification=None,
+            evidence={"refusal": CandidateRefusal.EXECUTION_FAILED.value,
+                      "error_type": type(exc).__name__},
+            replaced_by_metric=None, replaces_metric=None, semantic_layer_version=None,
+            trace_id=trace_id, event_at=now,
+        ))
+
+    def answer(
+        self,
+        question: str,
+        proposal: ValidatedProposal,
+        *,
+        requester_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> AgentResponse:
+        """Compile, run bounded, persist the candidate and its run."""
+        sql = self.compile(proposal)
+        started = time.monotonic()
+        try:
+            frame, rows = self._execute(sql)
+        except Exception as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            self._record_failure(
+                proposal, exc, duration_ms=duration_ms, trace_id=trace_id, now=self._now()
+            )
+            return self._refusal(
+                question, CandidateRefusal.EXECUTION_FAILED,
+                f"The candidate metric could not be computed ({type(exc).__name__}).",
+            )
+        duration_ms = int((time.monotonic() - started) * 1000)
+        now = self._now()
+        candidate, _ = self._persist(
+            question, proposal, requester_id=requester_id, trace_id=trace_id, now=now
+        )
+        self.store.append_run(CandidateRun(
+            run_id=uuid.uuid4().hex, candidate_id=candidate.candidate_id, executed_at=now,
+            purpose="answer", result_hash=result_hash(rows), row_count=len(rows),
+            duration_ms=duration_ms, trace_id=trace_id,
+        ))
+        return AgentResponse(
+            question=question,
+            mode="candidate",
+            model_used="",
+            explanation=proposal.metric_description or "",
+            result=FormattedResult(
+                format=ResponseFormat.TABLE, data=frame, title=candidate.metric_name
+            ),
+            candidate_id=candidate.candidate_id,
+        )
+
     # --- refusals ------------------------------------------------------------------
 
     @staticmethod
@@ -674,7 +911,32 @@ class MetricCandidateAgent:
         outcome = self.propose(question, hits)
         if isinstance(outcome, AgentResponse):
             return outcome
-        raise NotImplementedError("Execution and persistence are not implemented yet.")
+        return self.answer(question, outcome, requester_id=requester_id)
+
+
+def result_hash(rows: list[dict[str, Any]]) -> str:
+    """``sha256:v1:`` of the rows, each as canonical JSON, sorted: row order is not meaning."""
+    encoded = sorted(
+        json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str)
+        for row in rows
+    )
+    digest = hashlib.sha256(("[" + ",".join(encoded) + "]").encode("utf-8")).hexdigest()
+    return f"sha256:v1:{digest}"
+
+
+def _row_dict(row: Any) -> dict[str, Any]:
+    if hasattr(row, "asDict"):
+        return row.asDict(recursive=True)
+    return dict(row)
+
+
+def _without_values(text: str | None, values: dict[str, Any]) -> str | None:
+    """Replace every filter value quoted in ``text`` by ``?`` (longest first)."""
+    if not text:
+        return text
+    for value in sorted({str(v) for v in values.values() if str(v).strip()}, key=len, reverse=True):
+        text = re.sub(re.escape(value), "?", text, flags=re.IGNORECASE)
+    return text
 
 
 def _metric_entry(node: Any) -> dict[str, Any]:
