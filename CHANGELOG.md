@@ -204,6 +204,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, D7) The knowledge search default is decided: `knowledge_search_mode: null`
+  resolves to `hybrid` when `knowledge_embedding_model` is set, `bm25` otherwise.
+  `KnowledgeIndex.from_config(store, env_config)` builds the index an environment searches
+  with (the fallback agent in serving and `skifer candidates evaluate` use it); a default
+  `hybrid` whose model cannot load falls back to `bm25` with one warning, an explicit
+  `dense`/`hybrid` fails. `KnowledgeIndex.search(mode=None)` uses the index's `default_mode`.
+  Fixed on the way: hybrid search no longer recurses when the index default is `hybrid`.
 - (Plan 44, S09.3) `skifer knowledge benchmark --config bm25 --config hybrid:<model> … [--json]
   [--db] [--candidates-db] [--model-cache]` and `skifer.knowledge.benchmark.benchmark(store,
   questions, configs=)`: per config `recall@5`, `recall@10`, `mean_rank`, `not_found`,

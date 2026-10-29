@@ -4,8 +4,8 @@
 > (« agent builder de backup et cycle de certification des métriques », 16 décisions actées).
 > Les décisions D1 à D9 ci-dessous **contournent les cinq points qui bloquaient** le brief tel
 > quel face au code existant. **D1 à D5, D8 et D9 validées le 28 octobre 2026.** D6 révisée le
-> même jour (notebook d'arbitrage plutôt qu'API + app : la facilité d'abord). **D7 en suspens
-> jusqu'au benchmark de 44.7** : aucun défaut d'index n'est arrêté. Les décisions du brief sont
+> même jour (notebook d'arbitrage plutôt qu'API + app : la facilité d'abord). **D7 tranchée
+> le 29 octobre 2026** après le benchmark (section « D7 — mesure et proposition »). Les décisions du brief sont
 > reprises telles quelles sauf mention explicite (tableau « Écarts avec le brief »).
 > Branche du plan : `memory-improvements`. Rien n'est implémenté.
 > **Découpé en 11 specs de développement** (33 slices) dans
@@ -146,6 +146,13 @@ Les cinq premières répondent aux cinq bloquants identifiés à la lecture du b
 > **Proposition, pas décision.** D7 reste en suspens tant que l'utilisateur ne l'a pas validée.
 > Ce commit apporte les chiffres et une proposition ; rien dans le code ne change de défaut
 > (`knowledge_search_mode: null` reste `bm25`).
+>
+> **D7 validée par l'utilisateur le 29 octobre 2026**, telle que proposée ci-dessous. Appliquée
+> dans le code par `KnowledgeIndex.from_config` : `knowledge_search_mode: null` résout en
+> `hybrid` quand `knowledge_embedding_model` est renseigné, en `bm25` sinon. Un `hybrid` qui
+> n'est que le défaut retombe sur `bm25` avec un warning si le modèle ne charge pas ; un mode
+> déclaré explicitement échoue. Le modèle n'est jamais choisi implicitement : la doc
+> recommande `knowledge_embedding_model: multilingual-e5-small`.
 
 **Méthode.** `skifer knowledge benchmark` (S09.3), CPU 6 cœurs, machine au repos, modèles chargés
 depuis un cache local (`local_files_only=True`, aucun téléchargement pendant la mesure).

@@ -358,3 +358,47 @@ def test_search_default_stays_bm25(store):
     assert index.search("CA du mois") == KnowledgeIndex.from_store(store).search("CA du mois")
     other = _index(store, fake_embedder("multilingual-e5-small")[0])
     assert other.search("CA du mois", mode="dense") == []   # no vector for that model yet
+
+
+# --- D7 (validated 29 October 2026): hybrid when a model is configured, bm25 otherwise ----
+
+
+def test_d7_default_mode_resolution():
+    from skifer.core.config import knowledge_embedding_settings
+
+    assert knowledge_embedding_settings({})[2] == "bm25"
+    assert knowledge_embedding_settings({"knowledge_embedding_model": "bge-m3"})[2] == "hybrid"
+    assert knowledge_embedding_settings({"knowledge_embedding_model": "bge-m3",
+                                         "knowledge_search_mode": "bm25"})[2] == "bm25"
+
+
+def test_d7_index_from_config_searches_hybrid_by_default(store):
+    from skifer.knowledge.index import KnowledgeIndex
+
+    embedder = KeywordEmbedder()
+    embed_nodes(store, embedder)
+    index = KnowledgeIndex.from_config(store, {"knowledge_embedding_model": "bge-m3"},
+                                       load_embedder=lambda model, cache_dir=None: embedder)
+    assert index.default_mode == "hybrid"
+    assert index.search("CA du mois") == index.search("CA du mois", mode="hybrid")
+    assert KnowledgeIndex.from_config(store, {}).default_mode == "bm25"
+
+
+def test_d7_default_hybrid_falls_back_but_explicit_mode_fails(store, monkeypatch, caplog):
+    from skifer.knowledge.index import KnowledgeIndex
+
+    monkeypatch.setitem(sys.modules, "sentence_transformers", None)
+    with caplog.at_level("WARNING", logger="skifer.knowledge.index"):
+        index = KnowledgeIndex.from_config(store, {"knowledge_embedding_model": "bge-m3"})
+    assert index.default_mode == "bm25"
+    assert "EmbeddingsUnavailableError" in caplog.text
+    with pytest.raises(EmbeddingsUnavailableError, match="knowledge-embeddings"):
+        KnowledgeIndex.from_config(store, {"knowledge_embedding_model": "bge-m3",
+                                           "knowledge_search_mode": "hybrid"})
+
+
+def test_d7_invalid_default_mode_is_rejected():
+    from skifer.knowledge.index import KnowledgeIndex
+
+    with pytest.raises(ValueError, match="default_mode"):
+        KnowledgeIndex([], default_mode="vector")

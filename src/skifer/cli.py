@@ -1085,7 +1085,6 @@ def run_candidates_evaluate(
         if hub is None or index is None or store is None:
             from skifer.agentic.hub import AgenticHub
             from skifer.candidates.store import default_candidate_store
-            from skifer.core.config import knowledge_embedding_settings
             from skifer.core.core import SkiferEngine
             from skifer.knowledge.index import KnowledgeIndex
             from skifer.knowledge.store import default_knowledge_store
@@ -1102,22 +1101,17 @@ def run_candidates_evaluate(
                     store = default_candidate_store(core)
                     opened.append(store)
                 if index is None:
-                    model, cache, search_mode = knowledge_embedding_settings(
-                        core._context.env_config())
-                    embedder = None
-                    if search_mode != "bm25":
-                        from skifer.knowledge.embeddings import load_embedder
-
-                        embedder = load_embedder(model, cache_dir=cache)
                     knowledge = default_knowledge_store(core)
                     opened.append(knowledge)
-                    index = KnowledgeIndex.from_store(knowledge, embedder=embedder)
+                    index = KnowledgeIndex.from_config(knowledge, core._context.env_config())
+                    search_mode = index.default_mode
                 if hub is None:
                     llm = get_llm_provider()
                     candidate_agent = _build_candidate_agent(core, semantic, llm)
                     hub = AgenticHub(semantic_engine=semantic, llm_provider=llm,
                                      candidate_agent=candidate_agent)
-        report = evaluate(hub, index, store, search_mode=search_mode or "bm25")
+        report = evaluate(hub, index, store,
+                          search_mode=search_mode or getattr(index, "default_mode", "bm25"))
         data = report.to_dict()
         empty = sum(report.question_count.values()) == 0
         if not empty:
