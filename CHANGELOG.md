@@ -204,6 +204,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, S08.2) `KnowledgeIndex.search(..., mode="bm25" | "dense" | "hybrid")` — `bm25` stays
+  the default (S02 tests unchanged). `dense` ranks by cosine to the query vector, `hybrid` is the
+  reciprocal rank fusion of the BM25 and dense rankings; both need an embedder injected with
+  `KnowledgeIndex.from_store(store, embedder=…)`, which also reads the vectors stored for that
+  model, and raise `EmbeddingsUnavailableError` naming the extra otherwise. New environment keys
+  `knowledge_embedding_model` (null | `multilingual-e5-small` | `bge-m3`), `knowledge_model_cache`
+  and `knowledge_search_mode` (null = `bm25` until D7 is decided), validated at load by
+  `knowledge_embedding_settings()`; `dense`/`hybrid` without a model is a config error.
+- (Plan 44, S08.1) Optional dense embeddings for the knowledge index — this makes the D7
+  measurement possible and decides nothing. New extra `[knowledge-embeddings]`
+  (`sentence-transformers>=3`) and `skifer.knowledge.embeddings`: `SUPPORTED_MODELS`
+  (`multilingual-e5-small` with its `query: `/`passage: ` prefixes, `bge-m3` without),
+  `load_embedder(model, cache_dir=, local_files_only=True)` — imported lazily, never downloads, a
+  missing extra or a model absent from the cache raise `EmbeddingsUnavailableError` naming
+  `pip install "skifer[knowledge-embeddings]"`, or the cache path and `local_files_only` —,
+  `embed_nodes(store, embedder)` and a deterministic `reciprocal_rank_fusion` (ties broken by id).
+  `knowledge_nodes` gains `embedding` (`ARRAY<FLOAT>` in Delta, JSON in SQLite) and
+  `embedding_model`, added in place (`ALTER TABLE … ADD COLUMNS` / `ADD COLUMN`) to a store created
+  before, without losing a row. A node rewritten by a sync drops its embedding, so
+  `skifer knowledge sync --embed MODEL [--model-cache PATH]` embeds only new, changed or
+  other-model nodes; a second run embeds none. `import skifer` still loads neither
+  `sentence_transformers` nor `torch`.
 - (Plan 44, S07.2) `skifer candidates drift [--since ISO] [--until ISO] [--json]` (default: the
   last 7 days; `--environment`, `--usage-store`). Exit `0` even with high signals, `1` technical
   error (including an invalid `candidates_min_sample`/`candidates_drift_thresholds`), `2` usage —

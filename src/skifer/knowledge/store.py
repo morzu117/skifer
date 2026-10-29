@@ -26,6 +26,8 @@ TABLE_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("node_id", "string"), ("kind", "string"), ("fqn", "string"), ("label", "string"),
         ("text", "string"), ("synonyms", "json"), ("status", "string"), ("domain", "string"),
         ("source", "string"), ("fingerprint", "string"), ("removed", "bool"),
+        # Plan 44, S08 — added in place to an existing table, never recreated.
+        ("embedding", "vector"), ("embedding_model", "string"),
     ),
     EDGES_TABLE: (
         ("edge_id", "string"), ("kind", "string"), ("from_id", "string"), ("to_id", "string"),
@@ -37,6 +39,10 @@ ID_COLUMNS = {NODES_TABLE: "node_id", EDGES_TABLE: "edge_id"}
 
 _SQLITE_TYPES = {"string": "TEXT", "json": "TEXT", "float": "REAL", "bool": "INTEGER"}
 _DELTA_TYPES = {"string": "STRING", "json": "STRING", "float": "DOUBLE", "bool": "BOOLEAN"}
+_SQLITE_TYPES["vector"] = "TEXT"            # JSON array
+_DELTA_TYPES["vector"] = "ARRAY<FLOAT>"
+# Columns a store created before S08 lacks; they are added in place.
+ADDED_COLUMNS = {NODES_TABLE: ("embedding", "embedding_model")}
 
 
 @runtime_checkable
@@ -63,6 +69,9 @@ def node_row(node: Node, *, removed: bool = False) -> dict[str, Any]:
     row = node.to_dict()
     row["synonyms"] = json.dumps(row["synonyms"], ensure_ascii=False)
     row["removed"] = removed
+    # A (re)written node carries no embedding: its text may have changed.
+    row["embedding"] = None
+    row["embedding_model"] = None
     return row
 
 
@@ -131,6 +140,36 @@ class _DiffingStore:
             self._write(EDGES_TABLE, writes)
         return counts
 
+    def nodes_to_embed(self, model_name: str) -> list[Node]:
+        """Live nodes without an embedding from ``model_name`` (sorted by id)."""
+        return [
+            node_from_row(row)
+            for _, row in sorted(self._rows(NODES_TABLE).items())
+            if not row["removed"]
+            and (row.get("embedding_model") != model_name or row.get("embedding") is None)
+        ]
+
+    def set_embeddings(self, model_name: str, vectors: dict[str, list[float]]) -> int:
+        """Store each node's vector with the model that produced it; returns how many."""
+        existing = self._rows(NODES_TABLE)
+        writes = [
+            {**existing[key], "embedding": [float(v) for v in vectors[key]],
+             "embedding_model": model_name}
+            for key in sorted(vectors) if key in existing
+        ]
+        if writes:
+            self._write(NODES_TABLE, writes)
+        return len(writes)
+
+    def list_embeddings(self, model_name: str) -> dict[str, list[float]]:
+        """Vectors of the live nodes embedded with ``model_name``."""
+        return {
+            key: list(row["embedding"])
+            for key, row in sorted(self._rows(NODES_TABLE).items())
+            if not row["removed"] and row.get("embedding_model") == model_name
+            and row.get("embedding") is not None
+        }
+
     def _mark(self, table: str, ids: Iterable[str]) -> int:
         existing = self._rows(table)
         writes = [
@@ -191,12 +230,25 @@ class SqliteKnowledgeStore(_DiffingStore):
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.executescript("\n".join(_sqlite_ddl(table) for table in TABLE_COLUMNS))
+            self._add_missing_columns()
             self._conn.commit()
         except sqlite3.Error as exc:
             raise RuntimeError(
                 f"Knowledge store SqliteKnowledgeStore cannot open database {db_path!r}: "
                 f"{type(exc).__name__}."
             ) from exc
+
+    def _add_missing_columns(self) -> None:
+        """``ALTER TABLE ADD COLUMN`` for a store created before S08: no row is lost."""
+        kinds = {table: dict(columns) for table, columns in TABLE_COLUMNS.items()}
+        for table, added in ADDED_COLUMNS.items():
+            present = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            for column in added:
+                if column not in present:
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} "
+                        f"{_SQLITE_TYPES[kinds[table][column]]}"
+                    )
 
     def _rows(self, table: str) -> dict[str, dict[str, Any]]:
         cursor = self._conn.execute(f"SELECT * FROM {table}")
@@ -206,6 +258,8 @@ class SqliteKnowledgeStore(_DiffingStore):
         for values in cursor.fetchall():
             row = dict(zip(columns, values))
             row["removed"] = bool(row["removed"])
+            if isinstance(row.get("embedding"), str):
+                row["embedding"] = json.loads(row["embedding"])
             rows[row[key]] = row
         return rows
 
@@ -214,12 +268,20 @@ class SqliteKnowledgeStore(_DiffingStore):
         placeholders = ", ".join("?" for _ in columns)
         self._conn.executemany(
             f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
-            [tuple(int(row[c]) if c == "removed" else row[c] for c in columns) for row in rows],
+            [tuple(_sqlite_value(c, row.get(c)) for c in columns) for row in rows],
         )
         self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
+
+
+def _sqlite_value(column: str, value: Any) -> Any:
+    if column == "removed":
+        return int(value)
+    if column == "embedding" and value is not None:
+        return json.dumps(value)
+    return value
 
 
 def delta_columns_ddl(table: str) -> str:
@@ -250,7 +312,8 @@ class DeltaKnowledgeStore(_DiffingStore):
                 f"Knowledge store DeltaKnowledgeStore cannot read {self.schema}.{table}: "
                 f"{type(exc).__name__}."
             ) from exc
-        return {row[key]: {**row, "removed": bool(row["removed"])} for row in rows}
+        added = {column: None for column in ADDED_COLUMNS.get(table, ())}
+        return {row[key]: {**added, **row, "removed": bool(row["removed"])} for row in rows}
 
     def _write(self, table: str, rows: list[dict[str, Any]]) -> None:
         self.backend.upsert_knowledge_rows(self.schema, table, rows, ID_COLUMNS[table])

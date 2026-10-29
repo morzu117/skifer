@@ -542,3 +542,20 @@ def test_candidate_drift_settings_are_validated():
                 {"candidates_drift_thresholds": {"fallback_rate": 1.5}}):
         with pytest.raises(ValueError, match="candidates_"):
             candidate_drift_settings(bad, env_name="dev")
+
+
+def test_knowledge_embedding_settings_are_validated(tmp_path):
+    from skifer.core.config import knowledge_embedding_settings
+
+    assert knowledge_embedding_settings({}) == (None, None, "bm25")
+    assert knowledge_embedding_settings({"knowledge_search_mode": None}) == (None, None, "bm25")
+    assert knowledge_embedding_settings({
+        "knowledge_embedding_model": "bge-m3", "knowledge_model_cache": "/Volumes/c/s/v/models",
+        "knowledge_search_mode": "hybrid"}) == ("bge-m3", "/Volumes/c/s/v/models", "hybrid")
+    for bad in ({"knowledge_embedding_model": "gpt-4"}, {"knowledge_model_cache": ""},
+                {"knowledge_search_mode": "vector"}, {"knowledge_search_mode": "dense"}):
+        with pytest.raises(ValueError, match="knowledge_"):
+            knowledge_embedding_settings(bad, env_name="dev")
+    with pytest.raises(ValueError, match="knowledge_embedding_model"):
+        ConfigurationManager(config_path=_write_env_config(
+            tmp_path, knowledge_embedding_model="ada-002"))
