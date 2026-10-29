@@ -4,8 +4,8 @@
 > (« agent builder de backup et cycle de certification des métriques », 16 décisions actées).
 > Les décisions D1 à D9 ci-dessous **contournent les cinq points qui bloquaient** le brief tel
 > quel face au code existant. **D1 à D5, D8 et D9 validées le 28 octobre 2026.** D6 révisée le
-> même jour (notebook d'arbitrage plutôt qu'API + app : la facilité d'abord). **D7 en suspens
-> jusqu'au benchmark de 44.7** : aucun défaut d'index n'est arrêté. Les décisions du brief sont
+> même jour (notebook d'arbitrage plutôt qu'API + app : la facilité d'abord). **D7 tranchée
+> le 29 octobre 2026** après le benchmark (section « D7 — mesure et proposition »). Les décisions du brief sont
 > reprises telles quelles sauf mention explicite (tableau « Écarts avec le brief »).
 > Branche du plan : `memory-improvements`. Rien n'est implémenté.
 > **Découpé en 11 specs de développement** (33 slices) dans
@@ -140,6 +140,88 @@ Les cinq premières répondent aux cinq bloquants identifiés à la lecture du b
 | Tables `skifer.governance.*` | Convention existante : `<catalog>._skifer_candidates`, SQLite en local. |
 | `request_count DEFAULT 1` | Défaut appliqué dans le code du store, pas dans le DDL. |
 | Toutes les autres (2, 3, 4, 5, 6, 13, 14, 16) | Maintenues telles quelles. |
+
+## D7 — mesure et proposition (S09.3, 29 octobre 2026)
+
+> **Proposition, pas décision.** D7 reste en suspens tant que l'utilisateur ne l'a pas validée.
+> Ce commit apporte les chiffres et une proposition ; rien dans le code ne change de défaut
+> (`knowledge_search_mode: null` reste `bm25`).
+>
+> **D7 validée par l'utilisateur le 29 octobre 2026**, telle que proposée ci-dessous. Appliquée
+> dans le code par `KnowledgeIndex.from_config` : `knowledge_search_mode: null` résout en
+> `hybrid` quand `knowledge_embedding_model` est renseigné, en `bm25` sinon. Un `hybrid` qui
+> n'est que le défaut retombe sur `bm25` avec un warning si le modèle ne charge pas ; un mode
+> déclaré explicitement échoue. Le modèle n'est jamais choisi implicitement : la doc
+> recommande `knowledge_embedding_model: multilingual-e5-small`.
+
+**Méthode.** `skifer knowledge benchmark` (S09.3), CPU 6 cœurs, machine au repos, modèles chargés
+depuis un cache local (`local_files_only=True`, aucun téléchargement pendant la mesure).
+
+- **Corpus** : les trois catalogues sémantiques de `examples/` (03, 14, 15) fusionnés, clés
+  préfixées pour lever les collisions (`orders` existe deux fois) — 6 modèles, **8 métriques**,
+  23 nœuds après `skifer knowledge sync`.
+- **Jeu « bootstrap »** : 22 questions de famille A produites par `skifer candidates reference
+  bootstrap` (gabarits figés, sans LLM). Elles reprennent les libellés et synonymes **mot pour
+  mot** : elles mesurent la non-régression, pas la compréhension, et avantagent BM25 par
+  construction.
+- **Jeu « reformulations »** : 17 questions de famille A écrites à la main, en français et en
+  anglais, **sans les mots du libellé** (« stock disponible par entrepôt » → `units_on_hand`,
+  « how many clients do we have » → `customer_count`). C'est le cas que le repli rencontre en
+  vrai : un utilisateur ne connaît pas le nom de la métrique.
+
+| Config | Jeu | recall@5 | recall@10 | rang moyen | non trouvées | latence p50 | construction |
+|---|---|---|---|---|---|---|---|
+| `bm25` | bootstrap | 1.00 | 1.00 | 1.23 | 0 | 0,03 ms | 0,001 s |
+| `dense:multilingual-e5-small` | bootstrap | 1.00 | 1.00 | 1.23 | 0 | 15,7 ms | 8,9 s* |
+| `hybrid:multilingual-e5-small` | bootstrap | 1.00 | 1.00 | 1.23 | 0 | 15,3 ms | 3,0 s |
+| `dense:bge-m3` | bootstrap | 0.95 | 1.00 | 2.09 | 0 | 87,5 ms | 4,4 s |
+| `hybrid:bge-m3` | bootstrap | 1.00 | 1.00 | 1.27 | 0 | 78,8 ms | 3,7 s |
+| `bm25` | reformulations | **0.29** | 0.29 | 1.40 | **12 / 17** | 0,03 ms | 0,002 s |
+| `dense:multilingual-e5-small` | reformulations | 0.94 | 1.00 | 2.47 | 0 | 15,8 ms | 8,5 s* |
+| `hybrid:multilingual-e5-small` | reformulations | 0.94 | 1.00 | 2.29 | 0 | 17,1 ms | 2,7 s |
+| `dense:bge-m3` | reformulations | 1.00 | 1.00 | 1.76 | 0 | 88,8 ms | 4,1 s |
+| `hybrid:bge-m3` | reformulations | 1.00 | 1.00 | 1.82 | 0 | 89,7 ms | 3,9 s |
+
+\* La construction inclut le chargement du modèle : la première config d'un modèle paie aussi la
+lecture des poids depuis le disque, les suivantes la trouvent dans le cache du système.
+
+**Lecture.**
+
+- BM25 seul **échoue sur 12 reformulations sur 17** : sans mot commun avec le libellé, la
+  métrique n'est pas classée du tout. Sur les questions qui reprennent le libellé, il est
+  parfait et quasi gratuit.
+- Le dense et l'hybride retrouvent **toutes** les reformulations dans le top 10. bge-m3 classe
+  mieux (rang moyen 1,8 contre 2,3) mais coûte **5 à 6 fois plus** par requête (≈ 90 ms contre
+  ≈ 16 ms) et environ 2,3 Go de poids et de mémoire sur le driver, contre ≈ 470 Mo pour e5-small.
+- L'hybride ne dégrade jamais le cas « libellé exact » : la fusion RRF garde le bon classement
+  de BM25, ce que le dense seul ne fait pas toujours (`dense:bge-m3` à 0,95 au top 5 sur le
+  bootstrap).
+
+**Limites, à lever avant de valider.**
+
+- 8 métriques : `recall@5` y est peu discriminant (5 réponses sur 8 possibles). Le rang moyen et
+  `not_found` sont les colonnes qui comptent ici.
+- Le run sur le **catalogue de démonstration** (Databricks, plusieurs centaines de nœuds) n'a pas
+  été fait : il demande l'accès au workspace. Commande à lancer depuis un notebook ou un job, avec
+  les poids copiés dans un Volume : `skifer knowledge benchmark --config bm25 --config
+  hybrid:multilingual-e5-small --config hybrid:bge-m3 --model-cache /Volumes/<cat>/<schema>/<vol>/models`.
+- Les 17 reformulations ont été écrites par l'agent de développement, pas par des utilisateurs :
+  un jeu de famille A importé depuis de vraies questions (`skifer candidates reference add`) est
+  la mesure qui fait foi.
+
+**Proposition.**
+
+1. Défaut **`hybrid` avec `multilingual-e5-small`** quand l'extra `[knowledge-embeddings]` est
+   installé et le modèle présent dans `knowledge_model_cache` — le meilleur rapport rappel/coût
+   mesuré, sans perte sur les libellés exacts.
+2. **`bm25` reste le défaut sans l'extra** et le repli explicite si le modèle manque : zéro
+   dépendance, et il couvre les questions qui reprennent le vocabulaire du catalogue.
+3. `bge-m3` reste **une option** (`knowledge_embedding_model: bge-m3`) pour un catalogue où le
+   classement fin compte plus que la latence ; à réévaluer sur le catalogue de démonstration.
+
+Si cette proposition est validée, le changement de code est petit et se fera en S10 ou en
+commit dédié : `knowledge_search_mode: null` résoudra en `hybrid` quand un modèle est configuré
+et chargeable, `bm25` sinon.
 
 ## Périmètre v1 et exclusions
 

@@ -204,6 +204,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, S09.2 fix) `skifer candidates evaluate --json` stays parseable: the SQL the
+  semantic engine prints while the hub answers the reference questions now goes to stderr.
+- (Plan 44, D7) The knowledge search default is decided: `knowledge_search_mode: null`
+  resolves to `hybrid` when `knowledge_embedding_model` is set, `bm25` otherwise.
+  `KnowledgeIndex.from_config(store, env_config)` builds the index an environment searches
+  with (the fallback agent in serving and `skifer candidates evaluate` use it); a default
+  `hybrid` whose model cannot load falls back to `bm25` with one warning, an explicit
+  `dense`/`hybrid` fails. `KnowledgeIndex.search(mode=None)` uses the index's `default_mode`.
+  Fixed on the way: hybrid search no longer recurses when the index default is `hybrid`.
+- (Plan 44, S09.3) `skifer knowledge benchmark --config bm25 --config hybrid:<model> … [--json]
+  [--db] [--candidates-db] [--model-cache]` and `skifer.knowledge.benchmark.benchmark(store,
+  questions, configs=)`: per config `recall@5`, `recall@10`, `mean_rank`, `not_found`,
+  `latency_ms_p50` (monotonic clock) and `index_build_s`, on the family A reference questions.
+  Dense vectors are computed in memory, the benchmark writes nothing. `bm25` runs without the
+  embeddings extra; `dense:`/`hybrid:` without it fail with the S08 error (exit `1`); an unknown
+  config is exit `2`.
+- (Plan 44, S09.2) `skifer candidates evaluate [--json] [--mlflow]` and
+  `skifer.candidates.reference.evaluate(hub, index, store, k_values=(5, 10))` → `EvaluationReport`
+  (`reference_set_version`, `semantic_layer_version`, `question_count`, `metrics`, `failures`).
+  Metrics: `A.recall@k`, `A.routing_accuracy`, `B.exact_match` (the fallback's recorded
+  `result_hash`), `C.correct_refusal`, `C.false_answer`, `C.false_refusal` (over A and B); an
+  empty family gives `None`, never `0` or `1`. `failures` carry ids, modes and names only — never
+  a question text, a `schema_dict` or a filter value, and a hub error by class name. The report is
+  written to `.skifer_evaluations/<timestamp>.json` (never overwritten, git-ignored) and indexed by
+  an `evaluation` run on `reference_set:v1` whose `result_hash` is the report's hash. `--mlflow`
+  imports MLflow lazily, fails with exit `1` naming `pip install "skifer[tracing]"` before asking
+  anything, and logs the metrics, both versions as parameters and the report as an artefact. An
+  empty set is a valid report with every metric `None`, exit `0`. `compute_drift(...,
+  evaluations=)` gains the optional `reference_degradation` signal — the A or B metrics lower in
+  the last report than in the previous one, `inconclusive` with fewer than two — which
+  `skifer candidates drift --evaluations-dir` reads.
+- (Plan 44, S09.1) Reference question set — `skifer.candidates.reference`. `bootstrap_from_models`
+  builds family A from the semantic catalogue with frozen templates (`TEMPLATES_FR`,
+  `REFERENCE_SET_VERSION = "v1"`): one question per (label | synonym) and template, the dimension
+  being the model's first one; `question_id` is the `sha256:v1:` of the question and its expected
+  answer, so two bootstraps give the same ids and the second writes nothing. No LLM is involved.
+  `on_certified` (called by the `semantic sync --promote` hook) adds a family A question on the
+  certified metric; `on_rejected` (called by `CandidateService.reject`) adds a family C `refuse`
+  question when the candidate's coherence failed — both best-effort, a failing hook logs its class
+  name and never fails the decision. `add_reference` imports a human-verified question and refuses
+  an expected answer without exactly its family's keys. CLI:
+  `skifer candidates reference bootstrap | add --family --question --expected-file | list
+  [--family] [--json]` (`0` ok · `1` technical · `2` usage, naming the expected key).
 - (Plan 44, S08.2) `KnowledgeIndex.search(..., mode="bm25" | "dense" | "hybrid")` — `bm25` stays
   the default (S02 tests unchanged). `dense` ranks by cosine to the query vector, `hybrid` is the
   reciprocal rank fusion of the BM25 and dense rankings; both need an embedder injected with

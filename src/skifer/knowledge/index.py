@@ -10,6 +10,7 @@ same graph and query give the same ranking under any ``PYTHONHASHSEED``.
 from __future__ import annotations
 
 from collections import deque
+import logging
 import math
 import re
 import unicodedata
@@ -18,8 +19,10 @@ from typing import Any, Iterable
 from .models import NODE_KINDS, Edge, Node, SearchHit
 from .store import KnowledgeStore
 
+logger = logging.getLogger(__name__)
 
-SEARCH_MODES = ("bm25", "dense", "hybrid")  # bm25 stays the default until D7 (S09)
+
+SEARCH_MODES = ("bm25", "dense", "hybrid")  # default per environment: D7, see from_config
 BM25_K1 = 1.2
 BM25_B = 0.75
 FIELD_WEIGHTS = {"label": 3.0, "synonyms": 2.0, "text": 1.0}
@@ -70,8 +73,12 @@ class KnowledgeIndex:
 
     def __init__(
         self, nodes: Iterable[Node], edges: Iterable[Edge] = (), *, embedder: Any = None,
-        embeddings: dict[str, list[float]] | None = None,
+        embeddings: dict[str, list[float]] | None = None, default_mode: str = "bm25",
     ):
+        if default_mode not in SEARCH_MODES:
+            raise ValueError(f"default_mode must be one of {list(SEARCH_MODES)}; "
+                             f"got {default_mode!r}.")
+        self.default_mode = default_mode
         self._nodes = {node.node_id: node for node in sorted(nodes, key=lambda n: n.node_id)}
         # Plan 44, S08: optional dense vectors, only for live nodes, from ``embedder``'s model.
         self._embedder = embedder
@@ -112,11 +119,42 @@ class KnowledgeIndex:
                 self._adjacency.setdefault(edge.to_id, []).append((edge.from_id, edge.weight))
 
     @classmethod
-    def from_store(cls, store: KnowledgeStore, *, embedder: Any = None) -> "KnowledgeIndex":
+    def from_store(
+        cls, store: KnowledgeStore, *, embedder: Any = None, default_mode: str = "bm25"
+    ) -> "KnowledgeIndex":
         """With ``embedder``, also the vectors stored for its model (``dense``/``hybrid``)."""
         embeddings = store.list_embeddings(embedder.model_name) if embedder is not None else None
         return cls(store.list_nodes(), store.list_edges(), embedder=embedder,
-                   embeddings=embeddings)
+                   embeddings=embeddings, default_mode=default_mode)
+
+    @classmethod
+    def from_config(
+        cls, store: KnowledgeStore, env_config: dict | None, *, env_name: str | None = None,
+        load_embedder: Any = None,
+    ) -> "KnowledgeIndex":
+        """The index an environment searches with, its default mode resolved per D7.
+
+        An explicit ``knowledge_search_mode: dense|hybrid`` whose model cannot load is an
+        error. A ``hybrid`` that is only the D7 default (no ``knowledge_search_mode``)
+        falls back to ``bm25`` with one warning naming the error class: an environment
+        that names a model but has not copied it yet keeps answering.
+        """
+        from skifer.core.config import knowledge_embedding_settings
+
+        from .embeddings import load_embedder as default_loader
+
+        model, cache, mode = knowledge_embedding_settings(env_config, env_name=env_name)
+        if mode == "bm25":
+            return cls.from_store(store)
+        try:
+            embedder = (load_embedder or default_loader)(model, cache_dir=cache)
+        except Exception as exc:
+            if (env_config or {}).get("knowledge_search_mode"):
+                raise
+            logger.warning("Knowledge search falls back to bm25: embedding model %r unavailable "
+                           "(%s).", model, type(exc).__name__)
+            return cls.from_store(store)
+        return cls.from_store(store, embedder=embedder, default_mode=mode)
 
     def __len__(self) -> int:
         return len(self._nodes)
@@ -160,8 +198,9 @@ class KnowledgeIndex:
 
     def search(
         self, query: str, *, k: int = 10, kinds: Iterable[str] | None = None,
-        domain: str | None = None, mode: str = "bm25",
+        domain: str | None = None, mode: str | None = None,
     ) -> list[SearchHit]:
+        mode = self.default_mode if mode is None else mode
         if k < 1:
             raise ValueError(f"k must be a positive integer; got {k!r}.")
         if mode not in SEARCH_MODES:
@@ -206,7 +245,8 @@ class KnowledgeIndex:
         if mode == "dense":
             return [SearchHit(node=self._nodes[node_id], score=score, matched_terms=())
                     for score, node_id in dense[:k]]
-        lexical = self.search(query, k=max(len(self._nodes), 1), kinds=kinds, domain=domain)
+        lexical = self.search(query, k=max(len(self._nodes), 1), kinds=kinds, domain=domain,
+                              mode="bm25")
         matched = {hit.node.node_id: hit.matched_terms for hit in lexical}
         fused = reciprocal_rank_fusion([[hit.node.node_id for hit in lexical],
                                         [node_id for _, node_id in dense]])

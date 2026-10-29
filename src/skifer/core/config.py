@@ -314,8 +314,9 @@ def knowledge_embedding_settings(
 ) -> tuple[str | None, str | None, str]:
     """(``knowledge_embedding_model``, ``knowledge_model_cache``, search mode) of an environment.
 
-    ``knowledge_search_mode: null`` means ``bm25``: the default stays BM25 until D7 is
-    decided (Plan 44, S09). ``dense``/``hybrid`` need an embedding model.
+    ``knowledge_search_mode: null`` resolves per D7 (Plan 44, validated 29 October 2026):
+    ``hybrid`` when a ``knowledge_embedding_model`` is configured, ``bm25`` otherwise.
+    ``dense``/``hybrid`` need an embedding model.
     """
     from skifer.knowledge.embeddings import SUPPORTED_MODELS
 
@@ -328,7 +329,7 @@ def knowledge_embedding_settings(
     cache = env_config.get("knowledge_model_cache")
     if cache is not None and (not isinstance(cache, str) or not cache.strip()):
         raise ValueError(f"Invalid knowledge_model_cache{where}: expected null or a path.")
-    mode = env_config.get("knowledge_search_mode") or "bm25"
+    mode = env_config.get("knowledge_search_mode") or ("hybrid" if model else "bm25")
     if mode not in ("bm25", "dense", "hybrid"):
         raise ValueError(f"Invalid knowledge_search_mode{where}: {mode!r}. "
                          "Expected null, 'bm25', 'dense' or 'hybrid'.")

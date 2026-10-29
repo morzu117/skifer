@@ -476,6 +476,18 @@ def main() -> None:
     knowledge_search_parser.add_argument("--json", action="store_true", help="Print hits as JSON.")
     knowledge_search_parser.add_argument("--db", default=".skifer_knowledge.db",
                                          help="SQLite knowledge store.")
+    knowledge_benchmark_parser = knowledge_subparsers.add_parser(
+        "benchmark", help="Compare search configs on the reference set (decides D7).")
+    knowledge_benchmark_parser.add_argument(
+        "--config", action="append", required=True, dest="configs", metavar="CONFIG",
+        help="bm25 | dense:<model> | hybrid:<model> (repeatable).")
+    knowledge_benchmark_parser.add_argument("--json", action="store_true", help="Print JSON.")
+    knowledge_benchmark_parser.add_argument("--db", default=".skifer_knowledge.db",
+                                            help="SQLite knowledge store.")
+    knowledge_benchmark_parser.add_argument("--candidates-db", default=".skifer_candidates.db",
+                                            help="SQLite candidate store holding the set.")
+    knowledge_benchmark_parser.add_argument("--model-cache", default=None, metavar="PATH",
+                                            help="Local model cache; nothing is downloaded.")
 
     candidates_parser = subparsers.add_parser(
         "candidates",
@@ -540,12 +552,43 @@ def main() -> None:
                                          help="Usage partition (default: the engine's).")
     candidates_drift_parser.add_argument("--usage-store", default=".skifer_adaptive.db",
                                          metavar="PATH", help="SQLite adaptive usage store.")
+    candidates_drift_parser.add_argument(
+        "--evaluations-dir", default=".skifer_evaluations", metavar="PATH",
+        help="Stored evaluation reports, for the reference_degradation signal.")
+    candidates_evaluate_parser = candidates_subparsers.add_parser(
+        "evaluate", help="Ask the reference set and measure recall, routing and refusals.")
+    candidates_evaluate_parser.add_argument("--json", action="store_true", help="Print JSON.")
+    candidates_evaluate_parser.add_argument(
+        "--mlflow", action="store_true",
+        help="Also log the metrics and the report to an MLflow run ([tracing] extra).")
+    candidates_evaluate_parser.add_argument(
+        "--evaluations-dir", default=".skifer_evaluations", metavar="PATH",
+        help="Where the JSON report is written (never overwritten).")
     for arbitration_parser in candidates_subparsers.choices.values():
         if arbitration_parser is not candidates_validate_parser:
             arbitration_parser.add_argument("--config", default=None, metavar="PATH",
                                             help="Path to config.yaml.")
             arbitration_parser.add_argument("--models-dir", default="semantic_models",
                                             help="Directory holding semantic_catalog.yaml.")
+    candidates_reference_parser = candidates_subparsers.add_parser(
+        "reference", help="Reference question set (families A, B, C) for evaluation.")
+    reference_subparsers = candidates_reference_parser.add_subparsers(dest="reference_command")
+    reference_subparsers.add_parser(
+        "bootstrap", help="Family A from the semantic catalogue: templates, no LLM, idempotent.")
+    reference_add_parser = reference_subparsers.add_parser(
+        "add", help="Add a human-verified question (family B above all).")
+    reference_add_parser.add_argument("--family", required=True, choices=["A", "B", "C"])
+    reference_add_parser.add_argument("--question", required=True)
+    reference_add_parser.add_argument("--expected-file", required=True, metavar="PATH",
+                                      help="JSON or YAML file with the family's expected keys.")
+    reference_list_parser = reference_subparsers.add_parser("list", help="List the set.")
+    reference_list_parser.add_argument("--family", default=None, choices=["A", "B", "C"])
+    reference_list_parser.add_argument("--json", action="store_true", help="Print JSON.")
+    for reference_parser in reference_subparsers.choices.values():
+        reference_parser.add_argument("--config", default=None, metavar="PATH",
+                                      help="Path to config.yaml.")
+        reference_parser.add_argument("--models-dir", default="semantic_models",
+                                      help="Directory holding semantic_catalog.yaml.")
 
     adaptive_parser = subparsers.add_parser(
         "adaptive",
@@ -734,6 +777,10 @@ def run_candidates_command(
         return run_candidates_arbitration(args)
     if getattr(args, "candidates_command", None) == "drift":
         return run_candidates_drift(args)
+    if getattr(args, "candidates_command", None) == "reference":
+        return run_candidates_reference(args)
+    if getattr(args, "candidates_command", None) == "evaluate":
+        return run_candidates_evaluate(args)
     if getattr(args, "candidates_command", None) != "validate":
         print("Candidates command missing. Use 'skifer candidates --help'.", file=sys.stderr)
         return CANDIDATES_EXIT_ERROR
@@ -926,6 +973,174 @@ def _drift_bound(value: str | None, default, name: str):
     return moment
 
 
+def run_candidates_reference(
+    args: argparse.Namespace, *, store=None, semantic=None, clock=None
+) -> int:
+    """``skifer candidates reference bootstrap|add|list``: ``0`` ok, ``1`` technical, ``2`` usage."""
+    import yaml
+
+    from skifer.candidates.reference import (
+        REFERENCE_SET_VERSION,
+        add_reference,
+        append_new,
+        bootstrap_from_models,
+    )
+
+    command = getattr(args, "reference_command", None)
+    if command not in ("bootstrap", "add", "list"):
+        print("Reference command missing. Use 'skifer candidates reference --help'.",
+              file=sys.stderr)
+        return CANDIDATES_EXIT_USAGE
+    expected = None
+    if command == "add":
+        try:
+            with open(args.expected_file, encoding="utf-8") as handle:
+                expected = yaml.safe_load(handle)
+        except (OSError, yaml.YAMLError) as exc:
+            print(f"[candidates] cannot read --expected-file: {type(exc).__name__}",
+                  file=sys.stderr)
+            return CANDIDATES_EXIT_USAGE
+    opened = []
+    try:
+        if store is None or (semantic is None and command == "bootstrap"):
+            from skifer.candidates.store import default_candidate_store
+            from skifer.core.core import SkiferEngine
+            from skifer.semantic.semantic import SemanticEngine
+
+            with contextlib.redirect_stdout(sys.stderr):  # keep --json parseable
+                core = SkiferEngine(config_path=args.config)
+                if store is None:
+                    store = default_candidate_store(core)
+                    opened.append(store)
+                if semantic is None and command == "bootstrap":
+                    semantic = SemanticEngine(core, models_dir=args.models_dir)
+        if command == "bootstrap":
+            questions = bootstrap_from_models(semantic, clock=clock)
+            output = {"reference_set_version": REFERENCE_SET_VERSION,
+                      "questions": len(questions), "written": append_new(store, questions)}
+        elif command == "add":
+            try:
+                output = add_reference(store, question=args.question, family=args.family,
+                                       expected=expected, clock=clock).to_dict()
+            except ValueError as exc:
+                print(f"[candidates] {exc}", file=sys.stderr)
+                return CANDIDATES_EXIT_USAGE
+        else:
+            output = [question.to_dict() for question in store.list_references(family=args.family)]
+    except Exception as exc:
+        print(f"[candidates] reference {command} failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return CANDIDATES_EXIT_ERROR
+    finally:
+        for resource in opened:
+            with contextlib.suppress(Exception):
+                resource.close()
+    if command == "list" and not args.json:
+        for item in output:
+            print(f"{item['family']}\t{item['question_id']}\t{item['question']}")
+    else:
+        print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+    return CANDIDATES_EXIT_OK
+
+
+EVALUATION_EMPTY_LINE = "reference set is empty — run 'skifer candidates reference bootstrap'"
+MLFLOW_EXTRA_INSTALL = 'pip install "skifer[tracing]"'
+
+
+def _import_mlflow():
+    """MLflow, imported only for ``--mlflow``; ``ImportError`` names the extra."""
+    try:
+        import mlflow
+    except ImportError:
+        raise ImportError(f"--mlflow needs MLflow: {MLFLOW_EXTRA_INSTALL}") from None
+    return mlflow
+
+
+def _log_evaluation_to_mlflow(mlflow, report: dict) -> None:
+    """Metrics, the two versions as parameters and the report as an artefact — no question."""
+    with mlflow.start_run(run_name="skifer-candidates-evaluate"):
+        mlflow.log_params({"reference_set_version": report["reference_set_version"],
+                           "semantic_layer_version": str(report["semantic_layer_version"])})
+        mlflow.log_metrics({name.replace("@", "_at_"): value
+                            for name, value in sorted(report["metrics"].items())
+                            if value is not None})
+        mlflow.log_dict(report, "evaluation_report.json")
+
+
+def run_candidates_evaluate(
+    args: argparse.Namespace, *, hub=None, index=None, store=None, search_mode=None, clock=None,
+) -> int:
+    """``skifer candidates evaluate``: ``0`` ok (even an empty set), ``1`` technical error."""
+    from skifer.candidates.reference import evaluate, store_evaluation
+
+    mlflow = None
+    if args.mlflow:
+        try:
+            mlflow = _import_mlflow()
+        except ImportError as exc:
+            print(f"[candidates] {exc}", file=sys.stderr)
+            return CANDIDATES_EXIT_ERROR
+    opened = []
+    try:
+        if hub is None or index is None or store is None:
+            from skifer.agentic.hub import AgenticHub
+            from skifer.candidates.store import default_candidate_store
+            from skifer.core.core import SkiferEngine
+            from skifer.knowledge.index import KnowledgeIndex
+            from skifer.knowledge.store import default_knowledge_store
+            from skifer.observability.certification_store import default_certification_store
+            from skifer.semantic.llm_provider import get_llm_provider
+            from skifer.semantic.semantic import SemanticEngine
+            from skifer.serving._agent_core import _build_candidate_agent
+
+            with contextlib.redirect_stdout(sys.stderr):  # keep --json parseable
+                core = SkiferEngine(config_path=args.config)
+                semantic = SemanticEngine(core, models_dir=args.models_dir,
+                                          certification_store=default_certification_store(core))
+                if store is None:
+                    store = default_candidate_store(core)
+                    opened.append(store)
+                if index is None:
+                    knowledge = default_knowledge_store(core)
+                    opened.append(knowledge)
+                    index = KnowledgeIndex.from_config(knowledge, core._context.env_config())
+                    search_mode = index.default_mode
+                if hub is None:
+                    llm = get_llm_provider()
+                    candidate_agent = _build_candidate_agent(core, semantic, llm)
+                    hub = AgenticHub(semantic_engine=semantic, llm_provider=llm,
+                                     candidate_agent=candidate_agent)
+        with contextlib.redirect_stdout(sys.stderr):  # the hub prints its SQL; keep --json parseable
+            report = evaluate(hub, index, store,
+                              search_mode=search_mode or getattr(index, "default_mode", "bm25"))
+        data = report.to_dict()
+        empty = sum(report.question_count.values()) == 0
+        if not empty:
+            data_path = store_evaluation(report, store, directory=args.evaluations_dir,
+                                         clock=clock)
+            print(f"[candidates] report written to {data_path}", file=sys.stderr)
+        if mlflow is not None:
+            _log_evaluation_to_mlflow(mlflow, data)
+    except Exception as exc:
+        print(f"[candidates] evaluate failed: {type(exc).__name__}", file=sys.stderr)
+        return CANDIDATES_EXIT_ERROR
+    finally:
+        for resource in opened:
+            with contextlib.suppress(Exception):
+                resource.close()
+    if empty:
+        print(EVALUATION_EMPTY_LINE, file=sys.stderr if args.json else sys.stdout)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, sort_keys=True))
+        return CANDIDATES_EXIT_OK
+    counts = " ".join(f"{family}={count}" for family, count in data["question_count"].items())
+    print(f"[candidates] reference set {data['reference_set_version']}: {counts}")
+    for name, value in data["metrics"].items():
+        print(f"{name}\t{'n/a' if value is None else f'{value:.3f}'}")
+    print(f"failures\t{len(data['failures'])}")
+    return CANDIDATES_EXIT_OK
+
+
 def run_candidates_drift(
     args: argparse.Namespace, *, candidate_store=None, usage_store=None, index=None,
     catalog_models=None, environment=None, env_config=None, clock=None,
@@ -976,10 +1191,15 @@ def run_candidates_drift(
                            if Path(args.usage_store).is_file() else _NoUsageEvents())
             opened.append(usage_store)
         min_sample, _thresholds = candidate_drift_settings(env_config)  # validated, not applied
+        evaluations = None
+        if getattr(args, "evaluations_dir", None):
+            from skifer.candidates.reference import load_evaluations
+
+            evaluations = load_evaluations(candidate_store, directory=args.evaluations_dir)
         report = compute_drift(
             candidate_store=candidate_store, usage_store=usage_store,
             catalog_models=catalog_models, index=index, environment=environment,
-            since=since, until=until, min_sample=min_sample,
+            since=since, until=until, min_sample=min_sample, evaluations=evaluations,
         )
     except Exception as exc:
         print(f"[candidates] drift failed: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -1012,11 +1232,13 @@ def run_knowledge_command(args: argparse.Namespace, *, store=None, engine=None) 
     from skifer.knowledge.sync import validate_domain
 
     command = getattr(args, "knowledge_command", None)
-    if command not in ("sync", "search"):
+    if command not in ("sync", "search", "benchmark"):
         print("Knowledge command missing. Use 'skifer knowledge --help'.", file=sys.stderr)
         return KNOWLEDGE_EXIT_USAGE
     if command == "search":
         return _knowledge_search(args, store=store)
+    if command == "benchmark":
+        return _knowledge_benchmark(args, store=store)
     try:
         domains = [validate_domain(value) for value in args.schema] if args.schema else None
     except ValueError:
@@ -1028,6 +1250,52 @@ def run_knowledge_command(args: argparse.Namespace, *, store=None, engine=None) 
         print(f"[knowledge] {exc}", file=sys.stderr)
         return KNOWLEDGE_EXIT_USAGE
     return _knowledge_sync(args, domains, store=store, engine=engine)
+
+
+def _knowledge_benchmark(args, *, store=None, questions=None, load_embedder=None) -> int:
+    """``skifer knowledge benchmark``: ``0`` ok, ``1`` technical (missing extra), ``2`` usage."""
+    from skifer.knowledge.benchmark import benchmark, parse_config
+
+    try:
+        for config in args.configs:
+            parse_config(config)
+    except ValueError as exc:
+        print(f"[knowledge] {exc}", file=sys.stderr)
+        return KNOWLEDGE_EXIT_USAGE
+    opened = []
+    try:
+        if store is None:
+            from skifer.knowledge.store import SqliteKnowledgeStore
+
+            store = SqliteKnowledgeStore(args.db)
+            opened.append(store)
+        if questions is None:
+            from skifer.candidates.store import SqliteCandidateStore
+
+            questions = []
+            if os.path.exists(args.candidates_db):
+                candidates = SqliteCandidateStore(args.candidates_db)
+                opened.append(candidates)
+                questions = candidates.list_references(family="A")
+        results = benchmark(store, questions, configs=args.configs,
+                            model_cache=args.model_cache, load_embedder=load_embedder)
+    except Exception as exc:
+        print(f"[knowledge] benchmark failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return KNOWLEDGE_EXIT_ERROR
+    finally:
+        for resource in opened:
+            with contextlib.suppress(Exception):
+                resource.close()
+    if args.json:
+        print(json.dumps(results, ensure_ascii=False, sort_keys=True))
+        return KNOWLEDGE_EXIT_OK
+    columns = ("recall@5", "recall@10", "mean_rank", "not_found", "latency_ms_p50",
+               "index_build_s")
+    print("config\t" + "\t".join(columns))
+    for config, row in results.items():
+        print(config + "\t" + "\t".join("n/a" if row[c] is None else str(row[c])
+                                        for c in columns))
+    return KNOWLEDGE_EXIT_OK
 
 
 def _knowledge_sync(args, domains, *, store=None, engine=None) -> int:
@@ -2285,7 +2553,7 @@ def _record_candidate_certified(candidate_id: str, model_key: str, models_dir: s
         if candidate is None:
             log.warning("Unknown candidate %s: no 'certified' event recorded.", candidate_id)
             return
-        store.append_event(CertificationEvent(
+        store.append_event(event := CertificationEvent(
             event_id=uuid.uuid4().hex, metric_id=candidate_id,
             metric_name=candidate.metric_name, event_type="certified",
             previous_state=candidate.state, new_state=candidate.state,
@@ -2293,6 +2561,9 @@ def _record_candidate_certified(candidate_id: str, model_key: str, models_dir: s
             semantic_layer_version=semantic_layer_version(models_dir),
             event_at=datetime.now(timezone.utc),
         ))
+        from skifer.candidates.reference import on_certified, run_hook
+
+        run_hook(on_certified, event, store)  # Plan 44, S09: feeds family A
     except Exception as exc:
         log.warning("Could not record the 'certified' event for %s (%s).", candidate_id,
                     type(exc).__name__)

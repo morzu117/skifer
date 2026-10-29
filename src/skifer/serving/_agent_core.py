@@ -74,7 +74,8 @@ def _build_candidate_agent(engine: Any, semantic: Any, llm: Any) -> Any:
     return MetricCandidateAgent(
         semantic,
         llm,
-        KnowledgeIndex.from_store(default_knowledge_store(engine)),
+        KnowledgeIndex.from_config(default_knowledge_store(engine),
+                                   env_config if isinstance(env_config, dict) else None),
         default_candidate_store(engine),
         policy=getattr(semantic.tracer, "attribute_policy", None),
     )

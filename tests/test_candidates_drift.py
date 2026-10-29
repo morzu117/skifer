@@ -352,3 +352,59 @@ def test_catalog_metric_ids_reads_the_semantic_catalog(tmp_path):
         "models:\n  - {key: sales, metrics: [revenue_net, orders]}\n  - {key: empty}\n")
     assert _catalog_metric_ids(str(tmp_path)) == ["sales.orders", "sales.revenue_net"]
     assert _catalog_metric_ids(str(tmp_path / "nowhere")) == []
+
+
+# --- S09-R9 ----------------------------------------------------------------------------
+
+
+def _evaluation(**metrics):
+    base = {"A.recall@5": 0.8, "A.recall@10": 0.9, "A.routing_accuracy": 0.7,
+            "B.exact_match": 0.6, "C.correct_refusal": 0.5}
+    return {"reference_set_version": "v1", "metrics": {**base, **metrics}}
+
+
+def test_reference_degradation_signal(stores):
+    assert [s.name for s in drift(stores).signals] == [
+        "fallback_rate", "orphan_certified_metrics", "rephrasing"]       # optional: absent
+
+    single = drift(stores, evaluations=[_evaluation()]).signal("reference_degradation")
+    assert single.status == "inconclusive" and single.reason == "evidence_unavailable"
+    assert single.sample_size == 1 and single.value is None
+
+    report = drift(stores, evaluations=[
+        _evaluation(), _evaluation(),
+        _evaluation(**{"B.exact_match": 0.4, "A.recall@5": 0.9, "C.correct_refusal": 0.1}),
+    ])
+    signal = report.signal("reference_degradation")
+    assert signal.status == "measured" and signal.value == 1.0 and signal.sample_size == 2
+    # C metrics are not "A or B"; a rise is not a decline.
+    assert signal.details == ({"metric": "B.exact_match", "previous": 0.6, "current": 0.4},)
+    assert report.thresholds_applied is False
+
+    steady = drift(stores, evaluations=[_evaluation(), _evaluation(**{"B.exact_match": None})])
+    assert steady.signal("reference_degradation").details == ()
+
+
+def test_cli_drift_reads_stored_evaluations(stores, tmp_path, capsys):
+    import argparse
+
+    from skifer import cli
+    from skifer.candidates.reference import EvaluationReport, store_evaluation
+
+    candidates, events = stores
+    directory = str(tmp_path / "ev")
+    for value, hour in ((0.6, 1), (0.4, 2)):
+        store_evaluation(EvaluationReport("v1", None, {"A": 0, "B": 1, "C": 0},
+                                          {"B.exact_match": value}, ()),
+                         candidates, directory=directory,
+                         clock=lambda hour=hour: SINCE + timedelta(hours=hour))
+    args = argparse.Namespace(since=None, until=None, json=True, environment="dev",
+                              usage_store=str(tmp_path / "none.db"), config=None,
+                              models_dir="semantic_models", evaluations_dir=directory)
+    assert cli.run_candidates_drift(args, candidate_store=candidates, usage_store=events,
+                                    index=certified_index(), catalog_models=CATALOG,
+                                    environment="dev", env_config={},
+                                    clock=lambda: UNTIL) == 0
+    signal = json.loads(capsys.readouterr().out)["signals"][3]
+    assert signal["name"] == "reference_degradation"
+    assert signal["details"] == [{"metric": "B.exact_match", "previous": 0.6, "current": 0.4}]
