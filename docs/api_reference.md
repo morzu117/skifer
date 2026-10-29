@@ -376,7 +376,7 @@ no DataFrame and no live Spark reference, so it survives the session that produc
 | `schema_version` | `str` | Evidence format version (`"1"`) |
 | `evidence_id` | `str` | Per-request UUID — never derived from the question text |
 | `model_keys` / `dimensions` | `tuple[str, ...]` | Semantic objects the answer used |
-| `metrics` | `tuple[MetricEvidence, ...]` | Per-metric definition hash, source columns and `lineage_status` |
+| `metrics` | `tuple[MetricEvidence, ...]` | Per-metric definition hash, source columns and `lineage_status`, plus the metric's own `certification` (`CERTIFIED` or `CANDIDATE`, distinct from the sources' certification) and its `candidate_id`, required for `CANDIDATE` and forbidden for `CERTIFIED` (Plan 44) |
 | `sources` | `tuple[SourceEvidence, ...]` | Per-dataset certification snapshot, frozen at query time |
 | `normalized_filters` | `tuple[dict, ...]` | Filter structure; values redacted unless policy allows |
 | `policy` | `PolicyEvaluation` | The certification decision that authorised execution |

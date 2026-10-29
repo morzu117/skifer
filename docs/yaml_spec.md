@@ -75,6 +75,14 @@ fails when that stops being true, because an attribute the hash reacts to and
 the diff cannot see is a contract that changes identity while the tooling
 reports nothing.
 
+`semantic.source_candidate_id` (Plan 44) records which [metric candidate](metric_candidates.md) a
+pipeline was promoted from. Its value must be `candidate:v1:<64 hex>`; anything else is rejected at
+load. `skifer candidates promote` writes it into the pipeline draft, and the draft builder copies
+it into the semantic draft's `metadata`. `skifer semantic sync --promote` then appends a
+`certified` event to that candidate's history. It is provenance, not part of the contract: it is
+outside the definition hash, so a pipeline promoted from a candidate certifies as the same contract
+as the same pipeline written by hand.
+
 ODCS 3.1 documents can be imported to these two YAML blocks:
 
 ```bash

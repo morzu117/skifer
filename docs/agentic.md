@@ -398,6 +398,26 @@ resp = hub.ask("Quel est le CA par pays pour le Q4 ?")
 
 If the target agent is not configured, `hub.ask()` returns `mode="error"` with an informative message.
 
+### Candidate fallback (Plan 44)
+
+A hub built with `candidate_agent=MetricCandidateAgent(...)` can answer a question that no semantic
+model covers. The answer is computed outside the semantic layer and is flagged as not certified.
+The environment's `candidate_fallback` key in `config.yaml` decides what the user gets:
+
+| `candidate_fallback` | Behaviour |
+|---|---|
+| `off` (default) | The GenBI answer, unchanged byte for byte |
+| `shadow` | The GenBI answer, plus the note « Une réponse non certifiée a été préparée (candidate …) » — the candidate is stored for review |
+| `on` | The candidate answer, opening with `> Réponse non certifiée — calculée hors du semantic layer, à valider.`; its evidence marks the metric `CANDIDATE` |
+
+The fallback only triggers when GenBI returns `no_model`, or `needs_clarification` without a
+suggestion. A certification `DENY` stays a `DENY`, and a hub without a `candidate_agent` never
+falls back.
+
+In `shadow`, a fallback that fails is logged by its error class name and the GenBI answer is
+returned unchanged. The agent, its validation, the two promotion levels and the arbitration are
+covered in [Metric candidates](metric_candidates.md).
+
 ### UserProfile — Alias pre-resolution
 
 `AgenticHub` integrates `UserProfile` to normalize user-specific vocabulary before routing.
