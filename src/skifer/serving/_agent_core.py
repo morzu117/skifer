@@ -48,9 +48,36 @@ def build_hub(
     )
     llm_endpoint = (model_config or {}).get("llm_endpoint")
     llm = get_llm_provider("databricks", **({"model": llm_endpoint} if llm_endpoint else {}))
-    hub = AgenticHub(semantic_engine=semantic, llm_provider=llm)
+    candidate_agent = _build_candidate_agent(engine, semantic, llm)
+    if candidate_agent is None:
+        hub = AgenticHub(semantic_engine=semantic, llm_provider=llm)
+    else:
+        hub = AgenticHub(
+            semantic_engine=semantic, llm_provider=llm, candidate_agent=candidate_agent
+        )
     logger.info("Skifer serving agent: AgenticHub initialised.")
     return hub
+
+
+def _build_candidate_agent(engine: Any, semantic: Any, llm: Any) -> Any:
+    """The Plan 44 fallback agent, or None — nothing is opened when ``candidate_fallback`` is off."""
+    from skifer.core.config import candidate_fallback_mode
+
+    reader = getattr(semantic, "_env_config", None)
+    env_config = reader() if callable(reader) else None
+    if candidate_fallback_mode(env_config if isinstance(env_config, dict) else None) == "off":
+        return None
+    from skifer.agentic.candidate_agent import MetricCandidateAgent
+    from skifer.candidates import default_candidate_store
+    from skifer.knowledge import KnowledgeIndex, default_knowledge_store
+
+    return MetricCandidateAgent(
+        semantic,
+        llm,
+        KnowledgeIndex.from_store(default_knowledge_store(engine)),
+        default_candidate_store(engine),
+        policy=getattr(semantic.tracer, "attribute_policy", None),
+    )
 
 
 def _as_dict(item: Any) -> dict:

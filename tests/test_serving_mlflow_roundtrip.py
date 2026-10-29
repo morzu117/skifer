@@ -126,3 +126,39 @@ def test_request_scopes_never_reach_the_consumer_context(served):
     _, consumer = HUB_CALLS[-1]
     assert consumer.consumer_id == "c-1"
     assert consumer.scopes == frozenset()
+
+
+CANDIDATE_ID = "candidate:v1:" + "ab" * 32
+
+
+class _CandidateHub(_Hub):
+    def ask(self, question, consumer_context=None):
+        from dataclasses import replace
+
+        from skifer.semantic.evidence import MetricEvidence
+
+        metric = MetricEvidence(
+            name="revenue_by_segment", model_key=CANDIDATE_ID, definition_hash="sha256:v1:fp",
+            source_columns=(), certification="CANDIDATE", candidate_id=CANDIDATE_ID,
+        )
+        evidence = replace(_evidence(), model_keys=(), metrics=(metric,), sql_text=None)
+        return AgentResponse(question=question, mode="candidate", explanation="42",
+                             evidence=evidence, candidate_id=CANDIDATE_ID)
+
+
+class _CandidateAgent(SkiferResponsesAgent):
+    def load_context(self, context):
+        self._hub = _CandidateHub()
+
+
+def test_candidate_response_roundtrip(tmp_path):
+    path = str(tmp_path / "candidate-model")
+    mlflow.pyfunc.save_model(path=path, python_model=_CandidateAgent(), input_example=REQUEST)
+    out = mlflow.pyfunc.load_model(path).predict(REQUEST)
+
+    assert out["output"][0]["content"][0]["text"].startswith(
+        "> Réponse non certifiée — calculée hors du semantic layer, à valider.")
+    skifer = out["custom_outputs"]["skifer"]
+    assert skifer["schema_version"] == "2"
+    [metric] = skifer["evidence"]["metrics"]
+    assert metric["certification"] == "CANDIDATE" and metric["candidate_id"] == CANDIDATE_ID

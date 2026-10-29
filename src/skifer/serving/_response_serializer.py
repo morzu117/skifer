@@ -29,6 +29,10 @@ def semantic_evidence_to_dict(evidence: Any) -> dict[str, Any] | None:
     return evidence.to_dict()
 
 
+# Plan 44: an answer computed outside the semantic layer says so before anything else.
+CANDIDATE_WARNING_LINE = "> Réponse non certifiée — calculée hors du semantic layer, à valider."
+
+
 def hub_response_to_text(response: Any) -> str:
     """
     Convert any HubResponse dataclass to a plain text string.
@@ -44,6 +48,9 @@ def hub_response_to_text(response: Any) -> str:
         LineageResponse,
         QualityResponse,
     )
+
+    if isinstance(response, AgentResponse) and response.mode == "candidate":
+        return f"{CANDIDATE_WARNING_LINE}\n{_serialize_agent_response(response)}"
 
     if isinstance(response, AgentResponse):
         return _serialize_agent_response(response)

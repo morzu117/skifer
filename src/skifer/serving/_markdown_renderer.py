@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import Any, Mapping
 
 from skifer.serving._response_serializer import (
+    CANDIDATE_WARNING_LINE,
     _candidate_metric_text,
     _oldest_age,
     hub_response_to_text,
@@ -62,6 +63,8 @@ def hub_response_to_markdown(response: Any, labels: Mapping[str, str] | None = N
     if not isinstance(response, AgentResponse):
         return hub_response_to_text(response)
     body = _agent_body(response, dict(labels or {}))
+    if response.mode == "candidate":
+        body = f"{CANDIDATE_WARNING_LINE}\n\n{body}"
     evidence = getattr(response, "evidence", None)
     if evidence is None:
         evidence = getattr(getattr(response, "result", None), "evidence", None)

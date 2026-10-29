@@ -328,7 +328,8 @@ class MetricCandidateAgent:
         message = (
             f"Question: {question}\n\n"
             "Context (the only tables you may use):\n"
-            f"{json.dumps(context, ensure_ascii=False, sort_keys=True, indent=1)}"
+            # Key order is meaning here: promoted candidates come first in the prompt.
+            f"{json.dumps(context, ensure_ascii=False, indent=1)}"
         )
         if error:
             message += (

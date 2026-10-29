@@ -466,3 +466,25 @@ def test_config_accepts_candidate_settings(tmp_path):
     )
     assert manager.get_value("candidates_store_questions") == "redacted"
     assert manager.get_value("candidates_retention_days") == 30
+
+
+@pytest.mark.parametrize("value", ["auto", "ON", 1, None])
+def test_config_invalid_candidate_fallback_raises_at_load(tmp_path, value):
+    with pytest.raises(ValueError, match="candidate_fallback.*'off', 'shadow', 'on'"):
+        ConfigurationManager(config_path=_write_env_config(tmp_path, candidate_fallback=value))
+
+
+def test_config_candidate_fallback_reads_yaml_booleans_and_defaults_to_off(tmp_path):
+    from skifer.core.config import candidate_fallback_mode
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "priority_check: [local]\nenvironments:\n  local:\n    catalog: null\n"
+        "    candidate_fallback: off\n"
+    )
+    manager = ConfigurationManager(config_path=str(config_file))
+    assert candidate_fallback_mode({"candidate_fallback": manager.get_value("candidate_fallback")}) == "off"
+    assert candidate_fallback_mode({"candidate_fallback": True}) == "on"
+    assert candidate_fallback_mode({"candidate_fallback": "shadow"}) == "shadow"
+    assert candidate_fallback_mode({}) == "off"
+    assert candidate_fallback_mode(None) == "off"
