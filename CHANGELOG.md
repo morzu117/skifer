@@ -85,6 +85,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CAT.SCHEMA ...] [--dry-run] [--json]` and `skifer knowledge search "QUESTION" [--kind] [--domain] [-k]
   [--json]` (exit codes `0` / `1` / `2`). `examples/03_semantic_and_question`'s `total_revenue` metric
   now declares French synonyms, so `search "chiffre d'affaires par pays"` finds it.
+- (Plan 44, S03.1) `agentic.candidate_agent`: `MetricCandidateAgent` (fallback outside the semantic
+  layer) — knowledge-index search, a compact context in score order (promoted candidates first, at
+  most 8 tables and 40 columns per table, neighbouring metrics, rules, `joins`/`shortcut` edges), a
+  system prompt whose grammar (filter operators, column operations, aggregates) comes from
+  `core/op_catalog.py` without `expr:` or the `sql` filter, closed JSON parsing of the proposal
+  (`parse_proposal`), and the `CandidateRefusal` codes. A question with no `table`/`column` hit is
+  refused `no_table_found` without any LLM call. `AgentResponse` gains `candidate_id` (distinct from
+  the existing `candidates`) and the `candidate` / `candidate_refused` modes; `KnowledgeIndex` gains
+  `get()` and `edges()`. `tests/fakes/fake_llm.py` adds a scripted, network-free `FakeLLM`.
+- (Plan 44, S03.2) `MetricCandidateAgent.validate()` / `propose()`: closed-JSON proposal checked in
+  order — the `sql` form goes through the Plan 43 mapper (a blocking residue such as
+  `window_function_unsupported` is refused `blocking_residue`; non-blocking residues are kept; without
+  the `[analyzer]` extra the form is refused `sql_path_unavailable` while `schema_dict` keeps working),
+  keys outside `ALLOWED_SCHEMA_KEYS` / table keys other than `name`/`alias`/`filter`/`filter_groups`,
+  tables absent from the knowledge index (`unknown_table`), `expr:` and the `sql` filter operator
+  (`raw_sql_rejected`, whatever `allow_raw_sql` says), then `parse_schema`. Those errors go back to the
+  LLM, at most 3 calls; the last error's code is the refusal. A join without keys (or `cross`) is
+  refused `join_without_key`; a keyed join matching no `joins`/`shortcut` edge nor semantic
+  relationship is accepted and noted `undeclared_join` in `coherence`. Cardinalities come from the
+  `relationships` of the semantic models over the joined tables (loaded lazily through the index), and
+  `find_unsafe_fanout` refuses a fanout with the planner's own message (`unsafe_fanout`).
+- (Plan 44, S03.3) `MetricCandidateAgent.answer()`: the only SQL sent to the backend is
+  `compile_select(parse_to_ir(<validated schema>), allow_raw_sql=False)` — first as `EXPLAIN`, then
+  run with `limit(row_limit)` in a worker bounded by `timeout_seconds` (a timeout abandons the worker
+  and is recorded as `TimeoutError`). The validated schema is parameterized before it is stored; the
+  same fingerprint counts one more request (`request_count`, pseudonymized `distinct_requesters`,
+  `last_requested_at`) instead of creating a second candidate, otherwise a `MetricCandidate` in state
+  `candidate` and a `created` event by `agent:candidate_agent_v1` are written. Every answer appends a
+  `CandidateRun(purpose="answer")` whose `result_hash` is the `sha256:v1:` of the rows as sorted
+  canonical JSON. Filter values quoted by the question or by a residue message are replaced by `?`.
+  A failed execution is refused `execution_failed`, recorded as a run carrying only the exception
+  class name, and rejects the candidate if it already existed and may still be rejected.
+- (Plan 44, S03.4) `MetricCandidateAgent.ask()` answers with `AgentResponse(mode="candidate",
+  candidate_id=…, evidence=SemanticEvidence(...))`: evidence `schema_version` `"2"`, one
+  `MetricEvidence` with `certification="CANDIDATE"` and the `candidate_id`, the hash of the SQL
+  actually executed (never its text), filter shapes with `<redacted>` values, and per-source
+  certification snapshots — so the provenance line never says "certifié le" for a candidate. The
+  environment's certification gate (`semantic_certification_policy`) applies to the candidate's source
+  tables before anything is compiled: in `enforce`, an uncertified source returns the existing gate's
+  decision (`access_denied`, `DENY`, `MISSING`) and nothing runs. The whole question runs in one
+  `skifer.candidate.build` span whose `trace_id` is recorded on the candidate, its event and its run
+  (`None` without tracing); a tracer failure never changes the answer.
 
 ### Fixed
 

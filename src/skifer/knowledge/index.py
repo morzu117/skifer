@@ -96,8 +96,10 @@ class KnowledgeIndex:
             for term, df in document_frequency.items()
         }
         self._adjacency: dict[str, list[tuple[str, float]]] = {}
+        self._edges: list[Edge] = []
         for edge in sorted(edges, key=lambda e: e.edge_id):
             if edge.from_id in self._nodes and edge.to_id in self._nodes:
+                self._edges.append(edge)
                 self._adjacency.setdefault(edge.from_id, []).append((edge.to_id, edge.weight))
                 self._adjacency.setdefault(edge.to_id, []).append((edge.from_id, edge.weight))
 
@@ -107,6 +109,22 @@ class KnowledgeIndex:
 
     def __len__(self) -> int:
         return len(self._nodes)
+
+    def get(self, node_id: str) -> Node | None:
+        """The live node with this id, or None (absent or soft-deleted)."""
+        return self._nodes.get(node_id)
+
+    def edges(
+        self, *, node_ids: Iterable[str] | None = None, kinds: Iterable[str] | None = None
+    ) -> list[Edge]:
+        """Live edges, optionally only those with both ends in ``node_ids``."""
+        within = None if node_ids is None else set(node_ids)
+        selected = None if kinds is None else set(kinds)
+        return [
+            edge for edge in self._edges
+            if (selected is None or edge.kind in selected)
+            and (within is None or (edge.from_id in within and edge.to_id in within))
+        ]
 
     def _score(self, node_id: str, terms: tuple[str, ...]) -> tuple[float, tuple[str, ...]]:
         score = 0.0
