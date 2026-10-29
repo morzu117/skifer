@@ -570,6 +570,118 @@ class SparkBackend:
         rows = self._spark.sql(query).collect()
         return [row.asDict(recursive=True) for row in rows]
 
+    # --- Plan 44: metric candidate registry -------------------------------------------
+    # The history table is append-only by construction: the only write primitive
+    # it can reach is append_candidate_row, which never rewrites an existing id.
+
+    def _ensure_candidate_table(self, schema: str, table: str) -> str:
+        from skifer.candidates.store import delta_create_table_sql
+        from skifer.core.sql_compiler import quote_fqn, quote_ident
+
+        qualified = f"{quote_fqn(schema)}.{quote_ident(table)}"
+        self._spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quote_fqn(schema)}")
+        self._spark.sql(delta_create_table_sql(qualified, table))
+        return qualified
+
+    def upsert_metric_candidate(self, schema: str, row: dict) -> None:
+        """Insert or replace one candidate row, keyed on ``candidate_id``."""
+        from skifer.candidates.store import CANDIDATES_TABLE, delta_columns_ddl
+
+        qualified = self._ensure_candidate_table(schema, CANDIDATES_TABLE)
+        view_name = "_skifer_metric_candidate_src"
+        self._spark.createDataFrame(
+            [row], schema=delta_columns_ddl(CANDIDATES_TABLE)
+        ).createOrReplaceTempView(view_name)
+        self._spark.sql(
+            f"MERGE INTO {qualified} t USING {view_name} s "
+            "ON t.candidate_id = s.candidate_id "
+            "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
+        )
+
+    def get_metric_candidate(
+        self,
+        schema: str,
+        *,
+        candidate_id: str | None = None,
+        fingerprint: str | None = None,
+    ) -> dict | None:
+        from skifer.candidates.store import CANDIDATES_TABLE
+
+        filters = {
+            key: value
+            for key, value in (("candidate_id", candidate_id), ("fingerprint", fingerprint))
+            if value is not None
+        }
+        rows = self.list_candidate_rows(schema, CANDIDATES_TABLE, limit=1, **filters)
+        return rows[0] if rows else None
+
+    def list_metric_candidates(
+        self, schema: str, *, state: str | None = None, limit: int | None = None
+    ) -> list[dict]:
+        from skifer.candidates.store import CANDIDATES_TABLE
+
+        filters = {} if state is None else {"state": state}
+        return self.list_candidate_rows(schema, CANDIDATES_TABLE, limit=limit, **filters)
+
+    def append_candidate_row(
+        self, schema: str, table: str, row: dict, id_column: str
+    ) -> None:
+        """Append one row unless its identifier is already present (idempotent)."""
+        from skifer.candidates.store import delta_columns_ddl
+        from skifer.core.sql_compiler import escape_sql_string, quote_ident
+
+        qualified = self._ensure_candidate_table(schema, table)
+        existing = self._spark.sql(
+            f"SELECT 1 FROM {qualified} WHERE {quote_ident(id_column)} = "
+            f"'{escape_sql_string(row[id_column])}' LIMIT 1"
+        ).collect()
+        if existing:
+            return
+        self._spark.createDataFrame([row], schema=delta_columns_ddl(table)).write.format(
+            "delta"
+        ).mode("append").saveAsTable(f"{schema}.{table}")
+
+    def list_candidate_rows(
+        self,
+        schema: str,
+        table: str,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = None,
+        **filters: str,
+    ) -> list[dict]:
+        """Equality filters, plus a ``[since, until)`` window on the table's time column."""
+        from skifer.candidates.store import ORDER_COLUMNS, TABLE_COLUMNS, TIME_COLUMNS
+        from skifer.core.sql_compiler import escape_sql_string, quote_fqn, quote_ident
+
+        if table not in TABLE_COLUMNS:
+            raise ValueError(f"Unknown candidate registry table {table!r}.")
+        if not self._spark.catalog.tableExists(f"{schema}.{table}"):
+            return []
+        known = {column for column, _ in TABLE_COLUMNS[table]}
+        clauses = []
+        for column, value in sorted(filters.items()):
+            if column not in known:
+                raise ValueError(f"Unknown column {column!r} for table {table!r}.")
+            clauses.append(f"{quote_ident(column)} = '{escape_sql_string(value)}'")
+        for value, operator in ((since, ">="), (until, "<")):
+            if value is not None:
+                clauses.append(
+                    f"{quote_ident(TIME_COLUMNS[table])} {operator} "
+                    f"'{escape_sql_string(value)}'"
+                )
+        query = f"SELECT * FROM {quote_fqn(schema)}.{quote_ident(table)}"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY " + ", ".join(
+            f"{quote_ident(column)} {direction}" for column, direction in ORDER_COLUMNS[table]
+        )
+        if limit is not None:
+            query += f" LIMIT {int(limit)}"
+        rows = self._spark.sql(query).collect()
+        return [row.asDict(recursive=True) for row in rows]
+
     def check_catalog_access(self, catalog: str, timeout: int = 30) -> bool:
         if not catalog:
             return True

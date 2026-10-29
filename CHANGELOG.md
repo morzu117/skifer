@@ -23,6 +23,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non certifiées"), never "certifié le …", even when every source table is certified. Answers whose
   metrics are all `CERTIFIED` — and evidence serialized at schema version `"1"` — keep their
   previous text byte for byte.
+- (Plan 44, S01.1) New `skifer.candidates` package: `MetricCandidate`, `CandidateRun`,
+  `CertificationEvent` and `ReferenceQuestion` frozen dataclasses, validated at construction
+  (aware datetimes, closed states/event types/purposes/families, `request_count >= 1`,
+  `stability_score` in `[0, 1]`, SQL-safe `metric_name`, error recorded by class name only),
+  serialized by field-by-field allowlist with symmetric `*_from_row` readers.
+  `check_transition()` enforces the closed state machine; `None → candidate` is the only creation.
+- (Plan 44, S01.2) `fingerprint_candidate(schema_dict)` hashes a candidate's structure
+  (`sha256:v1:`, canonical JSON): non-semantic order is sorted (tables by alias, filters, groups,
+  `group_by`, measures by target), every filter value becomes `"?"`, `dev_limit`/`description` are
+  dropped — two questions differing only by a filter value are the same metric.
+  `candidate_id_for()` derives `candidate:v1:<sha256(fingerprint)>`; `MetricCandidate` refuses a
+  fingerprint or id that does not match its `schema_dict`. New `candidates.redaction`:
+  `parameterize_filters()` replaces every value in `tables[].filter`, `filter_groups`, `where`,
+  `where_groups` and `aggregate.having` (string, dict and mapping forms) by `{{ pN }}` and returns
+  the values separately for an immediate re-run only; a raw `sql` filter is refused.
+  `question_hash()` (NFKC, case-folded, whitespace-collapsed) and `requester_pseudonym()` (delegates
+  to the tracing `TraceAttributePolicy`, `None` without an HMAC secret).
+- (Plan 44, S01.3) `candidates.store`: `CandidateStore` Protocol and `SqliteCandidateStore`
+  (`.skifer_candidates.db`, git-ignored) over four tables — `metric_candidates` (upsert on
+  `candidate_id`), `metric_candidate_runs`, `metric_certification_history` and
+  `reference_questions` (idempotent appends: a known id is ignored). `upsert_candidate` refuses a
+  `schema_dict` that still holds a filter value; in `redacted` mode the question is never written,
+  only its hash. The history has no update or delete path anywhere. Event listing uses half-open
+  `[since, until)` windows. New environment settings `candidates_store_questions`
+  (`full` | `redacted`) and `candidates_retention_days` (positive integer, read and validated, no
+  purge yet), validated at config load.
+- (Plan 44, S01.4) `DeltaCandidateStore` over new named `SparkBackend` primitives
+  (`upsert_metric_candidate` — `MERGE INTO` on `candidate_id`, `get_metric_candidate`,
+  `list_metric_candidates`, `append_candidate_row` — idempotent append on the row id, and
+  `list_candidate_rows`), with explicit DDL `CREATE TABLE IF NOT EXISTS … USING DELTA TBLPROPERTIES
+  (delta.enableChangeDataFeed = true)` and no column `DEFAULT`; values and identifiers are escaped,
+  nothing is ever counted. `default_candidate_store(engine)` follows `default_certification_store`:
+  SQLite locally or without a catalog, Delta in `<catalog>._skifer_candidates` otherwise, with the
+  environment's `candidates_store_questions` / `candidates_retention_days`.
 
 ### Fixed
 

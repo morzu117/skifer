@@ -79,6 +79,7 @@ _SUCCESS
 /.skifer_user
 /.skifer_proposals/
 /.skifer_adaptive.db
+/.skifer_candidates.db
 
 # gstack / gbrain
 /.gbrain-source
