@@ -433,6 +433,14 @@ benchmark de 44.7 ; le défaut de l'index est décidé ensuite et consigné dans
 | R6 | Boucle : une candidate promue niveau 1 est reproposée comme candidate | Le routeur consulte d'abord les candidates `promoted` (fingerprint et index) : une question déjà couverte réutilise la candidate (`request_count` += 1) au lieu d'en créer une. |
 | R7 | Divergence entre la vue niveau 1 et le pipeline promu niveau 2 | Les deux viennent du même `schema_dict` via `compile_select` ; test d'égalité des SQL compilés. |
 
+**R1 levé — vérifié en live le 28 octobre 2026 (S05.1).** Sur `sts_demo_catalog`, warehouse
+Pro/Serverless : une metric view accepte une vue comme `source`, `MEASURE()` la relit (BE = 7.5,
+FR = 15.0 sur le jeu de test), et `ALTER VIEW … SET TAGS` s'applique à la metric view.
+`LEVEL1_PUBLISHES_METRIC_VIEW = True`. **Un écart en est sorti** : Unity Catalog refuse `.` et `=`
+dans une clé de tag (`Tag key contains reserved characters (., =): skifer.certification`) ; la clé
+`skifer.certification` de D1 et de 44.4 ne peut donc pas exister. Le niveau 1 pose
+`certification = CANDIDATE`, la clé que le miroir de tags du Plan 41 utilise déjà.
+
 ## Vérification
 
 - Gate complet : `pytest tests/ -x --tb=short` avec Java, `ruff check src/`, `mkdocs build --strict`.

@@ -10,6 +10,7 @@ Usage :
 from __future__ import annotations
 
 import argparse
+import contextlib
 from contextlib import redirect_stdout
 from dataclasses import asdict
 from io import StringIO
@@ -62,6 +63,10 @@ META_EXIT_NOT_FOUND = 3
 AUDIT_EXIT_OK = 0
 AUDIT_EXIT_ERROR = 1
 AUDIT_EXIT_BELOW_THRESHOLD = 2
+
+CANDIDATES_EXIT_OK = 0
+CANDIDATES_EXIT_ERROR = 1
+CANDIDATES_EXIT_NEEDS_REVIEW = 2
 
 API_LOOPBACK_HOST = "127.0.0.1"
 
@@ -459,6 +464,30 @@ def main() -> None:
     knowledge_search_parser.add_argument("--db", default=".skifer_knowledge.db",
                                          help="SQLite knowledge store.")
 
+    candidates_parser = subparsers.add_parser(
+        "candidates",
+        help="Validate and promote metric candidates (Plan 44).",
+    )
+    candidates_subparsers = candidates_parser.add_subparsers(dest="candidates_command")
+    candidates_validate_parser = candidates_subparsers.add_parser(
+        "validate",
+        help="Judge candidates (coherence, frequency, stability) and promote them to level 1.",
+    )
+    candidates_validate_parser.add_argument(
+        "--candidate", action="append", default=None, metavar="ID",
+        help="Candidate to validate (repeatable); default: every pending one.",
+    )
+    candidates_validate_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Judge and print; no stability query, no DDL, no transition.",
+    )
+    candidates_validate_parser.add_argument("--json", action="store_true",
+                                            help="Print the results as JSON.")
+    candidates_validate_parser.add_argument("--config", default=None, metavar="PATH",
+                                            help="Path to config.yaml.")
+    candidates_validate_parser.add_argument("--models-dir", default="semantic_models",
+                                            help="Directory holding semantic_catalog.yaml.")
+
     adaptive_parser = subparsers.add_parser(
         "adaptive",
         help="Review adaptive Gold proposals; never deploy or invoke Git.",
@@ -613,6 +642,8 @@ def main() -> None:
         _run_adaptive(args)
     elif args.command == "knowledge":
         _run_knowledge(args)
+    elif args.command == "candidates":
+        sys.exit(run_candidates_command(args))
     elif args.command == "incidents":
         _run_incidents(args)
     elif args.command == "contract":
@@ -620,6 +651,99 @@ def main() -> None:
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def run_candidates_command(
+    args: argparse.Namespace, *, store=None, semantic=None, knowledge_store=None, clock=None
+) -> int:
+    """``skifer candidates validate``: ``0`` ok, ``1`` technical error, ``2`` needs review.
+
+    ``2`` wins over ``1``: it is the signal a job notifies on, and it means that
+    at least one candidate *went* to ``needs_review`` during this run — a dry
+    run, which writes no transition, never returns it.
+    """
+    from datetime import datetime, timezone
+
+    from skifer.candidates.promotion import apply_report
+    from skifer.candidates.store import default_candidate_store
+    from skifer.candidates.validator import CandidateValidator, ValidationThresholds
+    from skifer.core.config import candidate_validation_thresholds
+    from skifer.knowledge.index import KnowledgeIndex
+    from skifer.knowledge.store import default_knowledge_store
+
+    if getattr(args, "candidates_command", None) != "validate":
+        print("Candidates command missing. Use 'skifer candidates --help'.", file=sys.stderr)
+        return CANDIDATES_EXIT_ERROR
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    try:
+        if semantic is None:
+            from skifer.core.core import SkiferEngine
+            from skifer.observability.certification_store import default_certification_store
+            from skifer.semantic.semantic import SemanticEngine
+
+            engine = SkiferEngine(config_path=args.config)
+            semantic = SemanticEngine(engine, models_dir=args.models_dir,
+                                      certification_store=default_certification_store(engine))
+        core = semantic.core
+        env_config = core._context.env_config()
+        thresholds = ValidationThresholds(**candidate_validation_thresholds(env_config))
+        store = store if store is not None else default_candidate_store(core)
+        knowledge_store = (knowledge_store if knowledge_store is not None
+                           else default_knowledge_store(core))
+        validator = CandidateValidator(store, semantic, KnowledgeIndex.from_store(knowledge_store),
+                                       thresholds=thresholds, clock=clock)
+        catalog = getattr(core, "db", None)
+        with contextlib.redirect_stdout(sys.stderr):  # keep --json parseable
+            schema = semantic._resolve_metric_views_schema()
+        backend = core._get_backend()
+        ids = args.candidate or (
+            [c.candidate_id for c in store.list_candidates(state="candidate")]
+            + [c.candidate_id for c in store.list_candidates(state="validated")
+               if c.published_view is None]
+        )
+    except Exception as exc:
+        print(f"[candidates] setup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return CANDIDATES_EXIT_ERROR
+
+    rows, failed, reviewed = [], False, False
+    for candidate_id in ids:
+        try:
+            report = validator.validate(candidate_id, execute=not args.dry_run)
+            result = apply_report(report, store=store, backend=backend, catalog=catalog,
+                                  schema=schema, clock=clock, knowledge_store=knowledge_store,
+                                  dry_run=args.dry_run)
+        except Exception as exc:
+            failed = True
+            rows.append({"candidate_id": candidate_id, "error_type": type(exc).__name__})
+            print(f"[candidates] {candidate_id}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            continue
+        failed = failed or result.error_type is not None
+        reviewed = reviewed or (not args.dry_run and result.new_state == "needs_review"
+                                and result.previous_state != "needs_review")
+        rows.append({
+            "candidate_id": candidate_id, "outcome": report.outcome,
+            "previous_state": result.previous_state, "new_state": result.new_state,
+            "statements": list(result.statements), "notes": list(result.notes),
+            "error_type": result.error_type, "report": report.to_dict(),
+        })
+    if args.json:
+        print(json.dumps({"dry_run": args.dry_run, "candidates": rows}, ensure_ascii=False,
+                         sort_keys=True, default=str))
+    else:
+        prefix = "[candidates] (dry run) " if args.dry_run else "[candidates] "
+        for row in rows:
+            if "outcome" not in row:
+                continue
+            print(f"{prefix}{row['candidate_id']}: {row['outcome']} "
+                  f"{row['previous_state']} -> {row['new_state']}"
+                  + (f" (error: {row['error_type']})" if row["error_type"] else ""))
+            for note in row["notes"]:
+                print(f"{prefix}  {note}")
+        if not rows:
+            print(f"{prefix}nothing to validate")
+    if reviewed:
+        return CANDIDATES_EXIT_NEEDS_REVIEW
+    return CANDIDATES_EXIT_ERROR if failed else CANDIDATES_EXIT_OK
 
 
 def _run_knowledge(args: argparse.Namespace) -> None:

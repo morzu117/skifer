@@ -143,6 +143,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "> Réponse non certifiée — calculée hors du semantic layer, à valider." (once; certified answers
   are unchanged). Through real MLflow, the served text carries that line and
   `custom_outputs["skifer"]` keeps the v2 evidence with the `CANDIDATE` metric and its `candidate_id`.
+- (Plan 44, S05.1) Level 1 promotion definitions, `skifer.candidates.promotion`:
+  `metric_definition(schema_dict)` turns each `{{ pN }}` filter of a stored candidate into an
+  `aggregate.group_by` dimension (value-free filters stay; a filter group left empty drops the OR; a
+  `having` on a measure is dropped). `level1_view_ddl` emits `CREATE OR REPLACE VIEW
+  <catalog>.<schema>_candidates.<metric_name>` whose body is exactly
+  `compile_select(parse_to_ir(metric_definition(...)[0]))`, with the candidate id and the view SQL hash
+  in its comment; `level1_model` / `level1_metric_view_ddl` build the single-table metric view
+  `<metric_name>_metrics` on that view (only `sum`, `count`, `min`, `max` measures, which roll up over a
+  grouped view; anything else is a `MetricViewTranslationError`). Risk R1 was verified live on
+  `sts_demo_catalog`: a metric view accepts a view as its source, so `LEVEL1_PUBLISHES_METRIC_VIEW =
+  True`. The same test showed that Unity Catalog refuses `.` in a tag key: the candidate tag is
+  `certification = CANDIDATE` (the Plan 41 mirror's key), not `skifer.certification`.
+- (Plan 44, S05.2) `skifer.candidates.validator.CandidateValidator` judges a candidate on three
+  explainable criteria, each reason carrying `code`, `observed`, `threshold` and `verdict`:
+  coherence (`residue_present`, `invalid_schema`, `missing_table` against the knowledge index,
+  `undeclared_join`, `unsafe_fanout` with the agent's own rules, `source_not_certified` through the
+  environment's certification gate), frequency (`min_requests`, `min_distinct_requesters` — never a
+  success when no pseudonymised requester exists: `requesters_unavailable` — and `min_days`, distinct
+  UTC days of successful answers) and stability (share of identical result hashes over
+  `stability_runs` runs of the published definition, each recorded as a `stability` run).
+  `ValidationReport.outcome` is `needs_review` on incoherence, `pending` while frequency is not
+  reached (state untouched, no event, no query), `needs_review` on instability, else `validated`;
+  `semantic_layer_version` is the `sha256:v1:` of `semantic_catalog.yaml` at each judgment.
+  `ValidationThresholds` rejects negative thresholds and a stability outside `[0, 1]`.
+- (Plan 44, S05.3) `skifer.candidates.promotion.promote_level1` emits, in order, `CREATE SCHEMA IF NOT
+  EXISTS <schema>_candidates`, the view, the metric view (when `LEVEL1_PUBLISHES_METRIC_VIEW` and a
+  catalog are set) and the `certification = CANDIDATE` tags — never anything outside
+  `<schema>_candidates`. Every statement is built before the first one runs. Without a catalog only
+  the Spark SQL view is created, and the result notes the skipped metric view. `apply_report` turns
+  a `ValidationReport` into its transitions: `candidate → validated → promoted` (the second event by
+  `agent:validator_v1`, evidence = the serialized report), `validated → promoted` for a candidate an
+  earlier run validated, `→ needs_review` with one event (also on a `MetricViewTranslationError`,
+  reason `metric_view_translation`), nothing on `pending`. A failed DDL is recorded as a run of the
+  new purpose `promotion` with its error class, and the candidate keeps its state. A promotion fills
+  `published_view`/`published_metric_view` and adds to the knowledge index a `metric` node of status
+  `candidate` and one `shortcut` edge per join (`source="candidate"`, `weight=0.8`).
+- (Plan 44, S05.4) `skifer candidates validate [--candidate ID ...] [--dry-run] [--json]` judges the
+  `candidate` candidates, then the `validated` ones not yet published, and applies each report.
+  Exit codes: `0` ok, `1` technical error (a failed DDL included), `2` when at least one candidate
+  went to `needs_review` during the run — it wins over `1`, being the signal a job notifies on.
+  `--dry-run` runs no stability query, emits no DDL and writes nothing; a candidate whose stability
+  was never measured is then reported `pending`, not unstable. Thresholds come from the environment
+  (`candidates_min_requests`, `candidates_min_distinct_requesters`, `candidates_min_days`,
+  `candidates_stability_runs`, `candidates_min_stability`) and are validated when `config.yaml`
+  loads: a negative count, `candidates_stability_runs < 1` or a stability outside `[0, 1]` is an
+  error.
 
 ### Fixed
 
