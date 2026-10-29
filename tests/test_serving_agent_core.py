@@ -179,7 +179,7 @@ def test_answer_puts_versioned_redacted_evidence_in_custom_outputs():
         "- Certification : ✅ certifiée le 2026-09-04\n"
         "- Fraîcheur : il y a 2 h"
     )
-    assert custom_outputs["skifer"]["schema_version"] == "1"
+    assert custom_outputs["skifer"]["schema_version"] == "2"
     assert json.loads(json.dumps(custom_outputs)) == custom_outputs
     encoded = json.dumps(custom_outputs)
     assert "secret@example.com" not in encoded

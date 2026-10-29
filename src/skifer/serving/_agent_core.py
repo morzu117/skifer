@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
-EVIDENCE_SCHEMA_VERSION = "1"
+EVIDENCE_SCHEMA_VERSION = "2"
 
 
 def build_hub(

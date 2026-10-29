@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import Any, Mapping
 
 from skifer.serving._response_serializer import (
+    _candidate_metric_text,
     _oldest_age,
     hub_response_to_text,
     semantic_evidence_to_dict,
@@ -230,7 +231,9 @@ def _provenance_block(evidence: dict[str, Any]) -> str:
     if len(names) > 3:
         shown += f" (+{len(names) - 3})"
     lines.append(f"- {'Source' if len(names) == 1 else 'Sources'} : {shown}")
-    lines.append(f"- Certification : {_certification(sources)}")
+    lines.append(
+        f"- Certification : {_certification(sources, evidence.get('metrics') or [])}"
+    )
     lines.append(f"- Fraîcheur : {_freshness(_oldest_age(sources))}")
 
     decision = evidence["policy"]["decision"]
@@ -245,7 +248,13 @@ def _status_label(status: str | None) -> str:
     return _STATUS_LABELS.get(status, f"❓ {status.lower()}")
 
 
-def _certification(sources: list[dict[str, Any]]) -> str:
+def _certification(
+    sources: list[dict[str, Any]], metrics: list[dict[str, Any]] = ()
+) -> str:
+    # Plan 44, D4: an uncertified metric wins over certified sources.
+    candidate_text = _candidate_metric_text(list(metrics))
+    if candidate_text is not None:
+        return f"⚠️ {candidate_text}"
     weak = [source for source in sources if source["certification_status"] != "CERTIFIED"]
     if weak:
         if len(sources) == 1:
