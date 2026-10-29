@@ -211,6 +211,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store, table, draft and report goes to a temporary directory
   (`test_metric_candidates_example_leaves_tree_clean`). The arbitration notebook gains an optional
   drift cell (`show_drift = yes`, observation only).
+- (Plan 44, S10.2) `docs/metric_candidates.md`: why the module exists, the cycle, the two
+  promotion levels, what is stored and what never is, every configuration key, arbitration,
+  exit codes, drift, the reference set, the knowledge index and D7 with its numbers, Lakeflow
+  scheduling and limits. `test_every_config_key_is_documented` and
+  `test_every_exit_code_is_documented` keep it in step with `core/config.py` and `cli.py`.
+  `databricks_supervisor.md` says what the fallback adds to Genie, `adaptive.md` states the
+  question-storage boundary, and `CLAUDE.md`/`AGENTS.md` carry the new packages and Plan 44.
 - (Plan 44, S09.2 fix) `skifer candidates evaluate --json` stays parseable: the SQL the
   semantic engine prints while the hub answers the reference questions now goes to stderr.
 - (Plan 44, D7) The knowledge search default is decided: `knowledge_search_mode: null`

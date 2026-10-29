@@ -66,6 +66,7 @@ src/skifer/
     llm_provider.py    # LLMProvider ABC + get_llm_provider() factory
   agentic/
     agent.py           # GenBIAgent — 2-step LLM pipeline (model selection → SemanticQuery)
+    candidate_agent.py # MetricCandidateAgent — governed fallback outside the semantic layer (Plan 44)
     resolver.py        # QueryResolver — deterministic SQL builder, zero LLM, no hallucinated SQL
     orchestrator.py    # Multi-agent orchestration + OrchestratorExporter
     hub.py             # AgenticHub — entry point for the `skifer hub` CLI
@@ -139,6 +140,22 @@ src/skifer/
     parity.py              # ParityRunner — disposable-table draft vs. legacy comparison (43.5)
     llm_enrichment.py      # constrained LLM naming/descriptions only, never structure (43.6)
     history.py             # skifer analyze history — system.query.history via Databricks SDK (43.7)
+  candidates/
+    models.py          # MetricCandidate + closed state machine, history events (Plan 44)
+    store.py           # Sqlite/Delta candidate store — runs and certification history append-only
+    redaction.py       # filter values parameterized before the fingerprint; question full|redacted
+    validator.py       # CandidateValidator — coherence, frequency (HMAC requesters), stability
+    promotion.py       # level 1 view + metric view in <schema>_candidates; level 2 O_EXCL drafts
+    service.py         # CandidateService — the only arbitration logic (CLI + notebook call it)
+    drift.py           # observation-only usage signals; never transitions, never writes
+    reference.py       # reference set A/B/C, bootstrap, evaluate() report
+  knowledge/
+    models.py          # KnowledgeNode/Edge — tables, columns, metrics, candidates
+    store.py           # Sqlite/Delta knowledge graph store
+    sync.py            # skifer knowledge sync — metadata registry + semantic catalog (+ UC)
+    index.py           # KnowledgeIndex — bm25 | dense | hybrid (RRF); D7 default via from_config
+    embeddings.py      # optional [knowledge-embeddings]; lazy import, local cache only
+    benchmark.py       # skifer knowledge benchmark — recall/rank/latency per config (D7)
   cli.py               # `skifer` CLI, including Plan 31 index/lineage/dictionary/incidents/api/audit
   spark_factory.py     # get_spark_session() — notebook > Connect serverless > Connect cluster > local[*]
   utils.py             # safe_columns and other helpers
@@ -850,6 +867,24 @@ compares it to the legacy table it is meant to replace, proof on real data rathe
 text. A construct this package cannot safely translate is always a named residue in the report,
 never a silent drop or a guess.
 
+### Metric candidates (Plan 44)
+
+Une question que le catalogue sémantique ne couvre pas peut recevoir une réponse **non certifiée**
+(`candidate_fallback: off|shadow|on` par environnement, `off` par défaut = comportement GenBI
+inchangé à l'octet). `MetricCandidateAgent` fait proposer au LLM un `schema_dict` dans la grammaire
+du pipeline — **jamais de SQL exécuté** —, le valide contre l'index de connaissance et le graphe de
+domaine, le compile par `compile_select`, borne l'exécution et garde la métrique comme
+**candidate** (fingerprint aux valeurs de filtre paramétrées : même besoin = même candidate). Le
+fallback ne se déclenche jamais sur un refus de policy. `skifer candidates validate` juge cohérence,
+fréquence (demandeurs comptés par pseudonyme HMAC, sans secret pas de comptage) et stabilité ;
+niveau 1 = vue + metric view dans `<schema>_candidates`, tag `certification = CANDIDATE` ; niveau 2
+= drafts `O_EXCL` sous `.drafts/` pour une PR humaine, certifiée par `semantic sync --promote`
+(événement `certified`). Toute la logique d'arbitrage est dans `CandidateService` ; CLI et notebook
+ne font que l'appeler. Historique de certification append-only. Drift = observation seule. Index de
+connaissance : BM25 sans dépendance, dense/hybride via `[knowledge-embeddings]` ; D7 :
+`knowledge_search_mode: null` → `hybrid` si `knowledge_embedding_model` est posé, `bm25` sinon.
+Voir `docs/metric_candidates.md`.
+
 ### Tests
 - LLM calls are always mocked; no live cluster, API key or network is needed.
 - Spark, however, is **not** mocked everywhere: 182 tests run a real local Delta session
@@ -909,6 +944,7 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Skifer derrière un superviseur Genie (Plan 41)](docs/roadmap/41_genie_supervisor_plan.md) | `feat/plan41-genie-supervisor` | **Implémenté et vérifié en live (41.1–41.9)** — `SkiferResponsesAgent` (MLflow 3), Connect serverless, store de certification par catalogue, tags UC, `log_agent`, runbook `docs/databricks_supervisor.md`. Le superviseur n'accepte pas un endpoint de serving directement (pas de `tool_type` pour ça) ; contournement par fonction SQL UC + `ai_query`, documenté et testé. Bug `build_hub`/`config_manager` trouvé et corrigé en 3.0.2. |
 | [Couche sémantique en metric views pour Genie (Plan 42)](docs/roadmap/42_metric_views_plan.md) | `feat/plan42-metric-views` | Implémenté (42.0–42.5) — `metric_views.py`, `SemanticEngine.publish_metric_views`, `skifer semantic metric-views`, page `docs/genie_metric_views.md`. Reste 42.6 (demo_sts bascule sur Skifer, hors dépôt) et la vérification live de `publish_metric_views` lui-même sur le workspace (42.0 n'a vérifié que le DDL brut). |
 | [Project analyzer : du SQL existant aux pipelines Skifer (Plan 43)](docs/roadmap/43_project_analyzer_plan.md) | `feat/plan43-project-analyzer` | **Implémenté — 43.0 à 43.8 sont tous faits.** Corpus synthétique + parser + inventaire (43.0), `where:`/`where_groups:` post-jointure (43.1), mapper déterministe SQL → schema_dict + oracle de round-trip par `compile_select` + rapport + `skifer analyze --dry-run` (43.2), DAG de dépendances + découpage CTE/sous-requêtes en partials/tables intermédiaires/inline + `skifer analyze --dry-run --split` (43.3), fingerprints structurels + détection de motifs récurrents (règles partagées, divergences jamais arbitrées, sous-seuil jamais silencieux) + émission validée de drafts/stubs + `skifer analyze --emit [--out] [--min-occurrences] [--min-scripts] [--strict]` (43.4), run de parité données `ParityRunner`/`compare_tables` (table jetable, jamais la cible réelle ni la legacy) + `skifer analyze parity <draft.yaml> --against <fqn> --target-layer <layer> [--key col,…]` (43.5, `--target-layer` ajouté au-delà de l'esquisse du plan — requis par `run_process_to_table`) : 7/8 statements du corpus vérifient (05 et 07 résolus par le découpage), le 8e (`LAG()`) reste honnêtement bloqué ; sur le même corpus, `--emit` promeut `country` en règle partagée, trouve la divergence `net_margin`, et écrit 7 drafts + 1 stub. Les deux tests Spark de 43.5, initialement vérifiés par relecture seulement (pas de JRE local), ont depuis été réellement exécutés (JRE local installé) : la relecture avait raté un `filter:` mal placé dans un fixture de test (corrigé — aucun défaut côté `ParityRunner`/`compare_tables`), suite complète désormais verte avec Spark. Enrichissement LLM contraint optionnel (43.6) : `--enrich` sur `--emit` propose noms/docstrings de règles, descriptions de drafts et regroupements de fingerprints via JSON fermé (allowlist par clé, nom de règle proposé purement consultatif, jamais utilisé pour renommer) — additif au rapport JSON uniquement, no-op silencieux sans provider ; le corps de règle pour un fragment `needs_curation` reste un scope cut assumé (pas de fragment sûr isolable sans travail côté mapper). Front-ends notebooks (43.7, premier sous-point) : `skifer analyze` lit aussi un export Databricks `.py` (cellules `# MAGIC %sql` + appels `spark.sql(...)` littéraux scannés par `ast`) et un `.ipynb` (`%%sql` + `spark.sql(...)`), chaque statement gardant son origine fichier/cellule/ligne (`::cell:N` pour un ipynb, même convention de suffixe que 43.3) ; une f-string ou un argument non littéral est un `ExtractionResidue` nommé, jamais interpolé. Historique de requêtes (43.7, second sous-point) : `skifer analyze history --warehouse-id ID --days N` lit `system.query.history` via l'API Statement Execution du SDK Databricks, ne sélectionne jamais de colonne auteur/résultat, dédoublonne par fingerprint de contenu. Doc (43.8) : `docs/project_analyzer.md` (parcours guidé complet sur l'exemple 24), entrée `mkdocs.yml`, arborescence `analyzer/` et section prose dans `CLAUDE.md`/`AGENTS.md`. **Plan clos.** |
+| [Metric candidates : répondre hors du semantic layer, puis certifier (Plan 44)](docs/roadmap/44_metric_candidates_plan.md) | `feat/plan44-s00-…` → `feat/plan44-s10-example-docs` (pile de PR) | **Implémenté** (S00–S10). R1 levé en live ; D7 tranché le 29 octobre 2026 (hybride e5-small si un modèle est configuré, BM25 sinon). Exemple `examples/25_metric_candidates/`, page `docs/metric_candidates.md`. |
 
 ## Key files
 

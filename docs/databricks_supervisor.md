@@ -218,6 +218,24 @@ Run these checks after each deployment:
    Genie.
 5. The first request after the endpoint scales from zero answers within the client's timeout.
 
+## What the fallback agent adds to Genie
+
+Behind the supervisor, a KPI question that no semantic model covers used to end in a refusal.
+With `candidate_fallback` set on the endpoint's environment, the Skifer endpoint can answer it
+too. Its answer starts with `> Réponse non certifiée — calculée hors du semantic layer, à
+valider.`, and the evidence marks the metric `CANDIDATE`. See
+[Metric candidates](metric_candidates.md).
+
+| | Genie | Skifer, fallback `on` |
+|---|---|---|
+| Uncovered question | SQL generated over the tables of the space | a `schema_dict` in the pipeline grammar, validated against the knowledge index and the domain graph, compiled by Skifer; the model never writes the executed SQL |
+| Trust signal | none beyond the space's table list | « non certifiée » in the text, `CANDIDATE` in `custom_outputs["skifer"]`, the sources' certification gate still applied |
+| Memory | none | the same need asked again is one candidate with a growing request count, judged by `candidates validate` and arbitrated by a human |
+| Path to certified | none | level 1 view and metric view (Genie can read the metric view), then the level 2 pull request |
+
+**Start with `shadow`.** The supervisor keeps receiving the certified answer or the refusal,
+and the candidates accumulate for review. Move to `on` once the arbiter trusts what they see.
+
 ## Limits
 
 - The caller's identity is declared by the client, not authenticated by Model Serving: the

@@ -523,6 +523,19 @@ dans une clé de tag (`Tag key contains reserved characters (., =): skifer.certi
 `skifer.certification` de D1 et de 44.4 ne peut donc pas exister. Le niveau 1 pose
 `certification = CANDIDATE`, la clé que le miroir de tags du Plan 41 utilise déjà.
 
+**Statut final des risques (S10, 29 octobre 2026).**
+
+| # | Statut | Preuve |
+|---|---|---|
+| R1 | **Levé** en live (S05.1) ; écart de clé de tag `certification` | `LEVEL1_PUBLISHES_METRIC_VIEW = True`, tests `test_candidates_promotion.py` |
+| R2 | **Paré, mesurable** — les deux chemins (`schema_dict`, SQL + `map_statement`) passent par le même validateur ; la famille B mesure `B.exact_match` | `test_candidate_agent.py`, `test_candidates_evaluate.py` ; aucun chiffre B réel tant qu'un humain n'a pas saisi de questions B |
+| R3 | **Paré, non mesuré à l'échelle** — sync par `--schema` et bornée par `knowledge_domains` ; un `system.access.*` illisible est rapporté, pas levé | `test_domains_bound_unity_catalog_sync`, `test_unreadable_system_lineage_is_reported_not_raised` ; aucune mesure sur un gros catalogue |
+| R4 | **Paré** — extra optionnel, cache local seul, BM25 toujours disponible, repli BM25 d'un hybride par défaut ; le benchmark D7 a tourné hors workspace sur le jeu de référence | `test_knowledge_embeddings.py`, `test_knowledge_benchmark.py` |
+| R5 | **Paré** — mode `redacted`, `candidates_retention_days`, pseudonymisation HMAC, classification `internal` documentée | `test_redacted_mode_stores_only_question_hash`, `docs/metric_candidates.md` |
+| R6 | **Paré** — les candidates `promoted` passent en tête du contexte et une question couverte réutilise la candidate | `test_promoted_candidate_is_reused_not_duplicated`, `test_context_puts_promoted_candidates_first_and_lists_joins` |
+| R7 | **Paré** — niveaux 1 et 2 compilés depuis le même `schema_dict` par `compile_select` | `test_level1_and_level2_sql_match` |
+| R8 | **Ouvert, assumé** — notebook + CLI en v1, logique entière dans `CandidateService` | `test_notebook_uses_only_public_service_methods` ; le signal de reprise (plusieurs arbitres, file d'attente) est documenté |
+
 ## Vérification
 
 - Gate complet : `pytest tests/ -x --tb=short` avec Java, `ruff check src/`, `mkdocs build --strict`.
