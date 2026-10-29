@@ -57,6 +57,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing is ever counted. `default_candidate_store(engine)` follows `default_certification_store`:
   SQLite locally or without a catalog, Delta in `<catalog>._skifer_candidates` otherwise, with the
   environment's `candidates_store_questions` / `candidates_retention_days`.
+- (Plan 44, S02.1) New `skifer.knowledge` package: knowledge graph `Node` (id `<kind>:<fqn>`,
+  closed `NODE_KINDS` / `NODE_STATUSES`, `sha256:v1:` content fingerprint verified at construction),
+  `Edge` (id derived from kind, endpoints and join keys, weight in `(0, 1]`), `SearchHit` and
+  `SyncReport`. Importing the package loads neither Spark nor `sentence_transformers`.
+- (Plan 44, S02.2) `knowledge.store`: `KnowledgeStore` Protocol, `SqliteKnowledgeStore`
+  (`.skifer_knowledge.db`, git-ignored) and `DeltaKnowledgeStore` (`<catalog>._skifer_knowledge`,
+  tables `knowledge_nodes` / `knowledge_edges`, Change Data Feed on, no column `DEFAULT`) over new
+  named `SparkBackend` primitives `upsert_knowledge_rows` (`MERGE INTO` on the id, rewriting a matched
+  row only when its fingerprint or `removed` flag differs) and `list_knowledge_rows`. Upserts are
+  diffed against stored fingerprints first, so an unchanged node or edge is never sent; removal is a
+  soft delete. `default_knowledge_store(engine)` picks SQLite locally or without a catalog.
+- (Plan 44, S02.3) `KnowledgeSynchronizer.sync(dry_run=False)` rebuilds the graph from, in priority
+  order, the Plan 31 metadata registry (tables, columns, `derives`/`joins` lineage), the semantic
+  catalog and its models (read in batch — `SemanticEngine`'s lazy start-up is untouched; metrics and
+  dimensions become `certified` nodes, `relationships` become weight-1 `shortcut` edges, as do pipeline
+  joins), registered rules (docstring as text) and Unity Catalog (`reference` nodes, bounded by
+  `domains` or the environment's `knowledge_domains`, plus `system.access.table_lineage` when readable).
+  A higher source is never overwritten by a lower one. Writes are fingerprint-diffed, an object gone
+  from a source is soft-deleted, and an unreadable schema or lineage table is listed in
+  `SyncReport.unavailable` — never raised, and it removes nothing.
+- (Plan 44, S02.4) `knowledge.index`: `tokenize()` (lowercase, NFKD accent stripping, snake_case /
+  camelCase / digit splits, frozen FR+EN stopword list, no stemming) and `KnowledgeIndex` — pure-Python
+  field-weighted BM25 (`label` 3, `synonyms` 2, `text` 1; ties sorted by `node_id`, identical under any
+  `PYTHONHASHSEED`) over live nodes only, plus `neighbors()` (breadth-first, bounded by `max_depth` and
+  `min_weight`, each node once at its minimal distance). New CLI `skifer knowledge sync [--schema
+  CAT.SCHEMA ...] [--dry-run] [--json]` and `skifer knowledge search "QUESTION" [--kind] [--domain] [-k]
+  [--json]` (exit codes `0` / `1` / `2`). `examples/03_semantic_and_question`'s `total_revenue` metric
+  now declares French synonyms, so `search "chiffre d'affaires par pays"` finds it.
 
 ### Fixed
 

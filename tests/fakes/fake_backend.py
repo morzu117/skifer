@@ -128,6 +128,8 @@ class FakeBackend:
         self._adaptive_usage_events = []
         self._candidate_tables = {}  # {(schema, table): [row, ...]} — Plan 44 registry
         self._candidate_sql = []  # DDL the real backend would run, for assertions
+        self._knowledge_tables = {}  # {(schema, table): {id: row}} — Plan 44 S02
+        self._knowledge_writes = []  # [(table, [ids])] — one entry per write call
 
     def _append_certification(self, kind: str, row: dict) -> None:
         if not any(existing.get("event_id", existing.get("definition_hash")) == row.get("event_id", row.get("definition_hash")) for existing in self._certification[kind]):
@@ -249,6 +251,34 @@ class FakeBackend:
         for column, direction in reversed(ORDER_COLUMNS[table]):
             rows.sort(key=lambda row: row[column], reverse=direction == "DESC")
         return rows[:limit] if limit is not None else rows
+
+    # --- Plan 44: knowledge graph (same surface as SparkBackend) ---
+
+    def upsert_knowledge_rows(self, schema, table, rows, id_column):
+        from skifer.knowledge.store import TABLE_COLUMNS
+
+        if table not in TABLE_COLUMNS:
+            raise ValueError(f"Unknown knowledge table {table!r}.")
+        if not rows:
+            return
+        stored = self._knowledge_tables.setdefault((schema, table), {})
+        written = []
+        for row in rows:
+            current = stored.get(row[id_column])
+            if current is None or (current["fingerprint"], current["removed"]) != (
+                row["fingerprint"], row["removed"]
+            ):
+                stored[row[id_column]] = dict(row)
+                written.append(row[id_column])
+        self._knowledge_writes.append((table, written))
+
+    def list_knowledge_rows(self, schema, table, **filters):
+        rows = self._knowledge_tables.get((schema, table), {})
+        return [
+            dict(rows[key])
+            for key in sorted(rows)
+            if all(rows[key][column] == value for column, value in filters.items())
+        ]
 
     def register_temp_view(self, df: Any, name: str) -> None:
         self._temp_views[name] = df
