@@ -1,0 +1,13 @@
+# Plan 44 example: local only (catalog: null), fallback on, thresholds lowered so that
+# a handful of questions is enough to validate a candidate.
+priority_check: [local]
+environments:
+  local:
+    catalog: null
+    candidate_fallback: on
+    candidates_decider_identity: plain
+    semantic_metric_views_schema: ex25_candidates
+    candidates_min_requests: 3
+    candidates_min_distinct_requesters: 2
+    candidates_min_days: 1
+    candidates_stability_runs: 2

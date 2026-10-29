@@ -36,5 +36,6 @@ breaks the build like any other regression. What you read here is what the code 
 | 22 | [Quality agent](22_quality_agent/) | Live checks, explicit execution errors, response-level critical status, and temporary history |
 | 23 | [OpenLineage events](23_openlineage/) | A pure `RunEvent` builder, redacted data-quality assertions, and non-blocking emission |
 | 24 | [Project analyzer](24_project_analyzer/) | Deterministic SQL-to-pipeline mapping, recurring-pattern detection, and validated draft emission |
+| 25 | [Metric candidates](25_metric_candidates/) | An uncovered question answered as a flagged candidate, validated, promoted to drafts, and evaluated |
 
 Read them in order for a guided tour, or jump directly to the feature you need; every example is self-contained about its local inputs.

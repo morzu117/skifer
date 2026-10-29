@@ -20,6 +20,11 @@ SemanticEvidence ─▶ UsageEventStore ─▶ PatternAggregator ─▶ Recommen
                                               improved | regressed | inconclusive
 ```
 
+> **Boundary with [metric candidates](metric_candidates.md).** `adaptive` never stores the
+> question, because a usage pattern only needs the shape of a query. `candidates` does store it
+> (classification `internal`, or only its hash with `candidates_store_questions: redacted`),
+> because a human arbitrating a new metric needs to read what was asked.
+
 ### Usage events carry no sensitive data
 
 `usage_event_from_evidence()` never copies the evidence object: it serializes it

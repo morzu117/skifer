@@ -14,6 +14,12 @@ src/skifer/
                 # draft_builder.py (managed drafts), sync.py (three-way merge),
                 # persistence.py (shared atomic YAML write + catalog entry) — Plan 29
   agentic/      # GenBIAgent, QueryResolver (deterministic SQL — no LLM SQL gen), SessionHistory
+                # candidate_agent.py — MetricCandidateAgent, governed fallback outside the semantic layer (Plan 44)
+  candidates/   # Metric candidates (Plan 44): models (closed states), store (append-only runs/history),
+                # redaction, validator (coherence/frequency/stability), promotion (level 1 views, level 2
+                # O_EXCL drafts), service (CandidateService, all arbitration logic), drift (observation only), reference
+  knowledge/    # Knowledge graph for the fallback agent (Plan 44): models, store, sync, index (bm25|dense|hybrid),
+                # embeddings (optional [knowledge-embeddings], local cache only), benchmark (D7)
                 # core/spark_backend.py — SparkBackend, the single runtime backend (Plan 26)
   observability/ # checks, monitor, contracts, alerts, history, reporter
                 # certification{,_store}.py, publication.py, quarantine.py, odcs.py, uc_mirror.py — Plan 29
@@ -440,6 +446,21 @@ draft into a disposable table and compares it to the legacy table it is meant to
 construct this package cannot safely translate is always a named residue in the report, never a
 silent drop or a guess.
 
+### Metric candidates (Plan 44)
+A question no semantic model covers can get an answer flagged **non certifiée**
+(`candidate_fallback: off|shadow|on` per environment; `off`, the default, leaves GenBI unchanged
+byte for byte). `MetricCandidateAgent` has the LLM propose a `schema_dict` in the pipeline grammar
+— **never executed SQL** —, validates it against the knowledge index and the domain graph,
+compiles it with `compile_select`, bounds execution and keeps the metric as a **candidate**
+(filter values parameterized in the fingerprint: same need, same candidate). A policy refusal
+never triggers the fallback. `skifer candidates validate` judges coherence, frequency (requesters
+counted by HMAC pseudonym; no secret, no count) and stability; level 1 = view + metric view in
+`<schema>_candidates`, tag `certification = CANDIDATE`; level 2 = `O_EXCL` drafts under `.drafts/`
+for a human PR, certified by `semantic sync --promote` (a `certified` event). All arbitration
+logic is in `CandidateService`; the CLI and the notebook only call it. Drift is observation only.
+D7: `knowledge_search_mode: null` → `hybrid` when `knowledge_embedding_model` is set, `bm25`
+otherwise. See `docs/metric_candidates.md`.
+
 ### Tests
 - LLM calls are always mocked; no live cluster, API key or network is needed.
 - Spark is **not** mocked everywhere: 182 tests run a real local Delta session (the `spark`
@@ -596,6 +617,7 @@ import the engine. CLI surfaces: `skifer api serve|openapi`, incident management
 | [Skifer behind a Genie supervisor (Plan 41)](docs/roadmap/41_genie_supervisor_plan.md) | `feat/plan41-genie-supervisor` | Implemented (41.1–41.8); 41.9 is manual validation on a workspace |
 | [Semantic layer as metric views for Genie (Plan 42)](docs/roadmap/42_metric_views_plan.md) | `feat/plan42-metric-views` | Implemented (42.0–42.5); 42.6 (demo_sts switching over) is out of this repo, and `publish_metric_views` itself is not yet verified live on a workspace |
 | [Project analyzer: from existing SQL to Skifer pipelines (Plan 43)](docs/roadmap/43_project_analyzer_plan.md) | `feat/plan43-project-analyzer` | **Implemented — 43.0 through 43.8 are all done.** Synthetic corpus + parser + inventory (43.0), post-join `where:`/`where_groups:` (43.1), deterministic SQL → schema_dict mapper + round-trip oracle via `compile_select` + report + `skifer analyze --dry-run` (43.2), dependency DAG + CTE/subquery splitting into partials/intermediate tables/inline + `skifer analyze --dry-run --split` (43.3), structural fingerprints + recurring-pattern detection (shared rules, never-arbitrated divergences, never-silent below-threshold) + validated draft/stub emission + `skifer analyze --emit [--out] [--min-occurrences] [--min-scripts] [--strict]` (43.4), data-level parity run `ParityRunner`/`compare_tables` (a disposable table, never the draft's real target or the legacy table) + `skifer analyze parity <draft.yaml> --against <fqn> --target-layer <layer> [--key col,…]` (43.5 — `--target-layer` added beyond the plan's own sketch, required by `run_process_to_table`): 7/8 corpus statements resolve (05 and 07 fixed by splitting), the 8th (`LAG()`) stays honestly blocked; on the same corpus `--emit` promotes `country` to a shared rule, finds the `net_margin` divergence, and writes 7 drafts + 1 stub. 43.5's two Spark-fixture tests, initially verified by inspection only (no local JRE), have since actually run (local JRE installed): inspection had missed a misplaced `filter:` in a test fixture (fixed — no defect in `ParityRunner`/`compare_tables` itself), full suite now green with Spark. Optional constrained LLM enrichment (43.6): `--enrich` on `--emit` proposes rule names/docstrings, draft descriptions and fingerprint groupings via closed JSON (per-call key allowlist, a proposed rule name purely advisory, never used to rename anything) — additive to the JSON report only, a silent no-op without a configured provider; a curated-rule-body proposal for a `needs_curation` fragment is a stated scope cut (no safely isolable fragment without mapper-level work). Notebook front-ends (43.7, first sub-point): `skifer analyze` also reads a Databricks `.py` export (`# MAGIC %sql` cells plus a literal `spark.sql(...)` call scanned via `ast`) and a `.ipynb` (`%%sql` plus `spark.sql(...)`), each statement keeping its file/cell/line origin (`::cell:N` for an ipynb, the same suffix convention 43.3 uses); an f-string or non-literal argument is a named `ExtractionResidue`, never interpolated. Query-history front-end (43.7, second sub-point): `skifer analyze history --warehouse-id ID --days N` reads `system.query.history` via the Databricks SDK's Statement Execution API, never selects an author/result column, dedupes by content fingerprint. Docs (43.8): `docs/project_analyzer.md` (a full guided walkthrough against example 24), an `mkdocs.yml` nav entry, and the `analyzer/` package tree plus a prose section in `CLAUDE.md`/`AGENTS.md`. **Plan closed.** |
+| [Metric candidates: answer outside the semantic layer, then certify (Plan 44)](docs/roadmap/44_metric_candidates_plan.md) | `feat/plan44-s00-…` → `feat/plan44-s10-example-docs` (stacked PRs) | **Implemented** (S00–S10). R1 lifted live; D7 decided on 29 October 2026 (hybrid e5-small when a model is configured, BM25 otherwise). Example `examples/25_metric_candidates/`, page `docs/metric_candidates.md`. |
 
 ## Key files
 | File | Purpose |

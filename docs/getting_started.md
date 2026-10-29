@@ -108,5 +108,6 @@ the executor call count is still zero. There is no rollback because nothing ran.
 | Run data-quality checks against a real table through an agent | [Agentic Layer](agentic.md#qualityagent-conversational-data-quality) | `examples/22_quality_agent/` |
 | Emit lineage events to an external catalog without leaking data | [Data Observability](observability.md#openlineage) | `examples/23_openlineage/` |
 | Turn existing SQL into a first-draft Skifer pipeline | [Project Analyzer](project_analyzer.md) | `examples/24_project_analyzer/` |
+| Answer outside the semantic layer with a candidate metric, then certify it | [Metric candidates](metric_candidates.md) | `examples/25_metric_candidates/` |
 | Look up exact Python classes, methods, and return types | [API Reference](api_reference.md) | — |
 | Install on Databricks instead of running locally | [Databricks installation](install_databricks.md) | — |

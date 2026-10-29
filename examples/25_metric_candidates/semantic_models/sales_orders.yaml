@@ -1,0 +1,13 @@
+models:
+  - key: sales.orders
+    description: Certified order revenue by region
+    layer: gold
+    table: gold.fact_orders
+    dimensions:
+      - {name: region, sql: region, type: string, description: Sales region}
+    metrics:
+      - name: total_revenue
+        sql: amount
+        type: sum
+        description: Total order revenue
+        synonyms: ["chiffre d'affaires", CA]

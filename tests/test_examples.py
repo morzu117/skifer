@@ -179,3 +179,30 @@ def test_every_example_is_reachable_from_the_documentation():
     assert not unreachable, (
         "Examples no documentation page points to: " + ", ".join(unreachable)
     )
+
+
+METRIC_CANDIDATES = EXAMPLES_DIR / "25_metric_candidates"
+
+
+def _tree_status(path: Path) -> str:
+    return subprocess.run(
+        ["git", "status", "--porcelain", "--ignored", "--untracked-files=all", "--", str(path)],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout
+
+
+def test_metric_candidates_example_leaves_tree_clean():
+    """Plan 44, S10-R2: stores, tables, drafts and reports go to a temporary directory.
+
+    A fresh run, not the cached one: the snapshot must be taken before it starts.
+    """
+    before = _tree_status(METRIC_CANDIDATES)
+    script = METRIC_CANDIDATES / "run.py"
+    completed = subprocess.run([sys.executable, str(script)], cwd=REPO_ROOT,
+                               capture_output=True, text=True, timeout=600)
+    assert completed.returncode == 0, _failure(script, completed)
+    assert _tree_status(METRIC_CANDIDATES) == before
+
+    steps = [line[:4] for line in completed.stdout.splitlines() if line[:1] == "["
+             and line[3:4] == "]" and line[1:3].isdigit()]
+    assert list(dict.fromkeys(steps)) == [f"[{n:02d}]" for n in range(1, 9)]

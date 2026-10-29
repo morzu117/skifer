@@ -1,0 +1,7 @@
+order_id,customer_id,region,channel,amount,order_date
+O1,C1,EMEA,web,120.0,2026-01-05
+O2,C2,EMEA,store,80.0,2026-01-06
+O3,C3,APAC,web,200.0,2026-01-07
+O4,C1,EMEA,web,60.0,2026-01-09
+O5,C4,APAC,store,40.0,2026-01-12
+O6,C2,AMER,web,100.0,2026-01-15
