@@ -73,6 +73,7 @@ CANDIDATES_EXIT_STALE = 3
 CANDIDATES_EXIT_CONFLICT = 4
 CANDIDATES_DECISIONS = ("approve", "reject", "promote", "review", "demote")
 CANDIDATES_ARBITRATION = ("list", "show", "history", *CANDIDATES_DECISIONS)
+DRIFT_DEFAULT_DAYS = 7
 
 API_LOOPBACK_HOST = "127.0.0.1"
 
@@ -522,6 +523,17 @@ def main() -> None:
         if name == "demote":
             decision_parser.add_argument("--replaced-by", default=None, metavar="ID",
                                          help="Candidate id or model:<model>.<metric>.")
+    candidates_drift_parser = candidates_subparsers.add_parser(
+        "drift", help="Usage drift signals over a window; observation only, changes nothing.")
+    candidates_drift_parser.add_argument("--since", default=None, metavar="ISO",
+                                         help="Window start, inclusive (default: 7 days ago).")
+    candidates_drift_parser.add_argument("--until", default=None, metavar="ISO",
+                                         help="Window end, exclusive (default: now).")
+    candidates_drift_parser.add_argument("--json", action="store_true", help="Print JSON.")
+    candidates_drift_parser.add_argument("--environment", default=None, metavar="NAME",
+                                         help="Usage partition (default: the engine's).")
+    candidates_drift_parser.add_argument("--usage-store", default=".skifer_adaptive.db",
+                                         metavar="PATH", help="SQLite adaptive usage store.")
     for arbitration_parser in candidates_subparsers.choices.values():
         if arbitration_parser is not candidates_validate_parser:
             arbitration_parser.add_argument("--config", default=None, metavar="PATH",
@@ -714,6 +726,8 @@ def run_candidates_command(
 
     if getattr(args, "candidates_command", None) in CANDIDATES_ARBITRATION:
         return run_candidates_arbitration(args)
+    if getattr(args, "candidates_command", None) == "drift":
+        return run_candidates_drift(args)
     if getattr(args, "candidates_command", None) != "validate":
         print("Candidates command missing. Use 'skifer candidates --help'.", file=sys.stderr)
         return CANDIDATES_EXIT_ERROR
@@ -867,6 +881,118 @@ def run_candidates_arbitration(args: argparse.Namespace, *, service=None, decide
         for event in output:
             print(f"{event['event_at']}  {event['event_type']}  {event['previous_state']} -> "
                   f"{event['new_state']}  {event['decided_by']}")
+    return CANDIDATES_EXIT_OK
+
+
+class _NoUsageEvents:
+    """A usage store that does not exist: no evidence, and no empty file created for it."""
+
+    def list_events(self, **_filters):
+        return []
+
+    def close(self) -> None:
+        pass
+
+
+def _catalog_metric_ids(models_dir: str) -> list[str]:
+    """``model_key.metric`` for every metric of ``semantic_catalog.yaml``."""
+    import yaml
+
+    path = Path(models_dir) / "semantic_catalog.yaml"
+    if not path.is_file():
+        return []
+    catalog = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return sorted(f"{model['key']}.{metric}" for model in catalog.get("models") or []
+                  for metric in model.get("metrics") or [])
+
+
+def _drift_bound(value: str | None, default, name: str):
+    from datetime import datetime
+
+    if value is None:
+        return default
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"--{name} must be an ISO datetime; got {value!r}.") from None
+    if moment.tzinfo is None:
+        raise ValueError(f"--{name} must include a timezone, e.g. {value}+00:00.")
+    return moment
+
+
+def run_candidates_drift(
+    args: argparse.Namespace, *, candidate_store=None, usage_store=None, index=None,
+    catalog_models=None, environment=None, env_config=None, clock=None,
+) -> int:
+    """``skifer candidates drift``: ``0`` even with high signals, ``1`` technical, ``2`` usage."""
+    from datetime import datetime, timedelta, timezone
+
+    from skifer.candidates.drift import compute_drift
+    from skifer.core.config import candidate_drift_settings
+
+    now = (clock or (lambda: datetime.now(timezone.utc)))()
+    try:
+        until = _drift_bound(args.until, now, "until")
+        since = _drift_bound(args.since, until - timedelta(days=DRIFT_DEFAULT_DAYS), "since")
+        if since >= until:
+            raise ValueError("--since must be before --until")
+    except ValueError as exc:
+        print(f"[candidates] {exc}", file=sys.stderr)
+        return CANDIDATES_EXIT_USAGE
+    opened = []
+    try:
+        if candidate_store is None or index is None or catalog_models is None or env_config is None:
+            from skifer.candidates.store import default_candidate_store
+            from skifer.core.core import SkiferEngine
+            from skifer.knowledge.index import KnowledgeIndex
+            from skifer.knowledge.store import default_knowledge_store
+            from skifer.semantic.semantic import SemanticEngine
+
+            with contextlib.redirect_stdout(sys.stderr):  # keep --json parseable
+                core = SkiferEngine(config_path=args.config)
+                env_config = env_config if env_config is not None else core._context.env_config()
+                environment = environment or core.env
+                if candidate_store is None:
+                    candidate_store = default_candidate_store(core)
+                    opened.append(candidate_store)
+                if index is None:
+                    knowledge = default_knowledge_store(core)
+                    opened.append(knowledge)
+                    index = KnowledgeIndex.from_store(knowledge)
+                if catalog_models is None:
+                    catalog_models = _catalog_metric_ids(
+                        SemanticEngine(core, models_dir=args.models_dir).models_dir)
+        environment = args.environment or environment
+        if usage_store is None:
+            from skifer.adaptive.store import SqliteUsageEventStore
+
+            usage_store = (SqliteUsageEventStore(args.usage_store)
+                           if Path(args.usage_store).is_file() else _NoUsageEvents())
+            opened.append(usage_store)
+        min_sample, _thresholds = candidate_drift_settings(env_config)  # validated, not applied
+        report = compute_drift(
+            candidate_store=candidate_store, usage_store=usage_store,
+            catalog_models=catalog_models, index=index, environment=environment,
+            since=since, until=until, min_sample=min_sample,
+        )
+    except Exception as exc:
+        print(f"[candidates] drift failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return CANDIDATES_EXIT_ERROR
+    finally:
+        for resource in opened:
+            with contextlib.suppress(Exception):
+                resource.close()
+    if args.json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"[candidates] drift {report.environment} [{since.isoformat()}, "
+              f"{until.isoformat()}) — thresholds not applied")
+        for signal in report.signals:
+            shown = (f"{signal.value:.3f}" if signal.status == "measured"
+                     else f"inconclusive ({signal.reason})")
+            print(f"  {signal.name}: {shown}, sample {signal.sample_size}")
+            for detail in signal.details:
+                print(f"    {json.dumps(detail, sort_keys=True)}")
     return CANDIDATES_EXIT_OK
 
 

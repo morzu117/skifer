@@ -278,6 +278,37 @@ def candidate_validation_thresholds(
     return thresholds
 
 
+DEFAULT_CANDIDATES_MIN_SAMPLE = 30
+DRIFT_THRESHOLD_SIGNALS = ("fallback_rate", "orphan_certified_metrics")
+
+
+def candidate_drift_settings(
+    env_config: dict | None, *, env_name: str | None = None
+) -> tuple[int, dict]:
+    """(``candidates_min_sample``, ``candidates_drift_thresholds``) of an environment.
+
+    Both are validated. The thresholds are read for a future calibration and are
+    never applied in v1: a drift report always says ``thresholds_applied: False``.
+    """
+    where = f" for environment '{env_name}'" if env_name else ""
+    env_config = env_config or {}
+    min_sample = env_config.get("candidates_min_sample", DEFAULT_CANDIDATES_MIN_SAMPLE)
+    if isinstance(min_sample, bool) or not isinstance(min_sample, int) or min_sample < 0:
+        raise ValueError(f"Invalid candidates_min_sample{where}: {min_sample!r}. "
+                         "Expected a non-negative integer.")
+    thresholds = env_config.get("candidates_drift_thresholds") or {}
+    if not isinstance(thresholds, dict):
+        raise ValueError(f"Invalid candidates_drift_thresholds{where}: expected a mapping.")
+    for name, value in thresholds.items():
+        if name not in DRIFT_THRESHOLD_SIGNALS:
+            raise ValueError(f"Invalid candidates_drift_thresholds{where}: unknown signal "
+                             f"{name!r}; expected one of {list(DRIFT_THRESHOLD_SIGNALS)}.")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ValueError(f"Invalid candidates_drift_thresholds.{name}{where}: {value!r}. "
+                             "Expected a number within [0, 1].")
+    return min_sample, dict(thresholds)
+
+
 class ConfigurationManager:
     """
     Manages the loading and retrieval of configuration from a YAML file.
@@ -479,6 +510,7 @@ class ConfigurationManager:
                     if "candidate_fallback" in env_config:
                         candidate_fallback_mode(env_config, env_name=env_name)
                     candidate_validation_thresholds(env_config, env_name=env_name)
+                    candidate_drift_settings(env_config, env_name=env_name)
                     if "candidates_decider_identity" in env_config:
                         identity = env_config["candidates_decider_identity"]
                         if identity not in {"hmac", "plain"}:

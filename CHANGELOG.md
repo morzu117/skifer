@@ -204,6 +204,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, S07.2) `skifer candidates drift [--since ISO] [--until ISO] [--json]` (default: the
+  last 7 days; `--environment`, `--usage-store`). Exit `0` even with high signals, `1` technical
+  error (including an invalid `candidates_min_sample`/`candidates_drift_thresholds`), `2` usage —
+  `--since must be before --until`, a bound that is not ISO or has no timezone. Catalogue metrics
+  come from `semantic_catalog.yaml` as `model_key.metric`; a missing usage store reads as no
+  evidence and is never created. Configured thresholds are validated and reported as not applied.
+- (Plan 44, S07.1) `skifer.candidates.drift.compute_drift` — usage drift signals, observation
+  only: `fallback_rate` (candidate `answer` runs over those runs plus the environment's
+  `adaptive` usage events), `orphan_certified_metrics` (catalogue metrics no usage event names) and
+  `rephrasing` (candidates created in the window whose question overlaps a certified metric node
+  by Jaccard ≥ `rephrasing_overlap`, compared against the label and each synonym separately, a
+  question term spelling the initials of a run of phrase terms — "CA" for "chiffre d'affaires" —
+  standing for that run). Half-open `[since, until)` windows, timezone-aware bounds, strict
+  partition by environment, `inconclusive` under `min_sample` (`sample_below_minimum`), on an
+  empty usage store (`evidence_unavailable`) or with redacted questions (`questions_redacted`);
+  details sorted, identical under any `PYTHONHASHSEED`. The module writes nothing and makes no
+  transition — checked on its AST. `candidate_drift_settings()` reads and validates
+  `candidates_min_sample` (default 30) and `candidates_drift_thresholds` at config load;
+  `thresholds_applied` is always `False` in v1. `KnowledgeIndex.nodes(kinds=)` lists live nodes.
 - (Plan 44, S06.4) `skifer candidates list|show|history|approve|reject|promote|review|demote`,
   thin over `CandidateService` with the `LocalIdentity` subject as decider. Exit codes: `0`
   success · `1` technical error or `DeciderIdentityError` · `2` usage (unknown id, a
