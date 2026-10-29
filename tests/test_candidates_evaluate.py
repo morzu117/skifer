@@ -293,3 +293,19 @@ def test_cli_technical_error_is_one(store, tmp_path, capsys):
     assert cli.run_candidates_evaluate(_args(evaluations_dir=str(tmp_path)), hub=FakeHub({}),
                                        index=FakeIndex({}), store=Broken()) == 1
     assert CANARY not in capsys.readouterr().err
+
+
+def test_cli_json_stays_parseable_when_the_hub_prints(store, tmp_path, capsys):
+    hub, index = _seed(store)
+
+    class PrintingHub:
+        def ask(self, question, **kwargs):
+            print("SELECT region AS region FROM gold.orders")   # what SemanticEngine does
+            return hub.ask(question, **kwargs)
+
+    assert cli.run_candidates_evaluate(_args(evaluations_dir=str(tmp_path / "ev")),
+                                       hub=PrintingHub(), index=index, store=store,
+                                       clock=lambda: NOW) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["question_count"]["A"] == 4
+    assert "SELECT region" in captured.err

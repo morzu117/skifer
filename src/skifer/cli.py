@@ -1110,8 +1110,9 @@ def run_candidates_evaluate(
                     candidate_agent = _build_candidate_agent(core, semantic, llm)
                     hub = AgenticHub(semantic_engine=semantic, llm_provider=llm,
                                      candidate_agent=candidate_agent)
-        report = evaluate(hub, index, store,
-                          search_mode=search_mode or getattr(index, "default_mode", "bm25"))
+        with contextlib.redirect_stdout(sys.stderr):  # the hub prints its SQL; keep --json parseable
+            report = evaluate(hub, index, store,
+                              search_mode=search_mode or getattr(index, "default_mode", "bm25"))
         data = report.to_dict()
         empty = sum(report.question_count.values()) == 0
         if not empty:

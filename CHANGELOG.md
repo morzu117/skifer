@@ -204,6 +204,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SKIFER_TRACING_HMAC_SECRET` nothing is recorded — or `human:<name>` under
   `candidates_decider_identity: plain` (validated at config load). Applying a validation report now
   also stores the measured `stability_score` on the candidate.
+- (Plan 44, S09.2 fix) `skifer candidates evaluate --json` stays parseable: the SQL the
+  semantic engine prints while the hub answers the reference questions now goes to stderr.
 - (Plan 44, D7) The knowledge search default is decided: `knowledge_search_mode: null`
   resolves to `hybrid` when `knowledge_embedding_model` is set, `bm25` otherwise.
   `KnowledgeIndex.from_config(store, env_config)` builds the index an environment searches
