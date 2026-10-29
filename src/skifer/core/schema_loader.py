@@ -60,8 +60,10 @@ _OUTPUT_FIELD_ALLOWED_KEYS = frozenset(
     {"logical_type", "required", "unique", "classification", "entity", "description"}
 )
 _SEMANTIC_SEED_ALLOWED_KEYS = frozenset(
-    {"model_key", "entity", "default_time_dimension", "dimensions"}
+    {"model_key", "entity", "default_time_dimension", "dimensions", "source_candidate_id"}
 )
+# A pipeline promoted from a metric candidate (Plan 44, S06) names it in its seed.
+_SOURCE_CANDIDATE_ID = re.compile(r"candidate:v1:[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -880,6 +882,15 @@ def _normalize_agent_ready_metadata(schema_dict: dict) -> None:
                     value = _validate_agent_ready_identifier(semantic[key], f"semantic.{key}", errors)
                     if value is not None:
                         normalized_semantic[key] = value
+            if "source_candidate_id" in semantic:
+                candidate_id = semantic["source_candidate_id"]
+                if isinstance(candidate_id, str) and _SOURCE_CANDIDATE_ID.fullmatch(candidate_id):
+                    normalized_semantic["source_candidate_id"] = candidate_id
+                else:
+                    errors.append(
+                        "  [semantic.source_candidate_id] must be 'candidate:v1:<64 hex>', "
+                        f"got {candidate_id!r}."
+                    )
             dimensions = semantic.get("dimensions", [])
             if not isinstance(dimensions, list):
                 errors.append("  [semantic.dimensions] must be a list of output field names.")

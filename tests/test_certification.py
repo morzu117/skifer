@@ -342,6 +342,14 @@ _BLOCK_PARTICIPATES = {
 }
 
 
+#: Block attributes deliberately outside the identity hash, with the reason.
+#: ``semantic.source_candidate_id`` (Plan 44, S06) is provenance — which metric
+#: candidate a promoted pipeline came from. The same contract written by hand
+#: or promoted from a candidate is the same contract: a certification must not
+#: be invalidated by where the YAML was drafted.
+_BLOCK_OUTSIDE_HASH = {"semantic": {"source_candidate_id"}}
+
+
 def _hash_with_block(block: str, **changes) -> str:
     import dataclasses
 
@@ -361,11 +369,21 @@ def test_every_contract_block_attribute_is_in_the_identity_hash(block):
     assert current is not None, f"the fixture must populate '{block}' for this guard to mean anything"
 
     declared = {f.name for f in dataclasses.fields(type(current))}
+    declared -= _BLOCK_OUTSIDE_HASH.get(block, set())
     assert declared == set(_BLOCK_PARTICIPATES[block]), (
         f"'{type(current).__name__}' gained or lost an attribute. Every one of them "
         "is part of the contract's identity today; decide explicitly before "
         "shipping one that is not."
     )
+
+
+@pytest.mark.parametrize(
+    "block,attribute",
+    sorted((block, attribute) for block, names in _BLOCK_OUTSIDE_HASH.items() for attribute in names),
+)
+def test_a_provenance_attribute_keeps_the_hash(block, attribute):
+    replacement = "candidate:v1:" + "c" * 64
+    assert _hash_with_block(block, **{attribute: replacement}) == _hash_with_block(block)
 
 
 @pytest.mark.parametrize(

@@ -514,3 +514,17 @@ def test_config_candidate_thresholds_map_to_validation_thresholds(tmp_path):
         min_stability=0.5)
     assert candidate_validation_thresholds({}) == {}
     assert candidate_validation_thresholds(None) == {}
+
+
+@pytest.mark.parametrize("value", ["email", "", None, True])
+def test_config_invalid_candidates_decider_identity_raises_at_load(tmp_path, value):
+    with pytest.raises(ValueError, match="candidates_decider_identity"):
+        ConfigurationManager(config_path=_write_env_config(tmp_path,
+                                                           candidates_decider_identity=value))
+
+
+def test_config_candidates_decider_identity_accepts_hmac_and_plain(tmp_path):
+    for value in ("hmac", "plain"):
+        manager = ConfigurationManager(
+            config_path=_write_env_config(tmp_path, candidates_decider_identity=value))
+        assert manager.get_value("candidates_decider_identity") == value

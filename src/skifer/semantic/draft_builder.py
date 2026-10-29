@@ -127,6 +127,10 @@ class SemanticDraftBuilder:
             model["metadata"]["relationship_candidates"] = relationship_candidates
         if relationship_candidate_rejections:
             model["metadata"]["relationship_candidate_rejections"] = relationship_candidate_rejections
+        if schema.semantic and schema.semantic.source_candidate_id:
+            # Absent otherwise: a pipeline that was never a candidate keeps the
+            # byte-for-byte draft it had before Plan 44.
+            model["metadata"]["source_candidate_id"] = schema.semantic.source_candidate_id
         if schema.semantic and schema.semantic.entity:
             model["entity"] = schema.semantic.entity
         if default_time_dimension:

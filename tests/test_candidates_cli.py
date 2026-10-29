@@ -96,6 +96,7 @@ def test_validate_promotes_and_prints_json(world, capsys):
     assert (row["outcome"], row["previous_state"], row["new_state"]) == (
         "validated", "candidate", "promoted")
     assert store.get_candidate(candidate.candidate_id).state == "promoted"
+    assert store.get_candidate(candidate.candidate_id).stability_score == 1.0
     assert any(sql.startswith("CREATE OR REPLACE VIEW `semantic_candidates`")
                for sql in backend.executed)
     assert row["notes"] == ["metric view skipped: metric views only exist in Unity Catalog "
@@ -170,3 +171,131 @@ def test_semantic_layer_version_recomputed(world, capsys):
 
 def test_missing_subcommand_is_an_error(capsys):
     assert run_candidates_command(argparse.Namespace()) == CANDIDATES_EXIT_ERROR
+
+
+# --- S06.4: arbitration subcommands ------------------------------------------------------
+
+from skifer.cli import (  # noqa: E402
+    CANDIDATES_EXIT_CONFLICT,
+    CANDIDATES_EXIT_STALE,
+    CANDIDATES_EXIT_USAGE,
+    run_candidates_arbitration,
+)
+from skifer.observability.tracing import TRACING_HMAC_SECRET_ENV  # noqa: E402
+from tests.test_candidates_service import seeded  # noqa: E402
+from tests.test_candidates_service import service as make_service  # noqa: E402
+
+
+def decide(argv, service_):
+    """Parse ``skifer candidates <argv>`` the way the CLI does, then run it on ``service_``."""
+    command, *rest = argv
+    values = dict(candidates_command=command, json=False, state=None, reason=None,
+                  pipeline_output=None, signal=None, replaced_by=None)
+    if rest and not rest[0].startswith("--"):
+        values["candidate_id"] = rest.pop(0)
+    while rest:
+        flag = rest.pop(0)[2:].replace("-", "_")
+        values[flag] = True if flag == "json" else rest.pop(0)
+    return run_candidates_arbitration(argparse.Namespace(**values), service=service_,
+                                      decider="alice")
+
+
+@pytest.fixture
+def arbitration(tmp_path):
+    store = SqliteCandidateStore(str(tmp_path / "candidates.db"))
+    (tmp_path / "semantic_catalog.yaml").write_text("models: []\n")
+    yield store, str(tmp_path)
+    store.close()
+
+
+def _ok(store, models_dir):
+    candidate = seeded(store, models_dir)
+    return ["reject", candidate.candidate_id, "--reason", "duplicate"], make_service(
+        store, models_dir)
+
+
+def _no_secret(store, models_dir):
+    candidate = seeded(store, models_dir)
+    return ["reject", candidate.candidate_id, "--reason", "r"], make_service(
+        store, models_dir, decider_identity="hmac")
+
+
+def _unknown(store, models_dir):
+    return ["show", "candidate:v1:" + "0" * 64], make_service(store, models_dir)
+
+
+def _outside_drafts(store, models_dir):
+    candidate = seeded(store, models_dir, state="promoted")
+    return ["promote", candidate.candidate_id, "--reason", "r",
+            "--pipeline-output", "schemas/gold/x.yaml"], make_service(store, models_dir)
+
+
+def _stale(store, models_dir):
+    candidate = seeded(store, models_dir, state="promoted")
+    with open(f"{models_dir}/semantic_catalog.yaml", "w") as handle:
+        handle.write("models: [orders]\n")
+    return ["review", candidate.candidate_id, "--reason", "r"], make_service(store, models_dir)
+
+
+def _conflict(store, models_dir):
+    candidate = seeded(store, models_dir, state="promoted")
+    return ["reject", candidate.candidate_id, "--reason", "r"], make_service(store, models_dir)
+
+
+@pytest.mark.parametrize("scenario, expected", [
+    (_ok, CANDIDATES_EXIT_OK),
+    (_no_secret, CANDIDATES_EXIT_ERROR),
+    (_unknown, CANDIDATES_EXIT_USAGE),
+    (_outside_drafts, CANDIDATES_EXIT_USAGE),
+    (_stale, CANDIDATES_EXIT_STALE),
+    (_conflict, CANDIDATES_EXIT_CONFLICT),
+])
+def test_exit_codes(arbitration, scenario, expected, monkeypatch, capsys):
+    monkeypatch.delenv(TRACING_HMAC_SECRET_ENV, raising=False)
+    store, models_dir = arbitration
+    argv, service_ = scenario(store, models_dir)
+    assert decide(argv, service_) == expected
+    if expected == CANDIDATES_EXIT_OK:
+        assert json.loads(capsys.readouterr().out)["state"] == "rejected"
+
+
+def test_read_commands_print_json(arbitration, capsys):
+    store, models_dir = arbitration
+    candidate = seeded(store, models_dir)
+    service_ = make_service(store, models_dir)
+
+    assert decide(["list", "--state", "needs_review", "--json"], service_) == CANDIDATES_EXIT_OK
+    assert [row["candidate_id"] for row in json.loads(capsys.readouterr().out)] == [
+        candidate.candidate_id]
+    assert decide(["show", candidate.candidate_id, "--json"], service_) == CANDIDATES_EXIT_OK
+    assert json.loads(capsys.readouterr().out)["state"] == "needs_review"
+    assert decide(["history", candidate.candidate_id], service_) == CANDIDATES_EXIT_OK
+    assert "candidate -> needs_review" in capsys.readouterr().out
+    assert decide(["list", "--state", "nope"], service_) == CANDIDATES_EXIT_ERROR
+
+
+def test_json_output_stays_parseable_when_the_engine_prints(arbitration, monkeypatch, capsys):
+    """Spark and the semantic catalogue print on start-up; ``--json`` must still be pure JSON."""
+    import skifer.candidates.service as service_module
+    import skifer.core.core as core_module
+    import skifer.observability.certification_store as certification_module
+    import skifer.semantic.semantic as semantic_module
+
+    store, models_dir = arbitration
+    candidate = seeded(store, models_dir)
+
+    class Chatty:
+        def __init__(self, *args, **kwargs):
+            print("[SparkFactory] session initialized")
+
+    monkeypatch.setattr(core_module, "SkiferEngine", Chatty)
+    monkeypatch.setattr(semantic_module, "SemanticEngine", Chatty)
+    monkeypatch.setattr(certification_module, "default_certification_store", lambda e: None)
+    monkeypatch.setattr(service_module, "build_candidate_service",
+                        lambda semantic: make_service(store, models_dir))
+    parsed = argparse.Namespace(candidates_command="show", candidate_id=candidate.candidate_id,
+                                json=True, config=None, models_dir=models_dir)
+    assert run_candidates_arbitration(parsed) == CANDIDATES_EXIT_OK
+    out = capsys.readouterr()
+    assert json.loads(out.out)["candidate_id"] == candidate.candidate_id
+    assert "session initialized" in out.err
