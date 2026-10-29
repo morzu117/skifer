@@ -113,3 +113,13 @@ def test_notebook_uses_only_public_service_methods():
               if not name.startswith("_") and callable(getattr(CandidateService, name))}
     assert used and used <= public
     assert {"approve", "reject", "promote", "review", "demote", "list", "history"} <= used
+
+
+def test_notebook_shows_drift_only_when_asked(workspace):
+    tmp_path, store, candidate = workspace
+    displayed = run_notebook(tmp_path, show_drift="yes")
+    signals = displayed[-1]
+    assert {row["name"] for row in signals} >= {"fallback_rate", "rephrasing"}
+    assert all(row["status"] == "inconclusive" for row in signals)  # no usage recorded
+    assert store.get_candidate(candidate.candidate_id).state == "needs_review"
+    assert len(run_notebook(tmp_path)) == 2

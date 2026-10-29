@@ -1,0 +1,23 @@
+data_product:
+  id: sales.dim_customers
+  version: 1.0.0
+  owner: data-platform
+  description: Certified customers
+
+contract:
+  grain: [customer_id]
+  output:
+    customer_id: {logical_type: string, required: true, unique: true}
+
+tables:
+  - name: raw_customers
+    alias: c
+    source:
+      type: csv
+      path: "{{ example_dir }}/data/customers.csv"
+      options: {header: "true", inferSchema: "true"}
+
+select_final:
+  - [customer_id, customer_id]
+  - [segment, segment]
+  - [country, country]

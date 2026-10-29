@@ -25,6 +25,7 @@ dbutils.widgets.text("candidate_id", "")
 dbutils.widgets.dropdown("decision", "", ["", "approve", "reject", "promote", "review", "demote"])
 dbutils.widgets.text("reason", "")
 dbutils.widgets.text("replaced_by", "")
+dbutils.widgets.dropdown("show_drift", "", ["", "yes"])
 
 engine = SkiferEngine(spark=spark, config_path=dbutils.widgets.get("config_path") or None)
 # Absolute: SemanticEngine reads a relative models_dir against the installed package.
@@ -72,3 +73,27 @@ if candidate_id:
         display(rows(service.history(candidate_id)))
     except CandidateError as exc:
         print(f"{type(exc).__name__}: {exc}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Optional: the usage drift signals of the last 7 days (`show_drift = yes`). Observation
+# MAGIC only — a signal never changes a candidate's state; the decision above stays human.
+
+# COMMAND ----------
+
+if dbutils.widgets.get("show_drift") == "yes":
+    import contextlib
+    import io
+    from argparse import Namespace
+
+    from skifer.cli import run_candidates_drift
+
+    drift_output = io.StringIO()
+    with contextlib.redirect_stdout(drift_output):
+        run_candidates_drift(Namespace(
+            since=None, until=None, json=True, environment=None,
+            usage_store=".skifer_adaptive.db", evaluations_dir=".skifer_evaluations",
+            config=dbutils.widgets.get("config_path") or None,
+            models_dir=os.path.abspath(dbutils.widgets.get("models_dir"))))
+    display(rows(json.loads(drift_output.getvalue())["signals"]))

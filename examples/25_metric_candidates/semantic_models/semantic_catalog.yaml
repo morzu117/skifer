@@ -1,0 +1,15 @@
+models:
+  - key: sales.orders
+    file: sales_orders.yaml
+    layer: gold
+    table: gold.fact_orders
+    description: Certified order revenue by region
+    dimensions: [region]
+    metrics: [total_revenue]
+  - key: sales.customers
+    file: sales_customers.yaml
+    layer: gold
+    table: gold.dim_customers
+    description: Certified customer count by segment
+    dimensions: [segment]
+    metrics: [customer_count]

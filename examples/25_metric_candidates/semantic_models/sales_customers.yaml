@@ -1,0 +1,9 @@
+models:
+  - key: sales.customers
+    description: Certified customer count by segment
+    layer: gold
+    table: gold.dim_customers
+    dimensions:
+      - {name: segment, sql: segment, type: string, description: Customer segment}
+    metrics:
+      - {name: customer_count, sql: customer_id, type: count_distinct, description: Number of customers}
