@@ -159,7 +159,10 @@ class GenBIAgent:
         self.llm = llm_provider
         self._conv_history: list[dict] | None = [] if history else None
         self._session = SessionHistory(session_title)
-        self._resolver = QueryResolver(SemanticPlanner(semantic_engine))
+        self._resolver = QueryResolver(
+            SemanticPlanner(semantic_engine),
+            dialect=getattr(semantic_engine, "dialect", "databricks"),
+        )
 
     # ------------------------------------------------------------------
     # Interface publique
@@ -385,7 +388,8 @@ class GenBIAgent:
                 required=self._tracing_required,
             ):
                 resolved = self._resolver.resolve(
-                    semantic_query, model_full, self.semantic.core.db
+                    semantic_query, model_full, self.semantic.core.db,
+                    consumer_context=gate_context,
                 )
         except SemanticQueryError as exc:
             # Clarification loop : nom inconnu

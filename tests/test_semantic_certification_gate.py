@@ -247,7 +247,7 @@ def _engine(
 def _patch_resolver_for_missing_table(monkeypatch):
     from skifer.agentic import resolver as resolver_module
 
-    def fake_resolve(self, query, model, catalog_fqn):
+    def fake_resolve(self, query, model, catalog_fqn, **kwargs):
         return ResolvedQuery(
             select_exprs=["region AS region", "SUM(amount) AS revenue"],
             from_fqn="",

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 import logging
 import re
+from types import MappingProxyType
+from typing import Mapping
 
 from skifer.core.constants import VALID_CONTRACT_STATUSES
 
@@ -37,6 +39,15 @@ class ConsumerContext:
     user_id: str | None = None
     scopes: frozenset[str] = frozenset()
     trace_id: str | None = None
+    attributes: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.attributes, Mapping) or not all(
+            isinstance(key, str) and key and isinstance(value, str)
+            for key, value in self.attributes.items()
+        ):
+            raise ValueError("Consumer attributes must map non-empty names to text.")
+        object.__setattr__(self, "attributes", MappingProxyType(dict(self.attributes)))
 
 
 @dataclass(frozen=True)

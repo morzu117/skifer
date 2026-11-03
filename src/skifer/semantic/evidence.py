@@ -339,6 +339,11 @@ class SemanticEvidence:
                 filter_def.get("operator"), f"normalized_filters[{index}].operator"
             ),
         }
+        for key in ("origin", "model_key", "definition_hash"):
+            if key in filter_def:
+                payload[key] = _serialize_value(
+                    filter_def[key], f"normalized_filters[{index}].{key}"
+                )
         if "value" in filter_def:
             include_value = (
                 include_filter_values

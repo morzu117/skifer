@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - (Plan 45.2) `QueryResolver` and `SemanticEngine` select Databricks or DuckDB SQL. Evidence
   records `sql_dialect` and hashes the SQL sent to the chosen backend. DuckDB rendering uses
   the optional `sqlglot` dependency from `skifer[analyzer]`.
+- (Plan 45.3) Semantic models may declare `row_policy: {column, attribute}`. The planner
+  binds it to the verified consumer context for every source before SQL compilation, refusing
+  missing identity. The agent-ready service passes the reader identity and attributes. Evidence
+  attests policy and base filters with redacted values; RLS SQL and backend errors are withheld.
 
 - (Plan 44, S00.1) `MetricEvidence` carries the certification of the *metric* itself, distinct
   from the certification of its sources: `certification` (`CERTIFIED` by default, or `CANDIDATE`)

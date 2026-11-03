@@ -292,10 +292,10 @@ def test_agent_query_mode_denies_before_resolve_for_uncertified_dependency(
     resolve_calls = 0
     original_resolve = resolver_module.QueryResolver.resolve
 
-    def spy_resolve(self, query, model, catalog_fqn):
+    def spy_resolve(self, query, model, catalog_fqn, **kwargs):
         nonlocal resolve_calls
         resolve_calls += 1
-        return original_resolve(self, query, model, catalog_fqn)
+        return original_resolve(self, query, model, catalog_fqn, **kwargs)
 
     monkeypatch.setattr(resolver_module.QueryResolver, "resolve", spy_resolve)
     agent, core = _make_semantic_agent(tmp_path, _UncertifiedStore())

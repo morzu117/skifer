@@ -359,6 +359,8 @@ class AgentReadyDataService:
                 scope for scope in ctx.scopes if scope in _CONSUMER_SCOPE_ALLOWLIST
             ),
             trace_id=ctx.trace_context.trace_id,
+            user_id=ctx.subject,
+            attributes=ctx.attributes,
         )
         result = self.semantic_engine.query_with_evidence(
             query,

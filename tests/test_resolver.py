@@ -16,6 +16,7 @@ from skifer.agentic.resolver import (
     ResolvedQuery,
 )
 from skifer.semantic.planner import SemanticPlanner
+from skifer.semantic.access_policy import ConsumerContext, SemanticAccessDenied
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +457,49 @@ def test_duckdb_dialect_executes_declared_join_path():
         connection.execute("INSERT INTO gold.orders VALUES (1, 7, 'A', 'paid', 12)")
         connection.execute("INSERT INTO gold.customers VALUES (7, 'A', 'retail')")
         assert connection.execute(resolved.full_sql).fetchall() == [("retail", 12)]
+
+
+def test_row_policy_restricts_each_source_before_join():
+    models = _multi_models()
+    models["orders"]["row_policy"] = {"column": "customer_tenant", "attribute": "tenant"}
+    models["customers"]["row_policy"] = {"column": "tenant", "attribute": "tenant"}
+    resolver = QueryResolver(SemanticPlanner(_PlannerSemantic(models)), dialect="duckdb")
+    query = SemanticQuery("orders", metrics=["revenue"], group_by=["customers.segment"])
+
+    with pytest.raises(SemanticAccessDenied):
+        resolver.resolve(query, models["orders"], None)
+    resolved = resolver.resolve(
+        query, models["orders"], None,
+        consumer_context=ConsumerContext("reader", "dashboard", attributes={"tenant": "A"}),
+    )
+    assert len(resolved.policy_filters) == 2
+    assert resolved.full_sql.count("WHERE") == 2
+
+    with duckdb.connect(":memory:") as connection:
+        connection.execute("CREATE SCHEMA gold")
+        connection.execute(
+            "CREATE TABLE gold.orders "
+            "(order_id INTEGER, customer_id INTEGER, customer_tenant VARCHAR, "
+            "status VARCHAR, amount INTEGER)"
+        )
+        connection.execute(
+            "CREATE TABLE gold.customers (id INTEGER, tenant VARCHAR, segment VARCHAR)"
+        )
+        connection.execute(
+            "INSERT INTO gold.orders VALUES "
+            "(1, 7, 'A', 'paid', 12), (2, 8, 'B', 'paid', 100)"
+        )
+        connection.execute(
+            "INSERT INTO gold.customers VALUES "
+            "(7, 'A', 'retail'), (8, 'B', 'enterprise')"
+        )
+        assert connection.execute(resolved.full_sql).fetchall() == [("retail", 12)]
+
+
+def test_row_policy_literal_escapes_quote_and_refuses_backslash():
+    assert QueryResolver._render_policy_literal("O'Brien") == "'O''Brien'"
+    with pytest.raises(SemanticQueryError, match="Invalid row-policy identity"):
+        QueryResolver._render_policy_literal("x\\' OR true --")
 
 
 def test_multi_model_aliases_are_stable_across_hash_seeds():

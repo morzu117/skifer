@@ -109,6 +109,7 @@ class SemanticValidator:
         self._check_metrics(
             model.get("metrics", []), model.get("dimensions", []), result
         )
+        self._check_row_policy(model, result)
         self._check_domain(model, result)
         self._check_model_calendar_reference(model, result)
         self._check_descriptions(model, result)
@@ -231,6 +232,19 @@ class SemanticValidator:
             result.add_error("Clé 'metrics' manquante")
         elif not model["metrics"]:
             result.add_error("Au moins une métrique est requise")
+
+    @staticmethod
+    def _check_row_policy(model: dict, result: ValidationResult) -> None:
+        if "row_policy" not in model:
+            return
+        policy = model["row_policy"]
+        if not isinstance(policy, dict) or set(policy) != {"column", "attribute"}:
+            result.add_error("row_policy must contain exactly column and attribute")
+            return
+        for key in ("column", "attribute"):
+            value = policy[key]
+            if not isinstance(value, str) or not _SAFE_IDENTIFIER.fullmatch(value):
+                result.add_error(f"row_policy {key} must be a SQL-safe identifier")
 
     def _check_dimensions(self, dims: list, result: ValidationResult) -> None:
         seen_names: set[str] = set()

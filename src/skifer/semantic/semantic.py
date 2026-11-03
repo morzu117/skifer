@@ -49,6 +49,7 @@ from .evidence import (
     SemanticResult,
     SourceEvidence,
     build_metric_evidence,
+    hash_definition,
     hash_sql,
 )
 
@@ -443,7 +444,9 @@ class SemanticEngine:
         with self._trace_span(
             "skifer.semantic.compile", {"model_key": semantic_query.model_name}
         ):
-            resolved = resolver.resolve(semantic_query, model, self.core.db)
+            resolved = resolver.resolve(
+                semantic_query, model, self.core.db, consumer_context=context
+            )
         return self._query_with_evidence_from_resolved(
             semantic_query,
             model,
@@ -525,7 +528,7 @@ class SemanticEngine:
             ),
             dimensions=tuple(semantic_query.group_by),
             normalized_filters=self._normalized_filters(
-                semantic_query, evidence_policy
+                semantic_query, evidence_policy, resolved
             ),
             sources=self._source_evidence(
                 resolved, deps, certifications, policy=policy, mode=mode
@@ -533,13 +536,18 @@ class SemanticEngine:
             policy=policy,
             sql_hash=hash_sql(resolved.full_sql),
             sql_dialect=resolved.dialect,
-            sql_text=resolved.full_sql if evidence_policy.include_sql else None,
-            sql_redacted=not evidence_policy.include_sql,
+            sql_text=(
+                resolved.full_sql
+                if evidence_policy.include_sql and not resolved.policy_filters
+                else None
+            ),
+            sql_redacted=not evidence_policy.include_sql or bool(resolved.policy_filters),
             statement_id=None,
             compiled_at=compiled_at,
             executed_at=None,
         )
-        print(f"🔎 [SemanticEngine] SQL :\n{resolved.full_sql}")
+        if not resolved.policy_filters:
+            print(f"🔎 [SemanticEngine] SQL :\n{resolved.full_sql}")
         backend = self.core._get_backend()
         started = self._monotonic()
         try:
@@ -570,6 +578,10 @@ class SemanticEngine:
                 execution_duration_seconds=max(0.0, self._monotonic() - started),
                 execution_error_type=type(exc).__name__,
             )
+            if resolved.policy_filters:
+                raise SemanticExecutionError(
+                    "Semantic SQL execution failed.", evidence=failed_evidence
+                ) from None
             raise SemanticExecutionError(str(exc), evidence=failed_evidence) from exc
 
         completed_evidence = replace(
@@ -696,7 +708,7 @@ class SemanticEngine:
         )
 
     @staticmethod
-    def _normalized_filters(semantic_query, evidence_policy) -> tuple[dict, ...]:
+    def _normalized_filters(semantic_query, evidence_policy, resolved=None) -> tuple[dict, ...]:
         normalized = []
         for item in semantic_query.filters:
             entry = {"column": item.get("column"), "operator": item.get("operator")}
@@ -710,6 +722,23 @@ class SemanticEngine:
                     else "<redacted>"
                 )
             normalized.append(entry)
+        if resolved is not None:
+            for model_key, sql in resolved.base_filters:
+                normalized.append({
+                    "model_key": model_key,
+                    "column": "base_filter",
+                    "operator": "sql",
+                    "origin": "policy",
+                    "definition_hash": hash_definition(sql),
+                })
+            for item in resolved.policy_filters:
+                normalized.append({
+                    "model_key": item["model_key"],
+                    "column": item["column"],
+                    "operator": "eq",
+                    "origin": "policy",
+                    "value": "<redacted>",
+                })
         return tuple(normalized)
 
     # ------------------------------------------------------------------

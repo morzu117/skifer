@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Mapping
 
 from skifer.observability.tracing import TraceContext
 
@@ -79,6 +81,7 @@ class RequestContext:
     scopes: frozenset[str]
     consumer_class: str
     trace_context: TraceContext
+    attributes: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.subject, str) or not self.subject.strip():
@@ -91,6 +94,12 @@ class RequestContext:
             raise InvalidRequest("Consumer class must be non-empty text.")
         if not isinstance(self.trace_context, TraceContext):
             raise InvalidRequest("trace_context must be a TraceContext instance.")
+        if not isinstance(self.attributes, Mapping) or not all(
+            isinstance(key, str) and key and isinstance(value, str)
+            for key, value in self.attributes.items()
+        ):
+            raise InvalidRequest("Request attributes must map non-empty names to text.")
+        object.__setattr__(self, "attributes", MappingProxyType(dict(self.attributes)))
 
 
 def require_scope(ctx: RequestContext, scope: str) -> None:
