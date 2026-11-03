@@ -25,3 +25,7 @@ Board a choisi Skifer en bibliothèque : Board vérifie l'identité, configure s
 ## Acceptation
 
 `pytest tests/ -x --tb=short`, `ruff check src/` et `mkdocs build --strict` passent. Les tests prouvent que deux lecteurs voient des lignes distinctes sur le même backend, qu'un administrateur ne voit pas plus qu'un lecteur, qu'un filtre utilisateur supprimé ne retire pas la RLS, qu'un refus n'exécute aucun SQL et que les deux dialectes donnent le même résultat logique. Board pourra alors épingler la version PyPI publiée et tester son adaptateur avant d'ouvrir ses routes d'exécution.
+
+## État de réalisation
+
+- 45.1 : constructeur `SemanticEngine.from_backend()` et lignes bornées sans DataFrame Spark ; tests ciblés et suite complète en cours de validation.

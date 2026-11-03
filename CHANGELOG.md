@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- (Plan 45.1) `SemanticEngine.from_backend()` wires a public SQL execution backend without
+  initializing Spark; certification and evidence remain in the semantic engine. The agent-ready
+  service also accepts bounded list/tuple rows returned by such a connector.
+
 - (Plan 44, S00.1) `MetricEvidence` carries the certification of the *metric* itself, distinct
   from the certification of its sources: `certification` (`CERTIFIED` by default, or `CANDIDATE`)
   and `candidate_id`, required for a `CANDIDATE` metric and refused for a `CERTIFIED` one.

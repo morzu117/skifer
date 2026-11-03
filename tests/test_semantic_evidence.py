@@ -139,6 +139,34 @@ def _query():
     )
 
 
+def test_public_backend_runtime_executes_without_spark(tmp_path, monkeypatch):
+    engine, backend = _semantic_engine(tmp_path)
+    import skifer.spark_factory as spark_factory
+
+    def forbid_spark():
+        raise AssertionError("Spark must not be initialized")
+
+    monkeypatch.setattr(spark_factory, "get_spark_session", forbid_spark)
+    runtime = SemanticEngine.from_backend(
+        backend,
+        models_dir=str(engine.models_dir),
+        catalog="main",
+        config={"environments": {"dev": {"semantic_certification_policy": "off"}}},
+    )
+
+    result = runtime.query_with_evidence(_query())
+
+    assert result.dataframe == {"dataframe": True}
+    assert len(backend.sql) == 1
+    assert result.evidence.sql_hash == hash_sql(backend.sql[0])
+
+
+@pytest.mark.parametrize("backend", [None, object()])
+def test_public_backend_runtime_refuses_missing_execution_method(backend):
+    with pytest.raises(TypeError, match="SQL backend"):
+        SemanticEngine.from_backend(backend)
+
+
 def test_evidence_json_round_trip_is_utc_and_redacted_by_default():
     payload = _evidence().to_dict()
 

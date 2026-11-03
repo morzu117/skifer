@@ -311,6 +311,16 @@ def test_query_collects_only_limit_plus_one_and_marks_truncation():
     assert envelope.truncated is True
 
 
+def test_query_accepts_bounded_connector_rows_without_spark():
+    service, engine = _service()
+    engine.dataframe = tuple({"id": index} for index in range(4))
+
+    envelope = service.query(_ctx("query:execute"), SemanticQuery("model-00"), limit=2)
+
+    assert envelope.rows == [{"id": 0}, {"id": 1}]
+    assert envelope.truncated is True
+
+
 def test_query_hard_limit_cannot_be_bypassed_by_configuration():
     with pytest.raises(LimitExceeded):
         ServiceLimits(max_query_rows=1_001)

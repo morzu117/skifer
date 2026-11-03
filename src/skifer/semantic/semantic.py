@@ -106,6 +106,54 @@ class SemanticEngine:
             f"{len(self._catalog)} modèles indexés."
         )
 
+    @classmethod
+    def from_backend(
+        cls,
+        backend,
+        *,
+        models_dir: str = "semantic_models",
+        catalog: str | None = None,
+        environment: str = "DEV",
+        config: dict | None = None,
+        certification_store=None,
+        utc_now=None,
+        monotonic=None,
+    ) -> "SemanticEngine":
+        """Build a semantic runtime around an injected SQL backend, without Spark.
+
+        ``backend`` must expose ``execute_sql(sql)`` or
+        ``execute_sql_with_metadata(sql) -> ExecutionResult``. The caller owns
+        connectivity and result limits. Certification remains enforced here.
+        """
+        if backend is None or not (
+            callable(getattr(backend, "execute_sql", None))
+            or callable(getattr(backend, "execute_sql_with_metadata", None))
+        ):
+            raise TypeError("A SQL backend with an execution method is required.")
+        if catalog is not None and not isinstance(catalog, str):
+            raise TypeError("catalog must be text or None.")
+        if not isinstance(environment, str) or not environment:
+            raise ValueError("environment must be non-empty text.")
+        if config is not None and not isinstance(config, dict):
+            raise TypeError("config must be a mapping or None.")
+
+        class _BackendCore:
+            def __init__(self):
+                self.db = catalog
+                self.env = environment
+                self.config = config if config is not None else {}
+
+            def _get_backend(self):
+                return backend
+
+        return cls(
+            _BackendCore(),
+            models_dir=models_dir,
+            certification_store=certification_store,
+            utc_now=utc_now,
+            monotonic=monotonic,
+        )
+
     @property
     def tracer(self):
         """Share the core tracer without adding a constructor dependency."""
