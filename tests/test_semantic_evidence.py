@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+import duckdb
 
 from skifer.agentic.resolver import QueryResolver, SemanticQuery
 from skifer.semantic.access_policy import (
@@ -137,6 +138,141 @@ def _query():
         group_by=["region"],
         filters=[{"column": "region", "operator": "eq", "value": "EMEA"}],
     )
+
+
+def test_public_backend_runtime_executes_without_spark(tmp_path, monkeypatch):
+    engine, backend = _semantic_engine(tmp_path)
+    import skifer.spark_factory as spark_factory
+
+    def forbid_spark():
+        raise AssertionError("Spark must not be initialized")
+
+    monkeypatch.setattr(spark_factory, "get_spark_session", forbid_spark)
+    runtime = SemanticEngine.from_backend(
+        backend,
+        models_dir=str(engine.models_dir),
+        catalog="main",
+        config={"environments": {"dev": {"semantic_certification_policy": "off"}}},
+    )
+
+    result = runtime.query_with_evidence(_query())
+
+    assert result.dataframe == {"dataframe": True}
+    assert len(backend.sql) == 1
+    assert result.evidence.sql_hash == hash_sql(backend.sql[0])
+
+
+@pytest.mark.parametrize("backend", [None, object()])
+def test_public_backend_runtime_refuses_missing_execution_method(backend):
+    with pytest.raises(TypeError, match="SQL backend"):
+        SemanticEngine.from_backend(backend)
+
+
+def test_public_backend_runtime_records_target_dialect(tmp_path):
+    engine, backend = _semantic_engine(tmp_path)
+    runtime = SemanticEngine.from_backend(
+        backend,
+        models_dir=str(engine.models_dir),
+        catalog="main",
+        dialect="duckdb",
+    )
+
+    evidence = runtime.query_with_evidence(_query()).evidence
+
+    assert evidence.sql_dialect == "duckdb"
+    assert evidence.to_dict()["sql_dialect"] == "duckdb"
+    assert evidence.sql_hash == hash_sql(backend.sql[0])
+    assert '"main"."gold"."fact_orders"' in backend.sql[0]
+
+
+def test_row_policy_separates_readers_and_attests_policy_without_identity(tmp_path, capsys):
+    models_dir = tmp_path / "semantic_models"
+    models_dir.mkdir()
+    (models_dir / "orders.yaml").write_text(yaml.safe_dump({"models": [{
+        "key": "orders", "name": "orders", "table": "gold.orders",
+        "base_filter": "active = true",
+        "row_policy": {"column": "tenant", "attribute": "tenant"},
+        "dimensions": [{"name": "region", "sql": "region", "type": "string"}],
+        "metrics": [{"name": "revenue", "sql": "amount", "type": "sum"}],
+    }]}), encoding="utf-8")
+    (models_dir / "semantic_catalog.yaml").write_text(yaml.safe_dump({"models": [{
+        "key": "orders", "file": "orders.yaml", "dimensions": ["region"],
+        "metrics": ["revenue"],
+    }]}), encoding="utf-8")
+
+    class Backend:
+        def __init__(self):
+            self.db = duckdb.connect(":memory:")
+            self.sql = []
+            self.db.execute("CREATE SCHEMA gold")
+            self.db.execute(
+                "CREATE TABLE gold.orders "
+                "(tenant VARCHAR, region VARCHAR, amount INTEGER, active BOOLEAN)"
+            )
+            self.db.execute(
+                "INSERT INTO gold.orders VALUES "
+                "('A', 'North', 12, true), ('A', 'South', 5, true), "
+                "('A', 'North', 50, false), ('B', 'North', 100, true)"
+            )
+
+        def execute_sql(self, sql):
+            self.sql.append(sql)
+            return self.db.execute(sql).fetchall()
+
+    backend = Backend()
+    runtime = SemanticEngine.from_backend(
+        backend, models_dir=str(models_dir), dialect="duckdb"
+    )
+    query = SemanticQuery("orders", metrics=["revenue"], group_by=["region"])
+    alice = ConsumerContext("alice", "dashboard", user_id="alice", attributes={"tenant": "A"})
+    bob = ConsumerContext("bob", "dashboard", user_id="bob", attributes={"tenant": "B"})
+    admin = ConsumerContext("admin", "platform_admin", user_id="admin", attributes={"tenant": "A"})
+
+    alice_result = runtime.query_with_evidence(query, consumer_context=alice)
+    bob_result = runtime.query_with_evidence(query, consumer_context=bob)
+    admin_result = runtime.query_with_evidence(query, consumer_context=admin)
+    filtered = runtime.query_with_evidence(
+        SemanticQuery("orders", metrics=["revenue"], group_by=["region"],
+                      filters=[{"column": "region", "operator": "eq", "value": "North"}]),
+        consumer_context=alice,
+    )
+
+    assert sorted(alice_result.dataframe) == [("North", 12), ("South", 5)]
+    assert bob_result.dataframe == [("North", 100)]
+    assert sorted(admin_result.dataframe) == sorted(alice_result.dataframe)
+    assert filtered.dataframe == [("North", 12)]
+    assert alice_result.evidence.sql_hash != bob_result.evidence.sql_hash
+    assert all("tenant" in sql for sql in backend.sql)
+    proof = alice_result.evidence.to_dict()
+    assert proof["normalized_filters"] == [
+        {"model_key": "orders", "column": "base_filter", "operator": "sql",
+         "origin": "policy", "definition_hash": hash_definition("active = true")},
+        {"model_key": "orders", "column": "tenant", "operator": "eq",
+         "origin": "policy", "value": "<redacted>"},
+    ]
+    assert "'A'" not in str(proof)
+    assert "'A'" not in capsys.readouterr().out
+    with pytest.raises(EvidenceRedactionError):
+        alice_result.evidence.to_dict(include_sql=True)
+
+    before = len(backend.sql)
+    with pytest.raises(SemanticAccessDenied) as denied:
+        runtime.query_with_evidence(
+            query, consumer_context=ConsumerContext("missing", "platform_admin")
+        )
+    assert denied.value.decision == CertificationDecision.DENY
+    assert denied.value.reasons == ("ROW_POLICY_IDENTITY_MISSING",)
+    assert len(backend.sql) == before
+
+    def fail_with_sql(sql):
+        raise RuntimeError(sql)
+
+    backend.execute_sql = fail_with_sql
+    with pytest.raises(SemanticExecutionError) as failed:
+        runtime.query_with_evidence(query, consumer_context=alice)
+    assert str(failed.value) == "Semantic SQL execution failed."
+    assert "'A'" not in str(failed.value.evidence.to_dict())
+    backend.db.close()
 
 
 def test_evidence_json_round_trip_is_utc_and_redacted_by_default():

@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- (Plan 45.1) `SemanticEngine.from_backend()` wires a public SQL execution backend without
+  initializing Spark; certification and evidence remain in the semantic engine. The agent-ready
+  service also accepts bounded list/tuple rows returned by such a connector.
+- (Plan 45.2) `QueryResolver` and `SemanticEngine` select Databricks or DuckDB SQL. Evidence
+  records `sql_dialect` and hashes the SQL sent to the chosen backend. DuckDB rendering uses
+  the optional `sqlglot` dependency from `skifer[analyzer]`.
+- (Plan 45.3) Semantic models may declare `row_policy: {column, attribute}`. The planner
+  binds it to the verified consumer context for every source before SQL compilation, refusing
+  missing identity. The agent-ready service passes the reader identity and attributes. Evidence
+  attests policy and base filters with redacted values; RLS SQL and backend errors are withheld.
+- (Plan 45.4) Published the SQL backend integration contract and a cross-dialect Spark/DuckDB
+  test for two readers, administrative access, filter removal, and certification refusals.
+
 - (Plan 44, S00.1) `MetricEvidence` carries the certification of the *metric* itself, distinct
   from the certification of its sources: `certification` (`CERTIFIED` by default, or `CANDIDATE`)
   and `candidate_id`, required for a `CANDIDATE` metric and refused for a `CERTIFIED` one.

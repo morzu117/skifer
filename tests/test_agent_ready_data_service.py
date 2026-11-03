@@ -243,8 +243,22 @@ def test_query_filters_client_scopes_and_propagates_subject_and_trace():
     context = engine.query_calls[0][1]["consumer_context"]
     assert context.consumer_id == "agent-a"
     assert context.consumer_class == "mcp"
+    assert context.user_id == "agent-a"
     assert context.trace_id == TRACE_ID
     assert context.scopes == frozenset()
+
+
+def test_query_propagates_verified_request_attributes():
+    service, engine = _service()
+    request = RequestContext(
+        subject="alice", scopes=frozenset({"query:execute"}),
+        consumer_class="dashboard", trace_context=TraceContext(trace_id=TRACE_ID),
+        attributes={"tenant": "A"},
+    )
+    service.query(request, SemanticQuery("model-00"))
+    context = engine.query_calls[0][1]["consumer_context"]
+    assert context.user_id == "alice"
+    assert context.attributes == {"tenant": "A"}
 
 
 def test_different_subjects_create_distinct_consumer_contexts():
@@ -308,6 +322,16 @@ def test_query_collects_only_limit_plus_one_and_marks_truncation():
 
     assert engine.dataframe.calls == [4]
     assert envelope.rows == [{"id": 0}, {"id": 1}, {"id": 2}]
+    assert envelope.truncated is True
+
+
+def test_query_accepts_bounded_connector_rows_without_spark():
+    service, engine = _service()
+    engine.dataframe = tuple({"id": index} for index in range(4))
+
+    envelope = service.query(_ctx("query:execute"), SemanticQuery("model-00"), limit=2)
+
+    assert envelope.rows == [{"id": 0}, {"id": 1}]
     assert envelope.truncated is True
 
 

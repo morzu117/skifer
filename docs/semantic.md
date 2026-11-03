@@ -440,3 +440,69 @@ models:
 ```
 
 This keeps the LLM context window small (~500 tokens regardless of model count) while giving the agent enough information to select the right model.
+
+## SQL backend integration (Plan 45)
+
+`SemanticEngine.from_backend()` accepts an application-owned SQL connector without creating a
+Spark session. The connector implements `execute_sql(sql)` and returns either a Spark DataFrame
+or bounded rows, or implements `execute_sql_with_metadata(sql)` and returns
+`ExecutionResult(dataframe=..., statement_id=...)`. The connector owns connection credentials,
+timeouts, cancellation, and row/byte limits. Skifer owns semantic planning, certification,
+row policy, SQL generation, and evidence. Install `skifer[analyzer]` when selecting `duckdb`;
+the Databricks dialect keeps the existing SQL renderer.
+
+```yaml
+# In the full model YAML, not in semantic_catalog.yaml
+models:
+  - key: orders
+    name: orders
+    table: gold.orders
+    row_policy:
+      column: tenant_id       # physical source column, SQL-safe identifier
+      attribute: tenant       # verified ConsumerContext attribute
+    dimensions:
+      - {name: region, sql: region, type: string}
+    metrics:
+      - {name: revenue, sql: amount, type: sum}
+```
+
+```python
+from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.access_policy import ConsumerContext, SemanticAccessDenied
+from skifer.semantic.semantic import SemanticEngine
+
+semantic = SemanticEngine.from_backend(
+    backend,                         # application-owned, bounded SQL connector
+    models_dir="semantic_models",
+    catalog=None,                    # use "analytics" for a Databricks catalog
+    dialect="duckdb",                # or "databricks"
+    environment="DEV",
+    config=config,                   # certification policy for this environment
+    certification_store=store,
+)
+reader = ConsumerContext(
+    consumer_id="board",
+    consumer_class="dashboard",
+    user_id=verified_subject,
+    attributes={"tenant": verified_tenant},
+)
+try:
+    result = semantic.query_with_evidence(
+        SemanticQuery("orders", metrics=["revenue"], group_by=["region"]),
+        consumer_context=reader,
+    )
+except SemanticAccessDenied as denial:
+    # Inspect denial.decision, denial.reasons and denial.recommended_action.
+    # DENY / REQUIRE_HUMAN never call the connector.
+    raise
+
+rows = result.dataframe
+proof = result.evidence.to_dict()  # sql_dialect, sql_hash, redacted policy filters
+```
+
+The caller must derive `user_id` and `attributes` from a verified identity, never from query
+filters. A missing required attribute refuses before SQL execution. Each joined model's policy
+is applied to its own source before the join. Removing an exploration filter does not remove
+the row policy; an administrator role does not bypass it. Policy values and RLS SQL are withheld
+from the public evidence. `sql_hash` covers the SQL actually sent to the connector and must be
+interpreted together with `sql_dialect`.

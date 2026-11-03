@@ -118,6 +118,9 @@ class ResolvedQuery:
     sources: tuple[str, ...] = ()
     model_keys: tuple[str, ...] = ()
     selected_expressions: tuple[SelectedExpression, ...] = ()
+    dialect: str = "databricks"
+    policy_filters: tuple[dict, ...] = ()
+    base_filters: tuple[tuple[str, str], ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -147,14 +150,19 @@ class QueryResolver:
     Lève SemanticQueryError si un nom est absent — jamais de SQL inventé.
     """
 
-    def __init__(self, planner=None) -> None:
+    def __init__(self, planner=None, *, dialect: str = "databricks") -> None:
+        if dialect not in {"databricks", "duckdb"}:
+            raise SemanticQueryError(f"Unsupported semantic SQL dialect: {dialect!r}.")
         self.planner = planner
+        self.dialect = dialect
 
     def resolve(
         self,
         query: SemanticQuery,
         model: dict,
         catalog_fqn: str | None,
+        *,
+        consumer_context=None,
     ) -> ResolvedQuery:
         """
         Valide et résout une SemanticQuery.
@@ -171,21 +179,52 @@ class QueryResolver:
             SemanticQueryError: Si un nom est absent du modèle.
         """
         if self.planner is None:
+            if "row_policy" in model:
+                raise SemanticQueryError("A row_policy requires a SemanticPlanner.")
             if query.period is not None:
                 raise SemanticQueryError(
                     "A period query requires a SemanticPlanner to resolve its "
                     "declared calendar definition."
                 )
             self._validate(query, model)
-            return self._build_sql(query, model, catalog_fqn)
+            return self._target_sql(self._build_sql(query, model, catalog_fqn))
 
-        plan = self.planner.plan(query)
+        plan = self.planner.plan(query, consumer_context=consumer_context)
         if self._is_unqualified_root_query(query, plan):
             # This branch is intentionally the pre-6.4 implementation. Existing
             # single-model queries must remain byte-for-byte stable.
             self._validate(query, model)
-            return self._build_sql(query, model, catalog_fqn)
+            return self._target_sql(self._build_sql(query, model, catalog_fqn))
         return self.compile_plan(query, plan, catalog_fqn)
+
+    def _target_sql(self, resolved: ResolvedQuery) -> ResolvedQuery:
+        """Render the requested dialect after deterministic semantic compilation."""
+        resolved.dialect = self.dialect
+        if self.dialect == "databricks":
+            return resolved
+        try:
+            import sqlglot
+        except ImportError as exc:
+            raise SemanticQueryError(
+                "DuckDB SQL requires sqlglot: install skifer[analyzer]."
+            ) from exc
+
+        # sqlglot's Spark reader treats a doubled quote as two adjacent
+        # literals. Convert only inside complete SQL string literals before
+        # parsing; the output dialect restores the SQL-standard escaping.
+        literal = re.compile(r"'(?:[^']|'')*'")
+        source = literal.sub(
+            lambda match: match.group(0).replace("''", "\\'"),
+            resolved.full_sql,
+        )
+        try:
+            statements = sqlglot.transpile(source, read="spark", write="duckdb")
+        except sqlglot.SqlglotError as exc:
+            raise SemanticQueryError("Semantic SQL cannot be rendered as DuckDB SQL.") from exc
+        if len(statements) != 1:
+            raise SemanticQueryError("Semantic SQL must compile to one statement.")
+        resolved.full_sql = statements[0]
+        return resolved
 
     def compile_plan(
         self,
@@ -230,15 +269,18 @@ class QueryResolver:
             )
 
         root_alias = aliases[plan.root_model]
+        row_filters = {item.model_key: item for item in plan.row_filters}
         root_source = self._model_source(
-            models[plan.root_model], catalog_fqn, root_alias
+            models[plan.root_model], catalog_fqn, root_alias,
+            row_filter=row_filters.get(plan.root_model),
         )
         from_parts = [root_source]
         for join in plan.joins:
             source_alias = aliases[join.source_model]
             target_alias = aliases[join.target_model]
             target_source = self._model_source(
-                models[join.target_model], catalog_fqn, target_alias
+                models[join.target_model], catalog_fqn, target_alias,
+                row_filter=row_filters.get(join.target_model),
             )
             predicates = [
                 f"{source_alias}.{self._quote_identifier(source_column)} = "
@@ -291,7 +333,7 @@ class QueryResolver:
             self._selected_expression("metric", metric_refs[reference], models)
             for reference in query.metrics
         )
-        return ResolvedQuery(
+        return self._target_sql(ResolvedQuery(
             select_exprs=select_exprs,
             from_fqn=from_fqn,
             where_clauses=where_clauses,
@@ -303,7 +345,16 @@ class QueryResolver:
             ),
             model_keys=tuple(plan.required_models),
             selected_expressions=selected,
-        )
+            policy_filters=tuple(
+                {"model_key": item.model_key, "column": item.column,
+                 "operator": "eq", "value": item.value, "origin": "policy"}
+                for item in plan.row_filters
+            ),
+            base_filters=tuple(
+                (key, str(models[key]["base_filter"]))
+                for key in plan.required_models if models[key].get("base_filter")
+            ),
+        ))
 
     # ------------------------------------------------------------------
     # Validation
@@ -425,6 +476,7 @@ class QueryResolver:
             sources=(str(model.get("table", "")) or model_key,),
             model_keys=(model_key,),
             selected_expressions=selected,
+            base_filters=((model_key, str(base_filter)),) if base_filter else (),
         )
 
     def _selected_expression(self, kind: str, ref, models: dict) -> SelectedExpression:
@@ -547,14 +599,32 @@ class QueryResolver:
             f"declares {member_type[:-1]} '{name}'; reload the semantic catalog."
         )
 
-    def _model_source(self, model: dict, catalog_fqn: str | None, alias: str) -> str:
+    def _model_source(
+        self, model: dict, catalog_fqn: str | None, alias: str, *, row_filter=None
+    ) -> str:
         table_fqn = self._resolve_planned_table_fqn(model, catalog_fqn)
         base_filter = model.get("base_filter")
-        if base_filter:
+        if base_filter or row_filter is not None:
             # The legacy base_filter is curated SQL scoped to its own source. A
             # subquery prevents names in it from becoming ambiguous after joins.
-            return f"(SELECT * FROM {table_fqn} WHERE {base_filter}) AS {alias}"
+            clauses = []
+            if base_filter:
+                clauses.append(f"({base_filter})" if row_filter is not None else base_filter)
+            if row_filter is not None:
+                clauses.append(
+                    f"{self._quote_identifier(row_filter.column)} = "
+                    f"{self._render_policy_literal(row_filter.value)}"
+                )
+            return f"(SELECT * FROM {table_fqn} WHERE {' AND '.join(clauses)}) AS {alias}"
         return f"{table_fqn} AS {alias}"
+
+    @staticmethod
+    def _render_policy_literal(value: str) -> str:
+        if not isinstance(value, str) or not value or len(value) > 1024 or "\\" in value or any(
+            ord(character) < 32 for character in value
+        ):
+            raise SemanticQueryError("Invalid row-policy identity value.")
+        return "'" + value.replace("'", "''") + "'"
 
     def _resolve_planned_table_fqn(
         self, model: dict, catalog_fqn: str | None
@@ -609,6 +679,7 @@ class QueryResolver:
         return (
             query.period is None
             and plan.required_models == (plan.root_model,)
+            and not plan.row_filters
             and all(ref.model_key == plan.root_model for ref in plan.metrics)
             and all(ref.model_key == plan.root_model for ref in plan.dimensions)
             and all(ref.reference == ref.name for ref in (*plan.metrics, *plan.dimensions))

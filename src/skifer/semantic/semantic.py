@@ -49,6 +49,7 @@ from .evidence import (
     SemanticResult,
     SourceEvidence,
     build_metric_evidence,
+    hash_definition,
     hash_sql,
 )
 
@@ -82,6 +83,7 @@ class SemanticEngine:
         *,
         utc_now=None,
         monotonic=None,
+        dialect: str = "databricks",
     ):
         """
         Args:
@@ -91,6 +93,9 @@ class SemanticEngine:
             certification_store: Store optionnel de certification sémantique.
         """
         self.core = core_engine
+        if dialect not in {"databricks", "duckdb"}:
+            raise ValueError(f"Unsupported semantic SQL dialect: {dialect!r}.")
+        self.dialect = dialect
         # Note: self.spark supprimé — toutes les requêtes SQL passent par self.core._get_backend().execute_sql()
         self.models_dir = self._resolve_models_dir(models_dir)
         self.certification_store = certification_store
@@ -104,6 +109,56 @@ class SemanticEngine:
         print(
             f"🧠 [SemanticEngine] Catalogue chargé — "
             f"{len(self._catalog)} modèles indexés."
+        )
+
+    @classmethod
+    def from_backend(
+        cls,
+        backend,
+        *,
+        models_dir: str = "semantic_models",
+        catalog: str | None = None,
+        environment: str = "DEV",
+        config: dict | None = None,
+        certification_store=None,
+        utc_now=None,
+        monotonic=None,
+        dialect: str = "databricks",
+    ) -> "SemanticEngine":
+        """Build a semantic runtime around an injected SQL backend, without Spark.
+
+        ``backend`` must expose ``execute_sql(sql)`` or
+        ``execute_sql_with_metadata(sql) -> ExecutionResult``. The caller owns
+        connectivity and result limits. Certification remains enforced here.
+        """
+        if backend is None or not (
+            callable(getattr(backend, "execute_sql", None))
+            or callable(getattr(backend, "execute_sql_with_metadata", None))
+        ):
+            raise TypeError("A SQL backend with an execution method is required.")
+        if catalog is not None and not isinstance(catalog, str):
+            raise TypeError("catalog must be text or None.")
+        if not isinstance(environment, str) or not environment:
+            raise ValueError("environment must be non-empty text.")
+        if config is not None and not isinstance(config, dict):
+            raise TypeError("config must be a mapping or None.")
+
+        class _BackendCore:
+            def __init__(self):
+                self.db = catalog
+                self.env = environment
+                self.config = config if config is not None else {}
+
+            def _get_backend(self):
+                return backend
+
+        return cls(
+            _BackendCore(),
+            models_dir=models_dir,
+            certification_store=certification_store,
+            utc_now=utc_now,
+            monotonic=monotonic,
+            dialect=dialect,
         )
 
     @property
@@ -385,11 +440,13 @@ class SemanticEngine:
                 preflight_policy.decision.value,
                 required=self._tracing_required,
             )
-        resolver = QueryResolver(SemanticPlanner(self))
+        resolver = QueryResolver(SemanticPlanner(self), dialect=self.dialect)
         with self._trace_span(
             "skifer.semantic.compile", {"model_key": semantic_query.model_name}
         ):
-            resolved = resolver.resolve(semantic_query, model, self.core.db)
+            resolved = resolver.resolve(
+                semantic_query, model, self.core.db, consumer_context=context
+            )
         return self._query_with_evidence_from_resolved(
             semantic_query,
             model,
@@ -471,20 +528,26 @@ class SemanticEngine:
             ),
             dimensions=tuple(semantic_query.group_by),
             normalized_filters=self._normalized_filters(
-                semantic_query, evidence_policy
+                semantic_query, evidence_policy, resolved
             ),
             sources=self._source_evidence(
                 resolved, deps, certifications, policy=policy, mode=mode
             ),
             policy=policy,
             sql_hash=hash_sql(resolved.full_sql),
-            sql_text=resolved.full_sql if evidence_policy.include_sql else None,
-            sql_redacted=not evidence_policy.include_sql,
+            sql_dialect=resolved.dialect,
+            sql_text=(
+                resolved.full_sql
+                if evidence_policy.include_sql and not resolved.policy_filters
+                else None
+            ),
+            sql_redacted=not evidence_policy.include_sql or bool(resolved.policy_filters),
             statement_id=None,
             compiled_at=compiled_at,
             executed_at=None,
         )
-        print(f"🔎 [SemanticEngine] SQL :\n{resolved.full_sql}")
+        if not resolved.policy_filters:
+            print(f"🔎 [SemanticEngine] SQL :\n{resolved.full_sql}")
         backend = self.core._get_backend()
         started = self._monotonic()
         try:
@@ -515,6 +578,10 @@ class SemanticEngine:
                 execution_duration_seconds=max(0.0, self._monotonic() - started),
                 execution_error_type=type(exc).__name__,
             )
+            if resolved.policy_filters:
+                raise SemanticExecutionError(
+                    "Semantic SQL execution failed.", evidence=failed_evidence
+                ) from None
             raise SemanticExecutionError(str(exc), evidence=failed_evidence) from exc
 
         completed_evidence = replace(
@@ -641,7 +708,7 @@ class SemanticEngine:
         )
 
     @staticmethod
-    def _normalized_filters(semantic_query, evidence_policy) -> tuple[dict, ...]:
+    def _normalized_filters(semantic_query, evidence_policy, resolved=None) -> tuple[dict, ...]:
         normalized = []
         for item in semantic_query.filters:
             entry = {"column": item.get("column"), "operator": item.get("operator")}
@@ -655,6 +722,23 @@ class SemanticEngine:
                     else "<redacted>"
                 )
             normalized.append(entry)
+        if resolved is not None:
+            for model_key, sql in resolved.base_filters:
+                normalized.append({
+                    "model_key": model_key,
+                    "column": "base_filter",
+                    "operator": "sql",
+                    "origin": "policy",
+                    "definition_hash": hash_definition(sql),
+                })
+            for item in resolved.policy_filters:
+                normalized.append({
+                    "model_key": item["model_key"],
+                    "column": item["column"],
+                    "operator": "eq",
+                    "origin": "policy",
+                    "value": "<redacted>",
+                })
         return tuple(normalized)
 
     # ------------------------------------------------------------------
@@ -700,7 +784,7 @@ class SemanticEngine:
         )
         catalog_fqn = self.core.db
 
-        resolver = QueryResolver(SemanticPlanner(self))
+        resolver = QueryResolver(SemanticPlanner(self), dialect=self.dialect)
         resolved = resolver.resolve(semantic_query, model, catalog_fqn)
         mode, context, deps, certifications = self.enforce_certification_gate(
             semantic_query.model_name,

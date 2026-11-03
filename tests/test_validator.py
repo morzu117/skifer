@@ -43,6 +43,24 @@ def test_valid_model_passes(validator, valid_model):
     assert result.errors == []
 
 
+@pytest.mark.parametrize("policy", [
+    None,
+    {"column": "tenant; DROP", "attribute": "tenant"},
+    {"column": "tenant"},
+    {"column": "tenant", "attribute": "tenant", "bypass": "admin"},
+])
+def test_row_policy_rejects_malformed_or_unsafe_definition(validator, valid_model, policy):
+    valid_model["row_policy"] = policy
+    result = validator.validate(valid_model)
+    assert not result.ok
+    assert any("row_policy" in error for error in result.errors)
+
+
+def test_row_policy_accepts_safe_declared_column_and_attribute(validator, valid_model):
+    valid_model["row_policy"] = {"column": "tenant_id", "attribute": "tenant"}
+    assert validator.validate(valid_model).ok
+
+
 # ---------------------------------------------------------------------------
 # Champs obligatoires
 # ---------------------------------------------------------------------------

@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import difflib
 import re
 from typing import Any, Literal
 
 from ..agentic.resolver import SemanticQueryError
+from .access_policy import CertificationDecision, SemanticAccessDenied
 from .calendar import parse_iso_date, resolve_period
 from .domain import (
     METRIC_ADDITIVITY,
@@ -59,6 +61,15 @@ class PlannedJoin:
 
 
 @dataclass(frozen=True)
+class PlannedRowFilter:
+    """A mandatory source restriction derived from a verified consumer context."""
+
+    model_key: str
+    column: str
+    value: str
+
+
+@dataclass(frozen=True)
 class SemanticPlan:
     """Resolved model ownership and join path for one named query."""
 
@@ -73,6 +84,7 @@ class SemanticPlan:
     period_name: str | None = None
     calendar_key: str | None = None
     calendar_version: str | None = None
+    row_filters: tuple[PlannedRowFilter, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,7 +139,7 @@ class SemanticPlanner:
         self.semantic = semantic_engine
         self.graph = graph or DomainGraph(semantic_engine)
 
-    def plan(self, query: Any) -> SemanticPlan:
+    def plan(self, query: Any, consumer_context=None) -> SemanticPlan:
         """Build a deterministic plan from a ``SemanticQuery`` of names only."""
         root_model = str(query.model_name)
         self._assert_safe_model_key(root_model)
@@ -181,6 +193,18 @@ class SemanticPlanner:
         planned_joins = tuple(joins)
         self._check_fanout(metrics, planned_joins, root_model)
         self._check_metric_additivity(query, metrics, dimensions, planned_joins)
+        row_filters = tuple(
+            row_filter
+            for model_key in required_models
+            for row_filter in (
+                self._row_filter(
+                    model_key,
+                    self.semantic._get_model(model_key),
+                    consumer_context,
+                ),
+            )
+            if row_filter is not None
+        )
 
         return SemanticPlan(
             root_model=root_model,
@@ -194,7 +218,40 @@ class SemanticPlanner:
             period_name=getattr(query, "period", None),
             calendar_key=calendar_key,
             calendar_version=calendar_version,
+            row_filters=row_filters,
         )
+
+    @staticmethod
+    def _row_filter(model_key: str, model: dict, context) -> PlannedRowFilter | None:
+        if "row_policy" not in model:
+            return None
+        policy = model["row_policy"]
+        if not isinstance(policy, dict) or set(policy) != {"column", "attribute"}:
+            raise SemanticQueryError(
+                f"Model '{model_key}' has an invalid row_policy definition."
+            )
+        column, attribute = policy["column"], policy["attribute"]
+        if not isinstance(column, str) or not _SAFE_IDENTIFIER.fullmatch(column):
+            raise SemanticQueryError(f"Model '{model_key}' has an unsafe row_policy column.")
+        if not isinstance(attribute, str) or not _SAFE_IDENTIFIER.fullmatch(attribute):
+            raise SemanticQueryError(f"Model '{model_key}' has an unsafe row_policy attribute.")
+        value = (
+            getattr(context, "user_id", None)
+            if attribute == "user_id"
+            else getattr(context, "attributes", {}).get(attribute)
+            if context is not None
+            else None
+        )
+        if not isinstance(value, str) or not value or "\x00" in value:
+            raise SemanticAccessDenied(
+                model_key=model_key,
+                datasets=(str(model.get("table") or model_key),),
+                decision=CertificationDecision.DENY,
+                reasons=("ROW_POLICY_IDENTITY_MISSING",),
+                evaluated_at=datetime.now(timezone.utc),
+                recommended_action="Provide the verified reader identity required by the row policy.",
+            )
+        return PlannedRowFilter(model_key=model_key, column=column, value=value)
 
     def _resolve_dates(
         self,

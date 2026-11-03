@@ -200,6 +200,7 @@ class SemanticEvidence:
     statement_id: str | None
     compiled_at: datetime
     executed_at: datetime | None
+    sql_dialect: str = "databricks"
     execution_status: str = "pending"
     execution_duration_seconds: float | None = None
     execution_error_type: str | None = None
@@ -295,6 +296,7 @@ class SemanticEvidence:
                 ),
             },
             "sql_hash": _serialize_value(self.sql_hash, "sql_hash"),
+            "sql_dialect": _serialize_value(self.sql_dialect, "sql_dialect"),
             "statement_id": _serialize_value(self.statement_id, "statement_id"),
             "compiled_at": _serialize_value(self.compiled_at, "compiled_at"),
             "executed_at": _serialize_value(self.executed_at, "executed_at"),
@@ -337,6 +339,11 @@ class SemanticEvidence:
                 filter_def.get("operator"), f"normalized_filters[{index}].operator"
             ),
         }
+        for key in ("origin", "model_key", "definition_hash"):
+            if key in filter_def:
+                payload[key] = _serialize_value(
+                    filter_def[key], f"normalized_filters[{index}].{key}"
+                )
         if "value" in filter_def:
             include_value = (
                 include_filter_values

@@ -359,6 +359,8 @@ class AgentReadyDataService:
                 scope for scope in ctx.scopes if scope in _CONSUMER_SCOPE_ALLOWLIST
             ),
             trace_id=ctx.trace_context.trace_id,
+            user_id=ctx.subject,
+            attributes=ctx.attributes,
         )
         result = self.semantic_engine.query_with_evidence(
             query,
@@ -367,7 +369,14 @@ class AgentReadyDataService:
         )
         if not isinstance(result.evidence, SemanticEvidence):
             raise ResourceUnavailable("The semantic engine returned invalid evidence.")
-        collected = result.dataframe.limit(limit + 1).collect()
+        frame = result.dataframe
+        if isinstance(frame, (list, tuple)):
+            # Connector backends may return already bounded, JSON-like rows.
+            # The connector owns the upstream row/byte budget; the service
+            # still applies its own response limit before serialization.
+            collected = frame[: limit + 1]
+        else:
+            collected = frame.limit(limit + 1).collect()
         truncated = len(collected) > limit
         rows = [self._row_to_json(row, index) for index, row in enumerate(collected[:limit])]
         return QueryEnvelope(
