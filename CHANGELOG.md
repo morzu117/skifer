@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binds it to the verified consumer context for every source before SQL compilation, refusing
   missing identity. The agent-ready service passes the reader identity and attributes. Evidence
   attests policy and base filters with redacted values; RLS SQL and backend errors are withheld.
+- (Plan 45.4) Published the SQL backend integration contract and a cross-dialect Spark/DuckDB
+  test for two readers, administrative access, filter removal, and certification refusals.
 
 - (Plan 44, S00.1) `MetricEvidence` carries the certification of the *metric* itself, distinct
   from the certification of its sources: `certification` (`CERTIFIED` by default, or `CANDIDATE`)

@@ -28,6 +28,7 @@ Board a choisi Skifer en bibliothèque : Board vérifie l'identité, configure s
 
 ## État de réalisation
 
-- 45.1 : constructeur `SemanticEngine.from_backend()` et lignes bornées sans DataFrame Spark ; tests ciblés et suite complète en cours de validation.
+- 45.1 : constructeur `SemanticEngine.from_backend()` et lignes bornées sans DataFrame Spark ; suite complète validée.
 - 45.2 : dialectes `databricks` et `duckdb` explicites ; `sql_dialect` dans la preuve, hash du SQL exécuté ; parité Spark/DuckDB sur les apostrophes et essai de jointure DuckDB.
 - 45.3 : `row_policy: {column, attribute}` validé ; attribut provenant de `ConsumerContext.user_id` ou de `ConsumerContext.attributes`, et de `RequestContext` au service. Restriction par source avant jointure, refus typé si l'identité manque, valeurs masquées dans la preuve et SQL RLS jamais imprimé ni renvoyé dans l'evidence. Tests à deux lecteurs et avec administrateur.
+- 45.4 : exemple d'intégration publié dans `docs/semantic.md` ; recette de contrat locale sur Spark et DuckDB avec deux lecteurs, administrateur, filtre retiré, `DENY` et `REQUIRE_HUMAN` sans appel au connecteur.
