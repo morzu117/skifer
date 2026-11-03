@@ -7,6 +7,7 @@ import sys
 import textwrap
 
 import pytest
+import duckdb
 
 from skifer.agentic.resolver import (
     QueryResolver,
@@ -170,6 +171,54 @@ def test_resolve_basic_query(resolver, model):
     assert "SELECT" in result.full_sql
     assert "FROM" in result.full_sql
     assert "GROUP BY" in result.full_sql
+
+
+def test_target_dialect_rejects_unknown_value():
+    with pytest.raises(SemanticQueryError, match="Unsupported semantic SQL dialect"):
+        QueryResolver(dialect="postgres")
+
+
+def test_duckdb_dialect_matches_spark_rows_with_doubled_quote(spark):
+    model = {
+        "key": "orders",
+        "table": "skifer_plan45.orders",
+        "base_filter": "customer = 'O''Brien'",
+        "dimensions": [{"name": "region", "sql": "region", "type": "string"}],
+        "metrics": [{"name": "revenue", "sql": "amount", "type": "sum"}],
+    }
+    query = SemanticQuery("orders", metrics=["revenue"], group_by=["region"])
+    spark_sql = QueryResolver().resolve(query, model, None)
+    duck_sql = QueryResolver(dialect="duckdb").resolve(query, model, None)
+    assert spark_sql.dialect == "databricks"
+    assert duck_sql.dialect == "duckdb"
+    assert '"skifer_plan45"."orders"' in duck_sql.full_sql
+    assert "O''Brien" in duck_sql.full_sql
+
+    spark.sql("CREATE DATABASE IF NOT EXISTS skifer_plan45")
+    spark.sql(
+        "CREATE OR REPLACE VIEW skifer_plan45.orders AS "
+        "SELECT 'O''Brien' AS customer, 'North' AS region, 12 AS amount "
+        "UNION ALL SELECT 'Other', 'North', 20 "
+        "UNION ALL SELECT 'O''Brien', 'South', 5"
+    )
+    try:
+        spark_rows = sorted(tuple(row) for row in spark.sql(spark_sql.full_sql).collect())
+        with duckdb.connect(":memory:") as connection:
+            connection.execute("CREATE SCHEMA skifer_plan45")
+            connection.execute(
+                "CREATE TABLE skifer_plan45.orders "
+                "(customer VARCHAR, region VARCHAR, amount INTEGER)"
+            )
+            connection.execute(
+                "INSERT INTO skifer_plan45.orders VALUES "
+                "('O''Brien', 'North', 12), ('Other', 'North', 20), "
+                "('O''Brien', 'South', 5)"
+            )
+            duck_rows = sorted(connection.execute(duck_sql.full_sql).fetchall())
+        assert spark_rows == duck_rows == [("North", 12), ("South", 5)]
+    finally:
+        spark.sql("DROP VIEW IF EXISTS skifer_plan45.orders")
+        spark.sql("DROP DATABASE IF EXISTS skifer_plan45")
 
 
 def test_resolve_metric_with_filter(resolver, model):
@@ -382,6 +431,31 @@ def test_two_model_plan_compiles_deterministic_qualified_sql():
         " AND m0.`customer_tenant` = m1.`tenant`\n"
         "GROUP BY m1.`segment`"
     )
+
+
+def test_duckdb_dialect_executes_declared_join_path():
+    models = _multi_models()
+    semantic = _PlannerSemantic(models)
+    resolver = QueryResolver(SemanticPlanner(semantic), dialect="duckdb")
+    query = SemanticQuery(
+        model_name="orders", metrics=["revenue"], group_by=["customers.segment"]
+    )
+    resolved = resolver.resolve(query, models["orders"], None)
+
+    with duckdb.connect(":memory:") as connection:
+        connection.execute("CREATE SCHEMA gold")
+        connection.execute(
+            "CREATE TABLE gold.orders "
+            "(order_id INTEGER, customer_id INTEGER, customer_tenant VARCHAR, "
+            "status VARCHAR, amount INTEGER)"
+        )
+        connection.execute(
+            "CREATE TABLE gold.customers "
+            "(id INTEGER, tenant VARCHAR, segment VARCHAR)"
+        )
+        connection.execute("INSERT INTO gold.orders VALUES (1, 7, 'A', 'paid', 12)")
+        connection.execute("INSERT INTO gold.customers VALUES (7, 'A', 'retail')")
+        assert connection.execute(resolved.full_sql).fetchall() == [("retail", 12)]
 
 
 def test_multi_model_aliases_are_stable_across_hash_seeds():

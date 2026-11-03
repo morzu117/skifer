@@ -82,6 +82,7 @@ class SemanticEngine:
         *,
         utc_now=None,
         monotonic=None,
+        dialect: str = "databricks",
     ):
         """
         Args:
@@ -91,6 +92,9 @@ class SemanticEngine:
             certification_store: Store optionnel de certification sémantique.
         """
         self.core = core_engine
+        if dialect not in {"databricks", "duckdb"}:
+            raise ValueError(f"Unsupported semantic SQL dialect: {dialect!r}.")
+        self.dialect = dialect
         # Note: self.spark supprimé — toutes les requêtes SQL passent par self.core._get_backend().execute_sql()
         self.models_dir = self._resolve_models_dir(models_dir)
         self.certification_store = certification_store
@@ -118,6 +122,7 @@ class SemanticEngine:
         certification_store=None,
         utc_now=None,
         monotonic=None,
+        dialect: str = "databricks",
     ) -> "SemanticEngine":
         """Build a semantic runtime around an injected SQL backend, without Spark.
 
@@ -152,6 +157,7 @@ class SemanticEngine:
             certification_store=certification_store,
             utc_now=utc_now,
             monotonic=monotonic,
+            dialect=dialect,
         )
 
     @property
@@ -433,7 +439,7 @@ class SemanticEngine:
                 preflight_policy.decision.value,
                 required=self._tracing_required,
             )
-        resolver = QueryResolver(SemanticPlanner(self))
+        resolver = QueryResolver(SemanticPlanner(self), dialect=self.dialect)
         with self._trace_span(
             "skifer.semantic.compile", {"model_key": semantic_query.model_name}
         ):
@@ -526,6 +532,7 @@ class SemanticEngine:
             ),
             policy=policy,
             sql_hash=hash_sql(resolved.full_sql),
+            sql_dialect=resolved.dialect,
             sql_text=resolved.full_sql if evidence_policy.include_sql else None,
             sql_redacted=not evidence_policy.include_sql,
             statement_id=None,
@@ -748,7 +755,7 @@ class SemanticEngine:
         )
         catalog_fqn = self.core.db
 
-        resolver = QueryResolver(SemanticPlanner(self))
+        resolver = QueryResolver(SemanticPlanner(self), dialect=self.dialect)
         resolved = resolver.resolve(semantic_query, model, catalog_fqn)
         mode, context, deps, certifications = self.enforce_certification_gate(
             semantic_query.model_name,

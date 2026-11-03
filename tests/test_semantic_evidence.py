@@ -167,6 +167,23 @@ def test_public_backend_runtime_refuses_missing_execution_method(backend):
         SemanticEngine.from_backend(backend)
 
 
+def test_public_backend_runtime_records_target_dialect(tmp_path):
+    engine, backend = _semantic_engine(tmp_path)
+    runtime = SemanticEngine.from_backend(
+        backend,
+        models_dir=str(engine.models_dir),
+        catalog="main",
+        dialect="duckdb",
+    )
+
+    evidence = runtime.query_with_evidence(_query()).evidence
+
+    assert evidence.sql_dialect == "duckdb"
+    assert evidence.to_dict()["sql_dialect"] == "duckdb"
+    assert evidence.sql_hash == hash_sql(backend.sql[0])
+    assert '"main"."gold"."fact_orders"' in backend.sql[0]
+
+
 def test_evidence_json_round_trip_is_utc_and_redacted_by_default():
     payload = _evidence().to_dict()
 

@@ -29,3 +29,4 @@ Board a choisi Skifer en bibliothèque : Board vérifie l'identité, configure s
 ## État de réalisation
 
 - 45.1 : constructeur `SemanticEngine.from_backend()` et lignes bornées sans DataFrame Spark ; tests ciblés et suite complète en cours de validation.
+- 45.2 : dialectes `databricks` et `duckdb` explicites ; `sql_dialect` dans la preuve, hash du SQL exécuté ; parité Spark/DuckDB sur les apostrophes et essai de jointure DuckDB.

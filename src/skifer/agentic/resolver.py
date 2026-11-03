@@ -118,6 +118,7 @@ class ResolvedQuery:
     sources: tuple[str, ...] = ()
     model_keys: tuple[str, ...] = ()
     selected_expressions: tuple[SelectedExpression, ...] = ()
+    dialect: str = "databricks"
 
 
 # ---------------------------------------------------------------------------
@@ -147,8 +148,11 @@ class QueryResolver:
     Lève SemanticQueryError si un nom est absent — jamais de SQL inventé.
     """
 
-    def __init__(self, planner=None) -> None:
+    def __init__(self, planner=None, *, dialect: str = "databricks") -> None:
+        if dialect not in {"databricks", "duckdb"}:
+            raise SemanticQueryError(f"Unsupported semantic SQL dialect: {dialect!r}.")
         self.planner = planner
+        self.dialect = dialect
 
     def resolve(
         self,
@@ -177,15 +181,44 @@ class QueryResolver:
                     "declared calendar definition."
                 )
             self._validate(query, model)
-            return self._build_sql(query, model, catalog_fqn)
+            return self._target_sql(self._build_sql(query, model, catalog_fqn))
 
         plan = self.planner.plan(query)
         if self._is_unqualified_root_query(query, plan):
             # This branch is intentionally the pre-6.4 implementation. Existing
             # single-model queries must remain byte-for-byte stable.
             self._validate(query, model)
-            return self._build_sql(query, model, catalog_fqn)
+            return self._target_sql(self._build_sql(query, model, catalog_fqn))
         return self.compile_plan(query, plan, catalog_fqn)
+
+    def _target_sql(self, resolved: ResolvedQuery) -> ResolvedQuery:
+        """Render the requested dialect after deterministic semantic compilation."""
+        resolved.dialect = self.dialect
+        if self.dialect == "databricks":
+            return resolved
+        try:
+            import sqlglot
+        except ImportError as exc:
+            raise SemanticQueryError(
+                "DuckDB SQL requires sqlglot: install skifer[analyzer]."
+            ) from exc
+
+        # sqlglot's Spark reader treats a doubled quote as two adjacent
+        # literals. Convert only inside complete SQL string literals before
+        # parsing; the output dialect restores the SQL-standard escaping.
+        literal = re.compile(r"'(?:[^']|'')*'")
+        source = literal.sub(
+            lambda match: match.group(0).replace("''", "\\'"),
+            resolved.full_sql,
+        )
+        try:
+            statements = sqlglot.transpile(source, read="spark", write="duckdb")
+        except sqlglot.SqlglotError as exc:
+            raise SemanticQueryError("Semantic SQL cannot be rendered as DuckDB SQL.") from exc
+        if len(statements) != 1:
+            raise SemanticQueryError("Semantic SQL must compile to one statement.")
+        resolved.full_sql = statements[0]
+        return resolved
 
     def compile_plan(
         self,
@@ -291,7 +324,7 @@ class QueryResolver:
             self._selected_expression("metric", metric_refs[reference], models)
             for reference in query.metrics
         )
-        return ResolvedQuery(
+        return self._target_sql(ResolvedQuery(
             select_exprs=select_exprs,
             from_fqn=from_fqn,
             where_clauses=where_clauses,
@@ -303,7 +336,7 @@ class QueryResolver:
             ),
             model_keys=tuple(plan.required_models),
             selected_expressions=selected,
-        )
+        ))
 
     # ------------------------------------------------------------------
     # Validation
