@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-11-03
+
 ### Added
 
 - (Plan 45.1) `SemanticEngine.from_backend()` wires a public SQL execution backend without
