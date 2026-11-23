@@ -270,8 +270,8 @@ README du dépôt.
 4. Les ~182 tests Spark migrent vers `skifer-engine` ; `skifer` garde les ~2200 tests sans Spark plus un
    job CI qui installe `skifer-engine[spark]` et rejoue les exemples.
 
-**Dépend de.** Décision n° 2 (§5). Si la réponse est « non », l'étape 3 se limite à l'injection du
-connecteur et aucun pipeline à règles Python n'est promis hors Spark.
+**Dépend de.** Décision n° 2 (§5) : « non », donc l'étape 3 se limite à l'injection du connecteur et
+aucun pipeline à règles Python n'est promis hors Spark.
 
 **Risque.** Le plus élevé du plan : rupture d'import pour les utilisateurs, double publication PyPI,
 `examples/` à rejouer dans deux dépôts. Mitigation : shims pendant une mineure, essai à blanc du
