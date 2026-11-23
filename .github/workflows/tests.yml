@@ -50,6 +50,9 @@ jobs:
       - name: Lint
         run: ruff check src/ --select E4,E7,E9,F
 
+      - name: Import contracts (Plan 46 / ADR 0001)
+        run: lint-imports
+
       - name: Test
         run: pytest -q --no-header
 

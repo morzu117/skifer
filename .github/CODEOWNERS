@@ -1,0 +1,16 @@
+# Plan 46 (ADR 0001) — ownership of the SQL-first core and the governed layer.
+# Default owner for everything.
+*                                   @morzu117
+
+# Language L (future skifer-core), semantic format and its validator, published schemas,
+# CI and packaging: owner-only until the wheel split (Plan 46.7).
+/src/skifer/core/                   @morzu117
+/src/skifer/semantic/               @morzu117
+/src/skifer/agentic/resolver.py     @morzu117
+/schemas/                           @morzu117
+/.github/                           @morzu117
+/pyproject.toml                     @morzu117
+
+# Atlas integration surface (Plan 46.5): add Pierre's handle here when provided.
+/docs/integrations/atlas/           @morzu117
+/examples/atlas/                    @morzu117

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Plan 46.0 — multi-platform foundations.** ADR 0001 (`docs/adr/0001-sql-first-multi-platform.md`)
+  records the SQL-first, thin-connector decision and its five prohibitions; `.github/CODEOWNERS`
+  protects the language core, the semantic layer, `schemas/`, CI and packaging; a first
+  `import-linter` contract (`lint-imports`, run in CI) forbids `skifer.core.op_catalog`,
+  `constants` and `ir` from importing the governed layer or Spark. Development plan:
+  `docs/roadmap/46_multi_platform_plan.md`.
+
 ## [4.1.0] - 2026-11-03
 
 ### Added
