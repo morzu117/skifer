@@ -1,6 +1,6 @@
 # Plan 46 — Skifer multi-plateforme : cœur SQL-first, connecteurs, découpe
 
-**Statut :** proposé — en attente de validation avant tout code.
+**Statut :** validé le 23 novembre 2026 (décisions §5 tranchées) — implémentation en cours.
 **Branche :** `feat/plan46-multi-platform` (plan), puis une branche `feat/plan46-46.N-<sujet>` par sous-plan.
 **Décideur :** Julien. Un sous-plan = une PR = un commit par point, préfixe `feat(plan46-46.N): …`.
 
@@ -230,7 +230,7 @@ valide et possède le format.
   sémantique Skifer → certification », règles de réagrégation, qui possède quoi, processus de PR.
 - `skifer semantic validate --schema` : validation contre le JSON Schema sans Spark.
 
-**Dépend de.** Décision n° 1 (arbitrage de divergence de sens d'un KPI, §5).
+**Dépend de.** Décision n° 1 (§5) : l'arbitrage est dans Atlas ; la recette le dit.
 
 **Terminé quand.** Atlas peut épingler `skifer>=4.2` au lieu de `v4.0.0` et valider ses modèles en CI
 avec `skifer semantic validate --schema` ; la fixture est verte des deux côtés.
@@ -308,19 +308,18 @@ est reporté, rien de M1 n'est à défaire : les contrats et la matrice sont les
 découpe en wheels. Hors périmètre de ce plan, explicitement : BigQuery, Fabric, règles Python
 portables (`sql_projection`), orchestration multi-cible.
 
-## 5. Décisions ouvertes — à trancher par Julien, pas par le plan
+## 5. Décisions tranchées par Julien le 23 novembre 2026
 
-1. **Divergence de sens d'un KPI entre Atlas et Skifer.** Quand le modèle généré par Atlas et le
-   contrat Skifer décrivent la même métrique différemment, qui arbitre ? Options : le propriétaire
-   déclaré dans `owner:` du contrat Skifer ; deux approbations distinctes (une Atlas, une Skifer) sur
-   la PR ; Skifer gagne par défaut et Atlas s'aligne. Bloque 46.5 (texte de la recette et règle
-   CODEOWNERS sur `tests/fixtures/atlas/`).
-2. **Un pipeline à règles Python doit-il un jour tourner hors Spark ?** « Oui » rouvre le Plan 26 et
-   impose un kind `sql_projection` ou un moteur d'expressions portable, hors de ce plan. « Non » fixe la
-   promesse : hors Spark, Skifer exécute du SQL compilé uniquement, et les règles Python restent un
-   atout du runtime `skifer-engine`. Bloque la forme de l'étape 3 de 46.7 ; recommandation : **non**
-   pour M1 et M2.
-3. **Handle GitHub de Pierre** pour `CODEOWNERS` (46.0).
+1. **Divergence de sens d'un KPI entre Atlas et Skifer : arbitrée dans Atlas.** Atlas est le lieu de
+   la décision métier ; Skifer ne tranche pas, il **valide** (schema, projection, certification) et
+   refuse ce qu'il ne peut pas prouver. Conséquence pour 46.5 : la recette dit explicitement qu'un
+   désaccord se règle côté Atlas puis se repropage ; Skifer n'offre aucun mécanisme d'override du sens.
+2. **Un pipeline à règles Python ne tourne pas hors Spark.** Recommandation suivie. Hors Spark, Skifer
+   exécute du SQL compilé uniquement ; les règles Python restent un atout de `skifer-engine`. Le Plan 26
+   n'est pas rouvert, aucun kind `sql_projection` dans ce plan ; l'étape 3 de 46.7 se limite à
+   l'injection du connecteur.
+3. **CODEOWNERS : on avance tel quel.** Julien seul pour l'instant ; la ligne Pierre sur
+   `docs/integrations/atlas/` et `examples/atlas/` sera ajoutée quand son handle sera fourni.
 
 ## 6. Stratégie de vérification
 
