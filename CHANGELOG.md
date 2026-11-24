@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plan 46.3 — executed three-way parity and portable SQL example.** A canonical dataset
+  (30 orders, 12 customers, 6 countries) runs through Spark DataFrame, compiled Spark SQL
+  and compiled DuckDB SQL in 22 parity cases, plus two divergence pins. Value normalization
+  and derived capability coverage back all 57 DuckDB entries: 48 supported, 7 conditional,
+  2 refused. Conditions explicitly bound casts, date parsing, splitting, decimal averages,
+  order-dependent aggregates and approximate distinct counts (exact on the canonical data).
+  Snowflake parity remains pending Plan 46.6. Example `examples/26_portable_sql/` renders
+  both dialects, reports capabilities, executes DuckDB over temporary Parquet and shows an
+  explicit raw-expression refusal, without Spark.
 - **Plan 46.2 — SQL connector contracts and portability.** Three narrow runtime-checkable
   execution, catalog and publication protocols live in the language core, with frozen
   column/capability descriptions and `ExecutionResult` re-exported from semantic evidence.
