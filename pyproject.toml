@@ -169,6 +169,11 @@ source_modules = [
     "skifer.core.op_catalog",
     "skifer.core.constants",
     "skifer.core.ir",
+    "skifer.core.schema_loader",
+    "skifer.core.sql_compiler",
+    "skifer.core.json_schema",
+    "skifer.core.registry",
+    "skifer.core.rule_analyzer",
 ]
 forbidden_modules = [
     "skifer.semantic",
@@ -179,4 +184,36 @@ forbidden_modules = [
     "skifer.mcp",
     "pyspark",
     "delta",
+    "skifer.core.core",
+    "skifer.core.spark_backend",
+    "skifer.core.patterns",
+    "skifer.core.interpreter",
+    "skifer.core.writer",
+    "skifer.core.loaders",
+    "skifer.lineage",
+    "skifer.candidates",
+    "skifer.knowledge",
+    "skifer.adaptive",
+    "skifer.capabilities",
+    "skifer.serving",
+    "skifer.analyzer",
+]
+
+[[tool.importlinter.contracts]]
+name = "Semantic layer never imports the agentic layer"
+type = "layers"
+layers = ["skifer.agentic", "skifer.semantic"]
+
+[[tool.importlinter.contracts]]
+name = "Package roots stay lazy"
+type = "forbidden"
+# Check the __init__ modules themselves, not their descendant modules.
+as_packages = false
+source_modules = ["skifer", "skifer.core", "skifer.semantic", "skifer.agentic"]
+forbidden_modules = [
+    "pyspark",
+    "delta",
+    "skifer.core.core",
+    "skifer.agentic.builder_agent",
+    "skifer.lineage",
 ]
