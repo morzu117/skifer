@@ -109,6 +109,6 @@ the executor call count is still zero. There is no rollback because nothing ran.
 | Emit lineage events to an external catalog without leaking data | [Data Observability](observability.md#openlineage) | `examples/23_openlineage/` |
 | Turn existing SQL into a first-draft Skifer pipeline | [Project Analyzer](project_analyzer.md) | `examples/24_project_analyzer/` |
 | Answer outside the semantic layer with a candidate metric, then certify it | [Metric candidates](metric_candidates.md) | `examples/25_metric_candidates/` |
-| Compile portable SQL and execute it locally with DuckDB | [SQL portability](core.md) | `examples/26_portable_sql/` |
+| Compile portable SQL and execute it locally with DuckDB | [SQL portability](core.md#portabilite-sql-connecteurs-matrice-dialectes-plan-46) | `examples/26_portable_sql/` |
 | Look up exact Python classes, methods, and return types | [API Reference](api_reference.md) | — |
 | Install on Databricks instead of running locally | [Databricks installation](install_databricks.md) | — |

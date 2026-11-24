@@ -34,21 +34,33 @@ HAVING `nb_orders` > '1'
 DuckDB SQL:
 WITH "ord" AS (SELECT * FROM "silver"."orders" WHERE "status" = 'DONE' AND NOT "amount" IS NULL) SELECT "country_code", SUM("amount") AS "total_amount", COUNT("order_id") AS "nb_orders", COUNT(DISTINCT "customer_id") AS "nb_customers" FROM (SELECT *, UPPER("country") AS "country_code" FROM "ord") AS "_skifer_src" GROUP BY "country_code" HAVING "nb_orders" > '1'
 
+DuckDB capabilities:
+  agg:count: supported
+  agg:count_distinct: supported
+  agg:sum: supported
+  filter:equals: supported
+  filter:greater_than: supported
+  filter:is_not_null: supported
+  op:upper: supported
+  Totals: supported=7, conditional=0, refused=0
+
 DuckDB result:
 ('DE', Decimal('50.00'), 2, 2)
 ('FR', Decimal('150.00'), 2, 1)
 ('IT', Decimal('25.00'), 2, 2)
 
-Refused for duckdb: Capabilities refused for 'duckdb': 'op:expr': ...
+Refused for duckdb: Capabilities refused for 'duckdb': 'op:expr': raw SQL fragments are authored in Spark SQL and are not rendered for another target
 ```
 
-The report also lists seven `supported` capabilities. The ES group has only one order and
+The ES group has only one order and
 is removed by `having`; the pending FR order and the null amount are removed before aggregation.
 Repeated customers count once. The temporary Parquet directory is removed in a `finally` block.
 
 ## Remember
 
 The same YAML is compiled once into relational SQL, then rendered for each target.
+Databricks SQL uses the compiler's native indented rendering; the other dialects pass
+through sqlglot, which renders on one line: the same tree, two renderings.
 DuckDB support is backed by executed three-way value parity. A `conditional` capability only
 has parity under its stated condition; this does not guarantee identical SQL types.
 The Databricks SQL is displayed here; only DuckDB SQL is executed in this example.

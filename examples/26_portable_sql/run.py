@@ -3,6 +3,8 @@
     python examples/26_portable_sql/run.py
 """
 
+from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 import shutil
 import tempfile
@@ -48,11 +50,23 @@ try:
         print("\nDuckDB SQL:")
         print(sql_duckdb)
         print("\nDuckDB capabilities:")
-        for key, status in capability_report(parsed, "duckdb").items():
+        report = capability_report(parsed, "duckdb")
+        for key, status in report.items():
             reason = f" — {status.reason}" if status.kind == "conditional" else ""
             print(f"  {key}: {status.kind}{reason}")
+        assert all(status.kind != "refused" for status in report.values()), report
+        counts = Counter(status.kind for status in report.values())
+        print("  Totals: " + ", ".join(
+            f"{kind}={counts[kind]}" for kind in ("supported", "conditional", "refused")
+        ))
         print("\nDuckDB result:")
-        for row in sorted(connection.execute(sql_duckdb).fetchall()):
+        rows = sorted(connection.execute(sql_duckdb).fetchall())
+        assert rows == [
+            ("DE", Decimal("50.00"), 2, 2),
+            ("FR", Decimal("150.00"), 2, 1),
+            ("IT", Decimal("25.00"), 2, 2),
+        ], rows
+        for row in rows:
             print(row)
 
         refused = parse_to_ir(load_schema(str(EXAMPLE_DIR / "refused_expr.yaml")))
@@ -60,6 +74,9 @@ try:
         try:
             compile_select(refused, dialect="duckdb")
         except SqlCompilationError as exc:
+            assert "op:expr" in str(exc)
             print(f"\nRefused for duckdb: {exc}")
+        else:
+            raise SystemExit("duckdb should have refused op:expr")
 finally:
     shutil.rmtree(WORK)

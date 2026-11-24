@@ -782,7 +782,7 @@ Spark en `TRY_CAST` pour DuckDB.
 `ExecutionContract` ou le chemin historique `execute_sql`, sans avertissement de
 dépréciation. Ces contrats ne fournissent pas encore les connecteurs de runtime.
 Voir l'[ADR 0001 — architecture SQL-first](adr/0001-sql-first-multi-platform.md).
-L’exemple `examples/26_portable_sql/` compile pour Databricks et DuckDB, affiche les capacités
+L'exemple `examples/26_portable_sql/` compile pour Databricks et DuckDB, affiche les capacités
 et exécute le SQL DuckDB sur un Parquet local sans Spark.
 
 ### Parité exécutée (Plan 46.3)
