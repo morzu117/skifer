@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plan 46.4 — DuckDB integration.** Document the separate `skifer-duckdb` connector,
+  pipeline and semantic usage, transactional publication, frozen Spark reference replay,
+  and the exact seven conditional and two refused capability reasons from the core matrix.
 - **Plan 46.3 — executed three-way parity and portable SQL example.** A canonical dataset
   (30 orders, 12 customers, 6 countries) runs through Spark DataFrame, compiled Spark SQL
   and compiled DuckDB SQL in 23 parity cases, plus three divergence pins. Value normalization

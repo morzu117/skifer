@@ -62,6 +62,8 @@ nav:
       - Read-only MCP: mcp.md
       - Supervised Adaptive Gold: adaptive.md
       - Governed Capabilities: capabilities.md
+  - Integrations:
+      - DuckDB: integrations/duckdb.md
   - Reference:
       - YAML Model Reference: yaml_spec.md
       - API Reference: api_reference.md
