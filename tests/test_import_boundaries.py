@@ -13,6 +13,8 @@ import pytest
 
 
 LANGUAGE_MODULES = {
+    "skifer.core.connector",
+    "skifer.core.dialect",
     "skifer.core.constants",
     "skifer.core.op_catalog",
     "skifer.core.ir",
@@ -56,6 +58,8 @@ def _run_python(source):
 @pytest.mark.parametrize(
     ("module", "measured_count"),
     [
+        ("skifer.core.connector", 4),
+        ("skifer.core.dialect", 3),
         ("skifer.core.constants", 3),
         ("skifer.core.op_catalog", 3),
         ("skifer.core.ir", 4),
@@ -174,6 +178,12 @@ def test_all_public_exports_resolve(module):
             continue
         obj = getattr(package, name)
         target = _resolve_export_target(package, name)
+        if module == "skifer.semantic" and name == "ExecutionResult":
+            from skifer.core.connector import ExecutionResult
+
+            assert target == "skifer.semantic.evidence"
+            assert obj is ExecutionResult
+            continue
         assert obj.__module__ == target or obj.__module__.startswith(target + "."), (
             module, name, obj, target
         )

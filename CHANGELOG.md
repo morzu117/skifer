@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plan 46.2 — connector contracts.** Three runtime-checkable SQL protocols, frozen
+  column/capability descriptions and core `ExecutionResult` with its semantic re-export.
 - **Plan 46.0 — multi-platform foundations.** ADR 0001 (`docs/adr/0001-sql-first-multi-platform.md`)
   records the SQL-first, thin-connector decision and its five prohibitions; `.github/CODEOWNERS`
   protects the language core, the semantic layer, `schemas/`, CI and packaging; a first

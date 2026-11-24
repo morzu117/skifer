@@ -177,6 +177,8 @@ source_modules = [
     "skifer.core.json_schema",
     "skifer.core.registry",
     "skifer.core.rule_analyzer",
+    "skifer.core.connector",
+    "skifer.core.dialect",
 ]
 forbidden_modules = [
     "skifer.semantic",

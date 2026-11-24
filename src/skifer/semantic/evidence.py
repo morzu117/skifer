@@ -9,6 +9,8 @@ import math
 import re
 from typing import Any
 
+from skifer.core.connector import ExecutionResult  # noqa: F401 — public compatibility re-export
+
 from .access_policy import PolicyEvaluation
 
 
@@ -38,15 +40,6 @@ class SemanticExecutionError(Exception):
     def __init__(self, message: str, *, evidence: "SemanticEvidence"):
         self.evidence = evidence
         super().__init__(message)
-
-
-@dataclass(frozen=True)
-class ExecutionResult:
-    """Optional backend hook result; ``execute_sql`` remains unchanged."""
-
-    dataframe: Any
-    statement_id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
