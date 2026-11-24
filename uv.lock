@@ -5769,6 +5769,9 @@ dev = [
     { name = "pytest-mock" },
     { name = "ruff" },
 ]
+dialects = [
+    { name = "sqlglot" },
+]
 docs = [
     { name = "mkdocs" },
     { name = "mkdocs-material" },
@@ -5855,9 +5858,10 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "sentence-transformers", marker = "extra == 'knowledge-embeddings'", specifier = ">=3" },
     { name = "sqlglot", marker = "extra == 'analyzer'", specifier = ">=25" },
+    { name = "sqlglot", marker = "extra == 'dialects'", specifier = ">=25" },
     { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.29" },
 ]
-provides-extras = ["spark", "llm-openai", "llm-anthropic", "llm-google", "semantic-pdf", "databricks", "serving", "tracing", "mcp", "analyzer", "knowledge-embeddings", "api", "semantic-full", "docs", "dev"]
+provides-extras = ["spark", "llm-openai", "llm-anthropic", "llm-google", "semantic-pdf", "databricks", "serving", "tracing", "mcp", "dialects", "analyzer", "knowledge-embeddings", "api", "semantic-full", "docs", "dev"]
 
 [[package]]
 name = "skops"

@@ -719,6 +719,58 @@ persisted SQL definition.
 
 ---
 
+## Portabilité SQL (connecteurs, matrice, dialectes) — Plan 46
+
+Le langage compile une fois en SQL Spark, puis rend ce SQL pour l'une des trois
+cibles fermées : `databricks`, `duckdb`, `snowflake`. Installer
+`pip install 'skifer[dialects]'` pour les rendus DuckDB et Snowflake ; `sqlglot`
+est chargé uniquement lors de ces rendus. Databricks conserve le SQL octet pour octet.
+
+Trois `Protocol` étroits et vérifiables à l'exécution vivent dans `core.connector` :
+
+- `ExecutionContract.execute_sql_with_metadata(sql)` retourne un `ExecutionResult`
+  (`dataframe`, `statement_id`, `metadata`), également ré-exporté depuis `semantic.evidence`.
+- `CatalogContract` expose `table_exists`, `columns` (des `ColumnInfo`) et `resolve_fqn`.
+- `PublicationContract` expose `create_or_replace_view` et `write_table` ; l'appelant
+  valide le mode contre `WRITE_MODES` (`overwrite`, `append`) et les écritures déclarées
+  dans `ConnectorCapabilities(dialect, writes)`.
+
+La matrice `core.capability_matrix.MATRIX` utilise des clés préfixées
+`filter:equals`, `op:cast`, `agg:sum`, `join:left` et trois statuts :
+`Supported()` pour la référence Databricks, `Conditional(reason)` pour une capacité
+soumise à une condition ou en attente de parité exécutée, `Refused(reason)` pour
+une capacité indisponible. `capability(target, key)` lève `KeyError` pour toute
+cible ou clé inconnue.
+
+`used_capabilities(parsed)` collecte les opérations du pipeline, conditions
+imbriquées comprises. `compile_select(..., dialect=...)` consulte la matrice avant
+compilation : un `Refused` lève `SqlCompilationError` avec la clé et le motif ; un
+`Conditional` laisse compiler sans journalisation et **ne prouve aucune parité**.
+La comparaison des valeurs entre runtimes relève de 46.3. Sur Snowflake, `first`,
+`last`, `left_semi` et `left_anti` sont refusés.
+
+```python
+from skifer.core.ir import parse_to_ir
+from skifer.core.schema_loader import parse_schema
+from skifer.core.sql_compiler import compile_select
+
+parsed = parse_to_ir(parse_schema("""
+tables:
+  - name: orders
+    alias: ord
+select_final:
+  - [amount, amount, [cast:double]]
+"""))
+sql = compile_select(parsed, dialect="duckdb")
+# WITH "ord" AS (SELECT * FROM "orders")
+# SELECT CAST("amount" AS DOUBLE) AS "amount" FROM "ord"
+```
+
+`QueryResolver` partage ce rendu. `SemanticEngine.from_backend` accepte un
+`ExecutionContract` ou le chemin historique `execute_sql`, sans avertissement de
+dépréciation. Ces contrats ne fournissent pas encore les connecteurs de runtime.
+Voir l'[ADR 0001 — architecture SQL-first](adr/0001-sql-first-multi-platform.md).
+
 ## Filter operators
 
 Filters are supported in `tables[].filter` and at the top-level `filter` key.

@@ -95,6 +95,9 @@ mcp = [
     "mcp>=2.1,<3",
 ]
 
+# --- SQL dialect rendering (lazy optional dependency) ---
+dialects = ["sqlglot>=25"]
+
 # --- Project analyzer : SQL existant -> pipelines Skifer (import strictement paresseux) ---
 analyzer = [
     "sqlglot>=25",

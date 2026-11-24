@@ -9,15 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Plan 46.2 — compiler integration.** Public capability collection and guarded
-  dialect rendering for pipelines and semantic queries; explicit execution contracts
-  retain the warning-free legacy backend path used by Board.
-- **Plan 46.2 — capability matrix.** Explicit supported/conditional/refused statuses
-  for every canonical operation and target, with catalog drift guards and named refusals.
-- **Plan 46.2 — dialect rendering.** Shared lazy sqlglot rendering for DuckDB and
-  Snowflake, byte-preserving Databricks SQL and explicit dependency/rendering errors.
-- **Plan 46.2 — connector contracts.** Three runtime-checkable SQL protocols, frozen
-  column/capability descriptions and core `ExecutionResult` with its semantic re-export.
+- **Plan 46.2 — SQL connector contracts and portability.** Three narrow runtime-checkable
+  execution, catalog and publication protocols live in the language core, with frozen
+  column/capability descriptions and `ExecutionResult` re-exported from semantic evidence.
+  A complete 57-operation matrix declares supported, conditional and refused capabilities
+  per target; `used_capabilities()` includes nested conditions and the compiler refuses
+  unsupported operations before rendering. Shared lazy sqlglot rendering supports DuckDB
+  and Snowflake while preserving default Databricks SQL byte for byte. The new `[dialects]`
+  extra installs sqlglot; semantic queries use the same renderer and `from_backend` accepts
+  `ExecutionContract` while retaining Board's warning-free `execute_sql` path. DuckDB tests
+  execute every operation family and the materialized-view example; value parity remains
+  for Plan 46.3. Import contracts and fresh-interpreter tests cover all 11 language modules.
 - **Plan 46.0 — multi-platform foundations.** ADR 0001 (`docs/adr/0001-sql-first-multi-platform.md`)
   records the SQL-first, thin-connector decision and its five prohibitions; `.github/CODEOWNERS`
   protects the language core, the semantic layer, `schemas/`, CI and packaging; a first
