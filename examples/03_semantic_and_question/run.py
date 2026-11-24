@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 
 from skifer import SkiferEngine
-from skifer.agentic.resolver import SemanticQuery, SemanticQueryError
+from skifer.semantic.resolver import SemanticQuery, SemanticQueryError
 from skifer.observability.certification_store import SqliteCertificationStore
 from skifer.observability.monitor import DataMonitor
 from skifer.semantic.semantic import SemanticEngine

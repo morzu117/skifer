@@ -68,7 +68,7 @@ class SemanticEngine:
         engine.get_model_summary("kpi_orders.erp")
 
     Exécution :
-        from skifer.agentic.resolver import SemanticQuery
+        from skifer.semantic.resolver import SemanticQuery
         sq = SemanticQuery(model_name="kpi_orders.erp", metrics=["gross_revenue"],
                            group_by=["region"])
         df = engine.query(sq)                    # → DataFrame
@@ -419,7 +419,7 @@ class SemanticEngine:
         compiled_at: datetime.datetime | None = None,
     ) -> SemanticResult:
         """Business flow for :meth:`query_with_evidence`, shared by all tracers."""
-        from ..agentic.resolver import QueryResolver
+        from skifer.semantic.resolver import QueryResolver
         from .planner import SemanticPlanner
 
         model = self._get_model(semantic_query.model_name)
@@ -765,7 +765,7 @@ class SemanticEngine:
         Returns:
             FQN complet de la vue créée (ex: "`catalog`.`semantic_views_dev`.`v_ca_region`").
         """
-        from ..agentic.resolver import QueryResolver
+        from skifer.semantic.resolver import QueryResolver
         from .planner import SemanticPlanner
 
         name = view_name or semantic_query.view_name

@@ -71,7 +71,7 @@ semantic.get_model_summary("kpi_orders")
 Executes a `SemanticQuery` on Spark/Databricks and returns a Spark DataFrame.
 
 ```python
-from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.resolver import SemanticQuery
 
 q = SemanticQuery(
     model_name="kpi_orders",              # model key (unique identifier)
@@ -467,7 +467,7 @@ models:
 ```
 
 ```python
-from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.resolver import SemanticQuery
 from skifer.semantic.access_policy import ConsumerContext, SemanticAccessDenied
 from skifer.semantic.semantic import SemanticEngine
 

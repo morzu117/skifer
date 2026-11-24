@@ -9,7 +9,7 @@ import textwrap
 import pytest
 import duckdb
 
-from skifer.agentic.resolver import (
+from skifer.semantic.resolver import (
     QueryResolver,
     SemanticQuery,
     SemanticQueryError,
@@ -505,7 +505,7 @@ def test_row_policy_literal_escapes_quote_and_refuses_backslash():
 def test_multi_model_aliases_are_stable_across_hash_seeds():
     script = textwrap.dedent(
         """
-        from skifer.agentic.resolver import QueryResolver, SemanticQuery
+        from skifer.semantic.resolver import QueryResolver, SemanticQuery
         from skifer.semantic.planner import SemanticPlanner
 
         class Semantic:
@@ -621,3 +621,16 @@ def test_wellformed_filter_values_keep_their_previous_rendering(
     resolved = QueryResolver().resolve(query, model, "`main`")
 
     assert resolved.where_clauses == [expected]
+
+
+def test_legacy_resolver_import_warns_and_preserves_identity():
+    import importlib
+    import skifer.semantic.resolver
+
+    sys.modules.pop("skifer.agentic.resolver", None)
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"skifer\.agentic\.resolver moved to skifer\.semantic\.resolver",
+    ):
+        legacy = importlib.import_module("skifer.agentic.resolver")
+    assert legacy.QueryResolver is skifer.semantic.resolver.QueryResolver

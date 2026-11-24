@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from skifer.agentic.agent import GenBIAgent
-from skifer.agentic.resolver import SemanticQueryError
+from skifer.semantic.resolver import SemanticQueryError
 from skifer.semantic.llm_provider import LLMProvider
 from skifer.semantic.semantic import SemanticEngine
 

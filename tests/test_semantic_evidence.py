@@ -12,7 +12,7 @@ import pytest
 import yaml
 import duckdb
 
-from skifer.agentic.resolver import QueryResolver, SemanticQuery
+from skifer.semantic.resolver import QueryResolver, SemanticQuery
 from skifer.semantic.access_policy import (
     CertificationDecision,
     ConsumerContext,
@@ -550,7 +550,7 @@ def test_compilation_evidence_is_identical_across_hash_seeds(tmp_path):
         import contextlib, io, json, sys, tempfile, datetime, yaml
         from pathlib import Path
         from types import SimpleNamespace
-        from skifer.agentic.resolver import SemanticQuery
+        from skifer.semantic.resolver import SemanticQuery
         from skifer.semantic.semantic import SemanticEngine
         from skifer.semantic.evidence import EvidencePolicy
 

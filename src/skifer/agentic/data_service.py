@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any, Generic, TypeVar
 
-from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.resolver import SemanticQuery
 from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification_store import Certification
 from skifer.semantic.access_policy import ConsumerContext

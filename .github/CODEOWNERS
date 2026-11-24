@@ -6,7 +6,6 @@
 # CI and packaging: owner-only until the wheel split (Plan 46.7).
 /src/skifer/core/                   @morzu117
 /src/skifer/semantic/               @morzu117
-/src/skifer/agentic/resolver.py     @morzu117
 /schemas/                           @morzu117
 /.github/                           @morzu117
 /pyproject.toml                     @morzu117

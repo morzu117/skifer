@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from skifer.agentic.resolver import (
+from skifer.semantic.resolver import (
     QueryResolver,
     SemanticQuery,
     SemanticQueryError,

@@ -6,7 +6,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from skifer.agentic.resolver import QueryResolver, SemanticQuery, SemanticQueryError
+from skifer.semantic.resolver import QueryResolver, SemanticQuery, SemanticQueryError
 from skifer.semantic.planner import SemanticPlanner
 from skifer.semantic.semantic import SemanticEngine
 

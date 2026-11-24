@@ -51,6 +51,7 @@ src/skifer/
     renderer.py        # LineageRenderer — Mermaid/JSON export
     classification.py  # public→pii classification propagation over lineage (Plan 31)
   semantic/
+    resolver.py        # QueryResolver — deterministic SQL builder, zero LLM, no hallucinated SQL (moved from agentic/ in Plan 46.1; shim with DeprecationWarning)
     builder.py         # SemanticBuilder — LLM-based YAML model generation
     semantic.py        # SemanticEngine — catalog-first, lazy-load, query/create_view/publish_metric_views
     metric_views.py    # Pure translation: semantic model -> Unity Catalog metric view, for Genie (Plan 42)
@@ -67,7 +68,6 @@ src/skifer/
   agentic/
     agent.py           # GenBIAgent — 2-step LLM pipeline (model selection → SemanticQuery)
     candidate_agent.py # MetricCandidateAgent — governed fallback outside the semantic layer (Plan 44)
-    resolver.py        # QueryResolver — deterministic SQL builder, zero LLM, no hallucinated SQL
     orchestrator.py    # Multi-agent orchestration + OrchestratorExporter
     hub.py             # AgenticHub — entry point for the `skifer hub` CLI
     builder_agent.py   # BuilderAgent — generates pipeline YAML schemas

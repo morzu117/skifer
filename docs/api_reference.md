@@ -290,12 +290,12 @@ agent = GenBIAgent(semantic, llm, history=False, session_title="Session")
 
 ### `QueryResolver`
 
-**`skifer.agentic.resolver.QueryResolver`**
+**`skifer.semantic.resolver.QueryResolver`**
 
 Deterministic, LLM-free SQL builder. Validates all names against the YAML model before execution.
 
 ```python
-from skifer.agentic.resolver import QueryResolver
+from skifer.semantic.resolver import QueryResolver
 
 resolver = QueryResolver()
 resolved = resolver.resolve(semantic_query, model_yaml)
@@ -309,12 +309,12 @@ resolved = resolver.resolve(semantic_query, model_yaml)
 
 ### `SemanticQuery`
 
-**`skifer.agentic.resolver.SemanticQuery`** (dataclass)
+**`skifer.semantic.resolver.SemanticQuery`** (dataclass)
 
 The boundary object between the LLM and the execution engine.
 
 ```python
-from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.resolver import SemanticQuery
 
 q = SemanticQuery(
     model_name="kpi_orders",
@@ -347,7 +347,7 @@ q = SemanticQuery(
 
 ### `ResolvedQuery`
 
-**`skifer.agentic.resolver.ResolvedQuery`** (dataclass)
+**`skifer.semantic.resolver.ResolvedQuery`** (dataclass)
 
 Full SQL query ready for execution, built by `QueryResolver`.
 
@@ -399,12 +399,12 @@ fail-closed by default. **`SemanticExecutionError`** carries a partial evidence 
 
 ### `SemanticQueryError`
 
-**`skifer.agentic.resolver.SemanticQueryError`**
+**`skifer.semantic.resolver.SemanticQueryError`**
 
 Raised by `QueryResolver` when a metric or dimension name is not found in the YAML model.
 
 ```python
-from skifer.agentic.resolver import SemanticQueryError
+from skifer.semantic.resolver import SemanticQueryError
 
 try:
     resolved = resolver.resolve(q, model_yaml)

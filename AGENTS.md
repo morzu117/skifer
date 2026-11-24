@@ -13,7 +13,8 @@ src/skifer/
                 # access_policy.py (pure cert policy), dependencies.py, output_projection.py — Plan 29
                 # draft_builder.py (managed drafts), sync.py (three-way merge),
                 # persistence.py (shared atomic YAML write + catalog entry) — Plan 29
-  agentic/      # GenBIAgent, QueryResolver (deterministic SQL — no LLM SQL gen), SessionHistory
+                # resolver.py — QueryResolver (moved from agentic/ in Plan 46.1; shim with DeprecationWarning)
+  agentic/      # GenBIAgent, SessionHistory
                 # candidate_agent.py — MetricCandidateAgent, governed fallback outside the semantic layer (Plan 44)
   candidates/   # Metric candidates (Plan 44): models (closed states), store (append-only runs/history),
                 # redaction, validator (coherence/frequency/stability), promotion (level 1 views, level 2

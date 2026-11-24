@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import yaml
 
-from skifer.agentic.resolver import SemanticQuery
-from skifer.agentic.resolver import ResolvedQuery
+from skifer.semantic.resolver import SemanticQuery
+from skifer.semantic.resolver import ResolvedQuery
 from skifer.observability.certification_store import Certification
 from skifer.semantic.access_policy import (
     CertificationDecision,
@@ -245,7 +245,7 @@ def _engine(
 
 
 def _patch_resolver_for_missing_table(monkeypatch):
-    from skifer.agentic import resolver as resolver_module
+    from skifer.semantic import resolver as resolver_module
 
     def fake_resolve(self, query, model, catalog_fqn, **kwargs):
         return ResolvedQuery(
@@ -290,7 +290,7 @@ def test_enforce_uncertified_denies_before_resolve_and_execute(
     semantic_query,
     monkeypatch,
 ):
-    from skifer.agentic import resolver as resolver_module
+    from skifer.semantic import resolver as resolver_module
 
     spy = ResolveSpy()
     monkeypatch.setattr(

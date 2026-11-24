@@ -38,7 +38,7 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 def semantic_query_from_dict(payload: dict[str, Any]) -> Any:
     """Build the service query DTO while keeping transports domain-import free."""
-    from skifer.agentic.resolver import SemanticQuery
+    from skifer.semantic.resolver import SemanticQuery
 
     if not isinstance(payload, dict):
         raise InvalidRequest("Semantic query body must be an object.")
