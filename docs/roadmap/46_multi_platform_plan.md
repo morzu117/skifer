@@ -196,6 +196,34 @@ schémas d'`examples/08_materialized_view` et `examples/25_metric_candidates` (v
 `duckdb.sql(...).explain()` en test, `duckdb` étant déjà en `dev`) ; matrice complète ; résolveur
 sans rendu propre.
 
+**Réalisé le 24 novembre 2026** (branche `feat/plan46-46.2-connector-contracts`, six commits Codex +
+un correctif de review, gate 4269 tests). Écarts et décisions, assumés :
+
+- Les schémas de l'exemple 25 ne sont **pas** compilables (règles Python, sources fichier) : la preuve
+  « SQL valide » porte sur l'exemple 08 et sur des fixtures couvrant **chaque** opérateur de filtre,
+  op de colonne, agrégat et type de jointure, exécutées sur DuckDB en mémoire (57 tests, colonnes
+  vérifiées, pas de valeurs : c'est 46.3).
+- La matrice compte 57 clés (19 filtres, 19 ops, 12 agrégats, 7 jointures), énumérées à la main et
+  gardées par drift-guard. Databricks : tout `Supported`. DuckDB et Snowflake : `Conditional("parity
+  not executed yet (Plan 46.3)")` par défaut — rien n'est `Supported` avant la parité exécutée.
+  `filter:sql` et `op:expr` sont **`Refused` hors Databricks** : un fragment brut est écrit en Spark
+  SQL et serait relu comme tel par le rendu — le laisser passer était une dégradation silencieuse.
+  Snowflake refuse aussi `first`/`last` et `left_semi`/`left_anti`.
+- `compile_select(dialect=)` est keyword-only ; `databricks` est un no-op octet pour octet, épinglé
+  sur tous les YAML du fichier de test. `_reject_uncompilable` passe d'abord, puis
+  `capability_report(parsed, dialect)` ; tous les `Refused` sont levés en **une** erreur. Les
+  `Conditional` ne journalisent rien : le rapport est leur canal.
+- `render()` : `unsupported_level=RAISE` (sqlglot n'approxime jamais en silence) ; tokenizer
+  identifiants/littéraux pour la normalisation des `''` — la version héritée du résolveur cassait le
+  littéral vide et interceptait une exception inexistante dans sqlglot 30.
+- `from_backend` accepte `ExecutionContract` **ou** l'ancien `execute_sql`, **sans** avertissement :
+  skifer-board l'utilise en production.
+- `ExecutionResult` vit dans `core/connector.py`, ré-exporté par `semantic/evidence.py`.
+- Reporté, noté ici : `PublicationContract` est trop étroit pour `PublicationCoordinator` (staging,
+  promotion, upsert) → à élargir en 46.4 quand un connecteur réel l'implémente ; le chemin sémantique
+  du résolveur rend un dialecte sans consulter la matrice (le SQL sémantique n'est pas la grammaire
+  pipeline) → 46.3 décide s'il faut une matrice sémantique propre.
+
 ### 46.3 — Harnais de parité à trois voies et exemple portable (M, 5 à 7 h)
 
 **But.** Prouver l'interdit n° 4 : une op est portable quand son **résultat exécuté** est identique sur
