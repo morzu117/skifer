@@ -66,25 +66,17 @@ def run_three_way(spark, duck, yaml_text) -> Outcome:
     )
 
 
-def assert_three_way(spark, duck, yaml_text, *, approx_columns=()):
+def assert_three_way(spark, duck, yaml_text):
     outcome = run_three_way(spark, duck, yaml_text)
-    assert set(approx_columns) <= set(outcome.columns)
+    assert outcome.rows_dataframe, "an empty result proves nothing"
     for route, rows in (("Spark SQL", outcome.rows_spark_sql), ("DuckDB SQL", outcome.rows_duckdb)):
         if rows == outcome.rows_dataframe:
             continue
-        differences = []
-        for expected, actual in zip_longest(outcome.rows_dataframe, rows):
-            if expected is None or actual is None:
-                differences.append((expected, actual))
-                continue
-            for column, a, b in zip(outcome.columns, actual, expected):
-                if a == b:
-                    continue
-                if (column in approx_columns and isinstance(a, Decimal) and isinstance(b, Decimal)
-                        and abs(a - b) <= max(Decimal(1), Decimal("0.05") * abs(b))):
-                    continue
-                differences.append((expected, actual))
-                break
+        differences = [
+            (expected, actual)
+            for expected, actual in zip_longest(outcome.rows_dataframe, rows)
+            if expected != actual
+        ]
         assert not differences, (
             f"{route} differs from Spark DataFrame; columns={outcome.columns!r}\n"
             f"First differing rows (DataFrame, {route}): {differences[:5]!r}\n"

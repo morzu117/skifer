@@ -797,9 +797,10 @@ Le jeu canonique contient 30 commandes, 12 clients et 6 pays. Les mêmes lignes 
 (`Decimal`, `date`, chaînes, nombres et `None`) alimentent des vues temporaires Spark
 et des tables DuckDB en mémoire ; chaque colonne déclare côte à côte ses deux types.
 Il comprend des valeurs nulles, négatives, décimales, des cas d'arrondi, du texte Unicode,
-des clés sans correspondance et des clients sans commande. Les 22 cas couvrent les filtres,
+des clés sans correspondance et des clients sans commande. Les 23 cas couvrent les filtres,
 les opérations de colonnes (y compris les conditions imbriquées), les agrégats et les sept
-jointures. Deux tests supplémentaires épinglent les divergences de cast et de type d'AVG.
+jointures. Trois tests supplémentaires épinglent les divergences d'arrondi et d'échec de cast,
+ainsi que de type d'AVG.
 
 La comparaison porte sur les **valeurs, pas les types SQL** : elle ne dit rien du type SQL
 rendu. Les colonnes sont projetées dans l'ordre de leurs noms triés. `None`, les booléens
@@ -807,8 +808,7 @@ et les chaînes sont conservés ; les nombres deviennent `Decimal(str(v))`, quan
 `1e-9` ; dates et dates-heures deviennent `isoformat()`. Tout autre type est refusé par
 une assertion nommant le type. Les lignes normalisées sont triées par
 `tuple((v is None, str(v)) for v in row)`. Un échec indique la voie divergente, les deux SQL
-et les premières lignes différentes. La tolérance `max(1, 5 %)` est réservée à une mesure
-`approx_count_distinct` explicitement déclarée ; aucun cas actuel ne l'utilise.
+et les premières lignes différentes. Un résultat vide est refusé : il ne prouve aucune parité.
 
 La promotion de la matrice DuckDB est mécanique :
 
@@ -822,15 +822,16 @@ La promotion de la matrice DuckDB est mécanique :
 `test_duckdb_matrix_is_backed_by_executed_parity` vérifie sans démarrer Spark que les 57 clés
 relèvent exactement d'une de ces catégories. Les clés exercées sont dérivées par
 `used_capabilities(parse_to_ir(parse_schema(yaml)))`, jamais déclarées à la main.
-Le bilan est **48 `Supported`, 7 `Conditional`, 2 `Refused`**. Snowflake attend la parité
+Le bilan est **48 `Supported`, 7 `Conditional`, 2 `Refused`**. Les promotions sont
+énumérées dans `_DUCKDB_PROVEN` ; toute autre clé DuckDB est conditionnelle par défaut. Snowflake attend la parité
 exécutée de 46.6 ; un rendu SQL valide ne suffit pas à promouvoir une capacité.
 
 | Capacité | Divergence ou limite | Condition prouvée |
 |---|---|---|
-| `op:cast` | `2.7 → int` donne 2 sur Spark et 3 sur DuckDB ; un texte non convertible lève sur Spark ANSI mais donne NULL via `TRY_CAST` sur DuckDB. | Casts sans perte : texte numérique → double, nombre → chaîne, decimal → double. |
+| `op:cast` | `2.7 → int` donne 2 sur Spark et 3 sur DuckDB ; un texte non convertible lève sur Spark ANSI mais donne NULL via `TRY_CAST` sur DuckDB. | TRY_CAST on DuckDB: a double->int cast truncates on Spark but rounds on DuckDB, and an unconvertible value raises on Spark (ANSI) but yields NULL on DuckDB; parity proven for casts only (numeric text->double, integer->string, decimal->double) |
 | `agg:avg` | `AVG(DECIMAL(12,2))` retourne un `Decimal` à 6 décimales sur Spark, un `float` sur DuckDB ; la précision peut différer. | Entrées DOUBLE uniquement. |
 | `agg:first`, `agg:last` | L'ordre n'est pas garanti sans `ORDER BY`. | Chaque groupe possède une seule valeur distincte non nulle (`country_name` par `country`). |
-| `agg:approx_count_distinct` | Les algorithmes d'approximation diffèrent selon le moteur. | Égalité exacte sur le jeu canonique, cardinalités inférieures à 50 ; aucune tolérance activée. |
+| `agg:approx_count_distinct` | Les algorithmes d'approximation diffèrent selon le moteur. | approximate algorithms differ by engine; parity proven exact on the canonical dataset (at most 2 distinct values per group on the canonical dataset) |
 | `op:split` | Spark et DuckDB utilisent des regex (Java et RE2) ; sqlglot décale l'index de base 0. | Séparateur littéral `-`, indices 0 et 1. |
 | `op:to_date` | sqlglot traduit les tokens Java en formats strptime. | Formats `yyyy-MM-dd` et `dd/MM/yyyy` uniquement. |
 

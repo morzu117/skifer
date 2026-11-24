@@ -9,10 +9,15 @@ from tests.parity.dataset import TABLES
 
 @pytest.fixture(scope="session")
 def parity_spark(spark):
-    for name, (columns, rows) in TABLES.items():
-        schema = StructType([StructField(column, spark_type) for column, spark_type, _ in columns])
-        spark.createDataFrame(rows, schema).createOrReplaceTempView(name)
-    return spark
+    assert spark.conf.get("spark.sql.ansi.enabled") == "true"
+    try:
+        for name, (columns, rows) in TABLES.items():
+            schema = StructType([StructField(column, spark_type) for column, spark_type, _ in columns])
+            spark.createDataFrame(rows, schema).createOrReplaceTempView(name)
+        yield spark
+    finally:
+        for name in TABLES:
+            spark.catalog.dropTempView(name)
 
 
 @pytest.fixture(scope="session")

@@ -15,7 +15,7 @@ from tests.parity.harness import assert_three_way
 CAST = (
     "TRY_CAST on DuckDB: a double->int cast truncates on Spark but rounds on DuckDB, "
     "and an unconvertible value raises on Spark (ANSI) but yields NULL on DuckDB; "
-    "parity proven for lossless casts only (numeric text->double, number->string, decimal->double)"
+    "parity proven for casts only (numeric text->double, integer->string, decimal->double)"
 )
 SPLIT = (
     "both engines split on a regex (Spark split, DuckDB str_split_regex) and sqlglot shifts "
@@ -33,7 +33,7 @@ FIRST_LAST = (
 )
 APPROX = (
     "approximate algorithms differ by engine; parity proven exact on the canonical dataset "
-    "(cardinalities below 50)"
+    "(at most 2 distinct values per group on the canonical dataset)"
 )
 
 
@@ -42,7 +42,6 @@ class ParityCase:
     id: str
     yaml: str
     condition: dict[str, str] = field(default_factory=dict)
-    approx_columns: tuple = ()
 
 
 def _yaml(*, table=None, **parts):
@@ -89,7 +88,7 @@ CASES = [
         ["amount", "ceiling", ["ceil"]], ["amount", "filled", ["nvl:0"]],
         ["amount", "coalesced", ["coalesce:0"]],
     ])),
-    ParityCase("lossless_casts", _yaml(
+    ParityCase("bounded_casts", _yaml(
         table={"name": "orders", "alias": "ord", "fields": [
             ["order_id", "order_id"], ["order_id", "numeric_text", ["cast:string"]],
             ["amount", "amount"],
@@ -130,16 +129,21 @@ CASES = [
     )),
     ParityCase("double_statistics", _yaml(aggregate={
         "group_by": ["country"], "measures": [
-            ["unit_price", "mean", "avg"], ["unit_price", "stdev", "stddev"],
-            ["unit_price", "variance", "variance"],
+            ["unit_price", "mean", "avg"],
         ],
     }), {"agg:avg": AVG}),
-    ParityCase("functional_dependency_first_last", _yaml(
-        table={"name": "countries", "alias": "country_source"},
-        aggregate={"group_by": ["country"], "measures": [
+    ParityCase("double_dispersion", _yaml(aggregate={
+        "group_by": ["country"], "measures": [
+            ["unit_price", "stdev", "stddev"], ["unit_price", "variance", "variance"],
+        ],
+    })),
+    ParityCase("functional_dependency_first_last", yaml.safe_dump({
+        "tables": [{"name": "orders", "alias": "ord"}, {"name": "countries", "alias": "cty"}],
+        "join": [{"table_from": ["ord", "country"], "table_to": ["cty", "country"], "type": "inner"}],
+        "aggregate": {"group_by": ["country"], "measures": [
             ["country_name", "first_name", "first"], ["country_name", "last_name", "last"],
         ]},
-    ), {"agg:first": FIRST_LAST, "agg:last": FIRST_LAST}),
+    }), {"agg:first": FIRST_LAST, "agg:last": FIRST_LAST}),
     ParityCase("approx_distinct_small_cardinality", _yaml(aggregate={
         "group_by": ["country"], "measures": [["customer_id", "customers", "approx_count_distinct"]],
     }), {"agg:approx_count_distinct": APPROX}),
@@ -172,7 +176,7 @@ REFUSED_CASES = [
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.id)
 def test_three_way_parity(parity_spark, duck, case):
-    assert_three_way(parity_spark, duck, case.yaml, approx_columns=case.approx_columns)
+    assert_three_way(parity_spark, duck, case.yaml)
 
 
 @pytest.mark.parametrize("key,yaml_text", REFUSED_CASES, ids=[key for key, _ in REFUSED_CASES])
@@ -196,12 +200,6 @@ def test_duckdb_matrix_is_backed_by_executed_parity():
                 assert case.condition.get(key) == status.reason, (case.id, key)
             else:
                 assert key not in case.condition, (case.id, key)
-        if case.approx_columns:
-            assert "agg:approx_count_distinct" in keys
-            measures = parse_to_ir(parse_schema(case.yaml)).aggregate.measures
-            assert set(case.approx_columns) <= {
-                measure.target for measure in measures if measure.func == "approx_count_distinct"
-            }
         exercised.update(keys)
         conditioned.update(case.condition)
     refused = {key for key, _ in REFUSED_CASES}

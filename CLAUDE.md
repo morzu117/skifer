@@ -890,9 +890,9 @@ connaissance : BM25 sans dépendance, dense/hybride via `[knowledge-embeddings]`
 Voir `docs/metric_candidates.md`.
 
 ### Tests
-- `tests/parity/` exécute 22 cas sur Spark DataFrame, Spark SQL et DuckDB SQL, plus 2 pins de divergence ; toute promotion DuckDB exige un cas vert, avec une condition identique au motif de la matrice si nécessaire.
+- `tests/parity/` exécute 23 cas sur Spark DataFrame, Spark SQL et DuckDB SQL, plus 3 pins de divergence ; toute promotion DuckDB exige un cas vert, avec une condition identique au motif de la matrice si nécessaire.
 - LLM calls are always mocked; no live cluster, API key or network is needed.
-- Spark, however, is **not** mocked everywhere: 206 tests run a real local Delta session
+- Spark, however, is **not** mocked everywhere: 246 tests run a real local Delta session
   (the `spark` fixture in `tests/conftest.py`, plus the examples), the other ~2200 use
   doubles. A test that builds a `F.col(...)` needs the fixture even when it only asserts
   a raised error — omitting it makes the test pass only next to its neighbours.
@@ -1355,7 +1355,7 @@ lint   ruff check src/
 
 - Charge des extraits ciblés, jamais des fichiers entiers. C'est un levier de coût, et sur une machine à mémoire contrainte c'est aussi ce qui décide si la session tient ou se fait tuer.
 - Framework déclaratif Spark/Databricks (Bronze → Silver → Gold). YAML = le What ; règles Python du RuleRegistry = le How.
-- ~2200 tests sans Spark (~27 s) + 206 sur une session Delta locale réelle (fixture `spark`). LLM toujours mocké. examples/ est exécuté par la suite.
+- ~2200 tests sans Spark (~27 s) + 246 sur une session Delta locale réelle (fixture `spark`). LLM toujours mocké. examples/ est exécuté par la suite.
 - Toute modif de src/ = test + entrée CHANGELOG [Unreleased]. Un point de plan = un commit. Jamais de bump de version.
 - Flux de données piloté par YAML : le rayon d'impact de l'index est un plancher, pas un périmètre.
 

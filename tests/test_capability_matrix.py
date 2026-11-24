@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from skifer.core.capability_matrix import MATRIX, Conditional, Refused, Supported, capability
+from skifer.core.capability_matrix import _DUCKDB_PROVEN, _KEYS
 from skifer.core.dialect import TARGETS
 from skifer.core.ir import VALID_JOIN_TYPES, _JOIN_TYPE_ALIASES
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, COLUMN_OPS, FILTER_OPERATORS
@@ -21,6 +22,13 @@ ALL_KEYS = (
 def test_catalog_drift_guard(target):
     assert set(MATRIX) == set(TARGETS)
     assert set(MATRIX[target]) == ALL_KEYS
+
+
+def test_duckdb_supported_keys_are_explicitly_proven():
+    assert _DUCKDB_PROVEN <= _KEYS
+    assert {
+        key for key, status in MATRIX["duckdb"].items() if isinstance(status, Supported)
+    } == _DUCKDB_PROVEN
 
 
 def test_first_is_conditional_on_duckdb_and_refused_on_snowflake():
@@ -63,7 +71,7 @@ def test_explicit_conditional_reasons(target):
             "op:cast": (
                 'TRY_CAST on DuckDB: a double->int cast truncates on Spark but rounds on DuckDB, and '
                 'an unconvertible value raises on Spark (ANSI) but yields NULL on DuckDB; parity '
-                'proven for lossless casts only (numeric text->double, number->string, '
+                'proven for casts only (numeric text->double, integer->string, '
                 'decimal->double)'
             ),
             "op:split": (
@@ -89,7 +97,7 @@ def test_explicit_conditional_reasons(target):
             ),
             "agg:approx_count_distinct": (
                 'approximate algorithms differ by engine; parity proven exact on the canonical dataset '
-                '(cardinalities below 50)'
+                '(at most 2 distinct values per group on the canonical dataset)'
             ),
         }
     for key, reason in reasons.items():

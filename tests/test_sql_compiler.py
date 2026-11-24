@@ -759,7 +759,7 @@ aggregate:
     @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
     def test_report_exposes_conditionals_without_logging_or_mutation(self, target, caplog):
         from copy import deepcopy
-        from skifer.core.capability_matrix import Conditional, Refused, capability
+        from skifer.core.capability_matrix import Conditional, Supported, capability
         from skifer.core.sql_compiler import capability_report
 
         parsed = parse_to_ir(parse_schema(_single_table('''select_final:
@@ -772,8 +772,8 @@ aggregate:
         if target == "snowflake":
             assert all(isinstance(status, Conditional) for status in report.values())
         else:
-            assert report == {key: capability("duckdb", key) for key in report}
-            assert not any(isinstance(status, Refused) for status in report.values())
+            assert report == {"op:cast": capability("duckdb", "op:cast"), "op:round": Supported()}
+            assert isinstance(report["op:cast"], Conditional)
         compile_select(parsed, dialect=target)
         assert parsed == before
         assert not caplog.records
