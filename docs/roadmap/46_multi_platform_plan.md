@@ -134,6 +134,32 @@ complet entre chaque, `examples/` exécutés par la suite servent de test d'int�
 **Terminé quand.** Trois contrats `importlinter` verts, test de frontière vert, suite complète verte,
 aucun changement d'API publique.
 
+**Réalisé le 24 novembre 2026** (branche `feat/plan46-46.1-import-boundaries`, dev délégué à Codex,
+deux passes de review `claude -p` sans outils). Mesure : `import skifer.core.op_catalog` charge 3 modules
+Skifer au lieu de 87 ; les 8 modules du langage L chargent entre 3 et 6 modules, épinglés par test en
+interpréteur frais. Écarts par rapport au texte ci-dessus, assumés :
+
+- `core/spark_backend.py` et `core/config.py` n'ont pas bougé : leurs imports vers `candidates`,
+  `knowledge` et `knowledge.embeddings` étaient déjà locaux aux fonctions. `core/patterns.py` →
+  `observability.best_effort` est resté : `core.core`, `patterns`, `spark_backend` sont le **runtime**
+  (futur `skifer-engine`), pas le langage L, et un contrat `layers` sur tout `core` était la mauvaise
+  forme. Les contrats portent donc sur la liste explicite des 8 modules de L, plus `semantic` <
+  `agentic` et la paresse des quatre racines.
+- `agentic/resolver.py` n'est pas un module de ré-export mais un **alias `sys.modules`** du module
+  réel après `DeprecationWarning` : identité des objets, noms privés, `monkeypatch` et logger
+  préservés.
+- Décision de conception : `exclude_type_checking_imports = true`. Les blocs `if TYPE_CHECKING:` des
+  racines donnent la visibilité statique des ré-exports et créent des arêtes grimp qui casseraient le
+  contrat des racines. Les contrats gardent la structure runtime ; la preuve d'exécution est
+  `tests/test_import_boundaries.py`. **Mesuré avec l'option désactivée** : seul le contrat des racines
+  casse, et uniquement par ces blocs ; aucune arête de typage n'est masquée sur les contrats du
+  langage L et de `semantic`/`agentic`. Un test AST interdit toute dérive entre les blocs
+  `TYPE_CHECKING` et `_EXPORTS`.
+- `RuleRegistry.get_loader()` / `list_loaders()` importent `skifer.core.loaders` au premier appel : un
+  `import skifer` nu ne charge plus le moteur sans changer ce que le registre répond.
+- Suivi différé (pas dans 46.1) : importer chaque module `skifer.*` dans un interpréteur frais pour
+  détecter un cycle masqué par l'ancien chargement eager.
+
 ### 46.2 — Contrats de connecteur, matrice de capacités, rendu de dialecte (M, 6 à 8 h)
 
 **But.** Donner au cœur ce que les trois dépôts de runtime implémenteront, sans qu'aucun ne soit encore
