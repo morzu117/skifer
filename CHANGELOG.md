@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `constants` and `ir` from importing the governed layer or Spark. Development plan:
   `docs/roadmap/46_multi_platform_plan.md`.
 
+### Changed
+
+- **Plan 46.1 — import boundaries.** Package exports in `skifer`, `core`, `semantic` and
+  `agentic` resolve lazily, preserving the public API; built-in loaders register when the
+  engine module loads. The deterministic query resolver moves to `skifer.semantic.resolver`,
+  with a deprecated compatibility shim at `skifer.agentic.resolver`. Three `import-linter`
+  contracts protect the language core, the semantic-to-agentic dependency boundary and lazy
+  package roots. Subprocess boundary tests cover language imports, public exports and loader
+  registration. `import skifer.core.op_catalog` now loads **3 Skifer modules instead of 87**;
+  `sql_compiler` and `schema_loader` each load 6, all within the language core.
+
 ## [4.1.0] - 2026-11-03
 
 ### Added
