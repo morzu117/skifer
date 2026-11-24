@@ -35,6 +35,38 @@ def _joined_df():
 
 class TestProcessSchemaJoin:
 
+    def test_cross_join_ignores_keys_and_drops_nothing(self, caplog):
+        df_ord = MagicMock(name="df_ord")
+        df_cust = MagicMock(name="df_cust")
+        joined = _joined_df()
+        df_ord.join.return_value = joined
+        schema = {"join": [{
+            "table_from": ["ord", "customer_id"],
+            "table_to": ["cust", "cust_id"],
+            "type": "cross",
+        }]}
+
+        result = _make_engine().process_schema(schema, dataframes_in={"ord": df_ord, "cust": df_cust})
+
+        df_ord.join.assert_called_once_with(df_cust, on=None, how="cross")
+        joined.drop.assert_not_called()
+        assert result is joined
+        assert "cross join: declared keys ['customer_id']/['cust_id'] are ignored" in caplog.text
+
+    def test_cross_join_without_keys_uses_no_condition(self, caplog):
+        df_ord = MagicMock(name="df_ord")
+        df_cust = MagicMock(name="df_cust")
+        joined = _joined_df()
+        df_ord.join.return_value = joined
+        schema = {"join": [{"table_from": "ord", "table_to": "cust", "type": "cross"}]}
+
+        result = _make_engine().process_schema(schema, dataframes_in={"ord": df_ord, "cust": df_cust})
+
+        df_ord.join.assert_called_once_with(df_cust, on=None, how="cross")
+        joined.drop.assert_not_called()
+        assert result is joined
+        assert "cross join: declared keys" not in caplog.text
+
     def test_same_keys_uses_list_join(self):
         """on_from == on_to → join(df_to, on=['id'], how='inner'). No .columns call."""
         df_a = MagicMock(name="df_a")

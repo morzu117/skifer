@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typing dependencies are no longer checked by `lint-imports`. Fresh-interpreter tests in
   `tests/test_import_boundaries.py` verify the modules actually loaded.
 
+### Fixed
+
+- **Plan 46.3 — cross joins on the DataFrame path.** Declared keys were incorrectly
+  applied to `type: cross`, silently producing an inner join. The DataFrame path now
+  returns the Cartesian product without dropping right-side columns, matching compiled
+  SQL, and warns when declared keys are ignored. Found by the three-way parity harness.
+
 ### Deprecated
 
 - `skifer.agentic.resolver` is a module alias of `skifer.semantic.resolver` and emits a
