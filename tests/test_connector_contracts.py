@@ -52,3 +52,25 @@ def test_capabilities_validate_dialect_and_are_frozen():
     with pytest.raises(FrozenInstanceError):
         capabilities.dialect = "snowflake"
     assert ColumnInfo("id", "integer").nullable is None
+
+
+def test_capabilities_freeze_caller_write_modes():
+    writes = {"append"}
+    capabilities = ConnectorCapabilities("duckdb", writes)
+    writes.add("overwrite")
+    assert isinstance(capabilities.writes, frozenset)
+    assert capabilities.writes == frozenset({"append"})
+
+
+@pytest.mark.parametrize("writes", [{"upsert"}, {"append", "merge"}])
+def test_capabilities_refuse_unknown_write_modes(writes):
+    with pytest.raises(ValueError, match="Unsupported write modes"):
+        ConnectorCapabilities("duckdb", writes)
+
+
+def test_publication_write_mode_annotation():
+    from typing import get_args, get_type_hints
+    from skifer.core.connector import WriteMode
+
+    assert get_args(WriteMode) == WRITE_MODES
+    assert get_type_hints(PublicationContract.write_table)["mode"] == WriteMode

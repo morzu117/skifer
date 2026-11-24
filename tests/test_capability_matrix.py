@@ -52,11 +52,35 @@ def test_status_is_frozen(status):
 @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
 def test_explicit_conditional_reasons(target):
     reasons = {
-        "filter:sql": "raw SQL is passed through unrendered; the author owns the target dialect",
-        "op:expr": "raw SQL is passed through unrendered; the author owns the target dialect",
-        "op:split": "Spark split() takes a regex, the target splits on a literal separator",
+        "op:split": (
+            "Spark split() is a regex split; sqlglot maps it to str_split_regex, "
+            "verify the separator semantics in parity" if target == "duckdb" else
+            "Spark split() takes a regex, the target splits on a literal separator"
+        ),
         "op:to_date": "date format strings differ between Spark and the target",
-        "op:cast": "type names are rendered by sqlglot; verify each type in parity",
+        "op:cast": (
+            "type names are rendered by sqlglot and Spark casts return NULL on failure "
+            "where the target raises; verify in parity"
+        ),
     }
     for key, reason in reasons.items():
         assert capability(target, key) == Conditional(reason)
+
+
+@pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+@pytest.mark.parametrize("key", ["filter:sql", "op:expr"])
+def test_raw_sql_is_refused(target, key):
+    assert capability(target, key) == Refused(
+        "raw SQL fragments are authored in Spark SQL and are not rendered for another target"
+    )
+
+
+def test_matrix_targets_are_read_only():
+    with pytest.raises(TypeError):
+        MATRIX["duckdb"] = {}
+
+
+@pytest.mark.parametrize("target", TARGETS)
+def test_matrix_entries_are_read_only(target):
+    with pytest.raises(TypeError):
+        MATRIX[target]["op:cast"] = Supported()

@@ -57,3 +57,55 @@ def test_missing_sqlglot(monkeypatch, target):
 def test_two_statements_refused(target):
     with pytest.raises(DialectError, match="exactly one statement"):
         render("SELECT 1; SELECT 2", target)
+
+
+@pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+@pytest.mark.parametrize("literal,value", [
+    ("''", ""), ("''''", "'"), ("'a''b'", "a'b"), ("'''x'", "'x"),
+])
+def test_literal_boundaries_preserve_value(target, literal, value):
+    out = render(f"SELECT {literal} AS a", target)
+    assert sqlglot.parse_one(out, read=target).find(sqlglot.exp.Literal).this == value
+
+
+@pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+def test_quote_in_backticked_identifier_is_not_a_literal(target):
+    out = render("SELECT `prix d'achat` AS a FROM `t` WHERE `x` = 'y'", target)
+    assert '"prix d\'achat"' in out
+    parsed = sqlglot.parse_one(out, read=target)
+    assert parsed.find(sqlglot.exp.Column).name == "prix d'achat"
+    assert parsed.find(sqlglot.exp.Literal).this == "y"
+
+
+@pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+def test_trailing_backslash_literal(target):
+    from skifer.core.sql_compiler import sql_literal
+
+    value = "a\\"
+    out = render(f"SELECT {sql_literal(value)} AS a", target)
+    assert sqlglot.parse_one(out, read=target).find(sqlglot.exp.Literal).this == value
+
+
+@pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+def test_invalid_sql_raises_dialect_error(target):
+    from sqlglot.errors import SqlglotError
+
+    with pytest.raises(DialectError) as raised:
+        render("SELECT FROM WHERE", target)
+    assert isinstance(raised.value.__cause__, SqlglotError)
+
+
+@pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+def test_unsupported_rendering_raises_with_cause(monkeypatch, target):
+    from sqlglot.errors import ErrorLevel, UnsupportedError
+
+    error = UnsupportedError("x")
+
+    def unsupported(*args, **kwargs):
+        assert kwargs["unsupported_level"] is ErrorLevel.RAISE
+        raise error
+
+    monkeypatch.setattr(sqlglot, "transpile", unsupported)
+    with pytest.raises(DialectError) as raised:
+        render("SELECT 1", target)
+    assert raised.value.__cause__ is error

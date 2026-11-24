@@ -1,11 +1,12 @@
 """Narrow SQL connector contracts; no runtime or DataFrame dependency."""
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from skifer.core.dialect import TARGETS
 
 WRITE_MODES = ("overwrite", "append")
+WriteMode = Literal["overwrite", "append"]
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,9 @@ class ConnectorCapabilities:
     writes: frozenset[str]
 
     def __post_init__(self):
+        object.__setattr__(self, "writes", frozenset(self.writes))
+        if not self.writes.issubset(WRITE_MODES):
+            raise ValueError(f"Unsupported write modes {self.writes!r}; expected modes from {WRITE_MODES}.")
         if self.dialect not in TARGETS:
             raise ValueError(f"Unknown SQL dialect {self.dialect!r}; expected one of {TARGETS}.")
 
@@ -64,4 +68,4 @@ class PublicationContract(Protocol):
 
     def create_or_replace_view(self, fqn: str, select_sql: str) -> None: ...
 
-    def write_table(self, fqn: str, select_sql: str, mode: str) -> None: ...
+    def write_table(self, fqn: str, select_sql: str, mode: WriteMode) -> None: ...

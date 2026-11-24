@@ -20,7 +20,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from skifer.core.capability_matrix import Refused, capability
+from skifer.core.capability_matrix import Refused, Status, capability
 from skifer.core.dialect import TARGETS, DialectError, render
 from skifer.core.ir import ParsedColumnSpec, ParsedOp, ParsedSchema, _parse_op
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, resolve_filter_operator
@@ -465,6 +465,16 @@ def used_capabilities(parsed: ParsedSchema) -> set[str]:
     return keys
 
 
+def capability_report(parsed: ParsedSchema, dialect: str) -> dict[str, Status]:
+    """Return target statuses for used capabilities, ordered by canonical key."""
+    if dialect not in TARGETS:
+        raise SqlCompilationError(f"Unknown SQL dialect {dialect!r}; expected one of {TARGETS}.")
+    try:
+        return {key: capability(dialect, key) for key in sorted(used_capabilities(parsed))}
+    except KeyError as exc:
+        raise SqlCompilationError(str(exc)) from exc
+
+
 def compile_select(
     parsed: ParsedSchema,
     resolve_table: Callable[[str], str] | None = None,
@@ -490,17 +500,15 @@ def compile_select(
         SqlCompilationError: when the schema uses a construct with no faithful
                              SQL equivalent (Python rules, loaders, file sources…).
     """
-    if dialect not in TARGETS:
-        raise SqlCompilationError(f"Unknown SQL dialect {dialect!r}; expected one of {TARGETS}.")
-    for key in sorted(used_capabilities(parsed)):
-        try:
-            status = capability(dialect, key)
-        except KeyError as exc:
-            raise SqlCompilationError(str(exc)) from exc
-        if isinstance(status, Refused):
-            raise SqlCompilationError(f"Capability {key!r} refused for {dialect!r}: {status.reason}")
-    resolve = resolve_table or (lambda name: name)
     _reject_uncompilable(parsed)
+    report = capability_report(parsed, dialect)
+    refused = [
+        f"{key!r}: {status.reason}" for key, status in report.items()
+        if isinstance(status, Refused)
+    ]
+    if refused:
+        raise SqlCompilationError(f"Capabilities refused for {dialect!r}: " + "; ".join(refused))
+    resolve = resolve_table or (lambda name: name)
 
     ctes = ",\n".join(
         f"{quote_ident(t.alias)} AS (\n  {_compile_table_cte(t, resolve, allow_raw_sql)}\n)"

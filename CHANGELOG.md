@@ -13,9 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   execution, catalog and publication protocols live in the language core, with frozen
   column/capability descriptions and `ExecutionResult` re-exported from semantic evidence.
   A complete 57-operation matrix declares supported, conditional and refused capabilities
-  per target; `used_capabilities()` includes nested conditions and the compiler refuses
-  unsupported operations before rendering. Shared lazy sqlglot rendering supports DuckDB
-  and Snowflake while preserving default Databricks SQL byte for byte. The new `[dialects]`
+  per target in a read-only matrix; `used_capabilities()` includes nested conditions and
+  `capability_report()` exposes sorted target statuses and reasons. The compiler reports
+  all refused operations together, after historical compilation guardrails; raw SQL
+  (`filter:sql`, `op:expr`) is refused outside Databricks. Shared lazy sqlglot rendering
+  uses `unsupported_level=RAISE`, preserves literal boundaries and wraps parse/unsupported
+  errors for DuckDB and Snowflake while preserving default Databricks SQL byte for byte.
+  Connector write modes are validated and frozen, with a `WriteMode` literal contract.
+  The new `[dialects]`
   extra installs sqlglot; semantic queries use the same renderer and `from_backend` accepts
   `ExecutionContract` while retaining Board's warning-free `execute_sql` path. DuckDB tests
   execute every operation family and the materialized-view example; value parity remains

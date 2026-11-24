@@ -743,11 +743,18 @@ une capacité indisponible. `capability(target, key)` lève `KeyError` pour tout
 cible ou clé inconnue.
 
 `used_capabilities(parsed)` collecte les opérations du pipeline, conditions
-imbriquées comprises. `compile_select(..., dialect=...)` consulte la matrice avant
-compilation : un `Refused` lève `SqlCompilationError` avec la clé et le motif ; un
+imbriquées comprises. `capability_report(parsed, dialect)` retourne leurs statuts
+et motifs pour la cible, triés par clé, sans effet de bord. Après les refus
+historiques des constructions non compilables, `compile_select(..., dialect=...)`
+consulte la matrice : les `Refused` lèvent une seule `SqlCompilationError` listant
+toutes les clés refusées et leurs motifs, triées ; un
 `Conditional` laisse compiler sans journalisation et **ne prouve aucune parité**.
+Le rapport est le canal explicite pour consulter ces conditions.
 La comparaison des valeurs entre runtimes relève de 46.3. Sur Snowflake, `first`,
 `last`, `left_semi` et `left_anti` sont refusés.
+Les fragments SQL bruts `expr:` et `filter:sql`, écrits en Spark SQL, sont refusés
+hors Databricks. Le rendu utilise `unsupported_level=ErrorLevel.RAISE` : toute
+traduction non prise en charge lève une erreur, sans approximation silencieuse.
 
 ```python
 from skifer.core.ir import parse_to_ir
@@ -762,9 +769,11 @@ select_final:
   - [amount, amount, [cast:double]]
 """))
 sql = compile_select(parsed, dialect="duckdb")
-# WITH "ord" AS (SELECT * FROM "orders")
-# SELECT CAST("amount" AS DOUBLE) AS "amount" FROM "ord"
+# WITH "ord" AS (SELECT * FROM "orders") SELECT TRY_CAST("amount" AS DOUBLE) AS "amount" FROM "ord"
 ```
+
+Le SQL rendu tient sur une seule ligne (sans `pretty`) ; sqlglot rend ici le cast
+Spark en `TRY_CAST` pour DuckDB.
 
 `QueryResolver` partage ce rendu. `SemanticEngine.from_backend` accepte un
 `ExecutionContract` ou le chemin historique `execute_sql`, sans avertissement de

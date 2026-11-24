@@ -1,6 +1,7 @@
 """Explicit SQL capability declarations, pending executed parity in Plan 46.3."""
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Literal
 
 
@@ -42,31 +43,41 @@ _KEYS = frozenset({
     "join:left_semi", "join:left_anti",
 })
 
-MATRIX: dict[str, dict[str, Status]] = {
+_matrix: dict[str, dict[str, Status]] = {
     "databricks": {key: Supported() for key in _KEYS},
     "duckdb": {key: Conditional("parity not executed yet (Plan 46.3)") for key in _KEYS},
     "snowflake": {key: Conditional("parity not executed yet (Plan 46.3)") for key in _KEYS},
 }
 for _target in ("duckdb", "snowflake"):
     for _key in ("filter:sql", "op:expr"):
-        MATRIX[_target][_key] = Conditional(
-            "raw SQL is passed through unrendered; the author owns the target dialect"
+        _matrix[_target][_key] = Refused(
+            "raw SQL fragments are authored in Spark SQL and are not rendered for another target"
         )
-    MATRIX[_target]["op:split"] = Conditional(
+    _matrix[_target]["op:split"] = Conditional(
         "Spark split() takes a regex, the target splits on a literal separator"
     )
-    MATRIX[_target]["op:to_date"] = Conditional(
+    _matrix[_target]["op:to_date"] = Conditional(
         "date format strings differ between Spark and the target"
     )
-    MATRIX[_target]["op:cast"] = Conditional(
-        "type names are rendered by sqlglot; verify each type in parity"
+    _matrix[_target]["op:cast"] = Conditional(
+        "type names are rendered by sqlglot and Spark casts return NULL on failure "
+        "where the target raises; verify in parity"
     )
 for _key in ("agg:first", "agg:last"):
-    MATRIX["snowflake"][_key] = Refused(
+    _matrix["snowflake"][_key] = Refused(
         "non-deterministic without ORDER BY; no portable equivalent"
     )
 for _key in ("join:left_semi", "join:left_anti"):
-    MATRIX["snowflake"][_key] = Refused("no SEMI/ANTI JOIN syntax on this target")
+    _matrix["snowflake"][_key] = Refused("no SEMI/ANTI JOIN syntax on this target")
+
+_matrix["duckdb"]["op:split"] = Conditional(
+    "Spark split() is a regex split; sqlglot maps it to str_split_regex, "
+    "verify the separator semantics in parity"
+)
+MATRIX = MappingProxyType({
+    target: MappingProxyType(entries) for target, entries in _matrix.items()
+})
+del _matrix
 
 
 def capability(target: str, key: str) -> Status:

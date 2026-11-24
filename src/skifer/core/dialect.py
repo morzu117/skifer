@@ -17,18 +17,25 @@ def render(sql: str, target: str) -> str:
         return sql
     try:
         import sqlglot
+        from sqlglot.errors import ErrorLevel, SqlglotError
     except ImportError as exc:
         raise DialectError(
             f"SQL rendering for '{target}' requires sqlglot: pip install skifer[dialects]"
         ) from exc
 
     # Spark's reader interprets doubled quotes as adjacent literals. Normalize
-    # only complete string literals; the target restores SQL-standard escaping.
-    literal = re.compile(r"'(?:[^']|'')*'")
-    source = literal.sub(lambda match: match.group(0).replace("''", "\\'"), sql)
+    # only literal interiors, leaving backticked identifiers untouched.
+    token = re.compile(r"`(?:[^`]|``)*`|'(?:[^']|'')*'")
+    source = token.sub(
+        lambda m: m.group(0) if m.group(0).startswith("`")
+        else "'" + m.group(0)[1:-1].replace("''", "\\'") + "'",
+        sql,
+    )
     try:
-        statements = sqlglot.transpile(source, read="spark", write=target)
-    except sqlglot.SqlglotError as exc:
+        statements = sqlglot.transpile(
+            source, read="spark", write=target, unsupported_level=ErrorLevel.RAISE,
+        )
+    except SqlglotError as exc:
         raise DialectError(f"SQL cannot be rendered for '{target}'.") from exc
     if len(statements) != 1 or not statements[0]:
         raise DialectError("SQL must render to exactly one statement.")

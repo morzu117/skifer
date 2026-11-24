@@ -704,3 +704,115 @@ keep_all_columns: true
         with pytest.raises(SqlCompilationError, match="sqlglot") as raised:
             compile_select(parsed, dialect="duckdb")
         assert isinstance(raised.value.__cause__, DialectError)
+
+    @pytest.mark.parametrize("declared,canonical", [("anti", "left_anti"), ("full outer", "full")])
+    def test_used_capabilities_canonicalizes_join_and_aggregate_aliases(self, declared, canonical):
+        from skifer.core.sql_compiler import used_capabilities
+
+        parsed = parse_to_ir(parse_schema(f"""
+tables:
+  - name: orders
+    alias: ord
+  - name: customers
+    alias: cust
+join:
+  - table_from: [ord, customer_id]
+    table_to: [cust, id]
+    type: {declared}
+aggregate:
+  group_by: [country]
+  measures: [[amount, m, mean]]
+"""))
+        assert used_capabilities(parsed) == {f"join:{canonical}", "agg:avg"}
+
+    def test_report_and_error_include_all_refused_capabilities(self):
+        from skifer.core.capability_matrix import Refused, Supported, capability
+        from skifer.core.sql_compiler import capability_report
+
+        parsed = parse_to_ir(parse_schema("""
+tables:
+  - name: orders
+    alias: ord
+  - name: customers
+    alias: cust
+join:
+  - table_from: [ord, customer_id]
+    table_to: [cust, id]
+    type: left_anti
+aggregate:
+  group_by: [country]
+  measures: [[amount, m, first]]
+"""))
+        report = capability_report(parsed, "snowflake")
+        assert list(report) == ["agg:first", "join:left_anti"]
+        assert report == {key: capability("snowflake", key) for key in report}
+        assert all(isinstance(status, Refused) for status in report.values())
+        assert all(isinstance(status, Supported) for status in capability_report(parsed, "databricks").values())
+        with pytest.raises(SqlCompilationError) as raised:
+            compile_select(parsed, dialect="snowflake")
+        assert str(raised.value) == (
+            "Capabilities refused for 'snowflake': "
+            "'agg:first': non-deterministic without ORDER BY; no portable equivalent; "
+            "'join:left_anti': no SEMI/ANTI JOIN syntax on this target"
+        )
+
+    @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+    def test_report_exposes_conditionals_without_logging_or_mutation(self, target, caplog):
+        from copy import deepcopy
+        from skifer.core.capability_matrix import Conditional, capability
+        from skifer.core.sql_compiler import capability_report
+
+        parsed = parse_to_ir(parse_schema(_single_table('''select_final:
+  - [amount, out, [cast:double, round:2]]
+''')))
+        before = deepcopy(parsed)
+        report = capability_report(parsed, target)
+        assert list(report) == ["op:cast", "op:round"]
+        assert report == {key: capability(target, key) for key in report}
+        assert all(isinstance(status, Conditional) for status in report.values())
+        compile_select(parsed, dialect=target)
+        assert parsed == before
+        assert not caplog.records
+
+    @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+    @pytest.mark.parametrize("body,key", [
+        ('    filter: ["amount:sql:amount > 0"]\nkeep_all_columns: true\n', "filter:sql"),
+        ('select_final:\n  - [amount, out, ["expr:amount * 2"]]\n', "op:expr"),
+    ])
+    def test_raw_sql_is_refused_before_rendering(self, monkeypatch, target, body, key):
+        import skifer.core.sql_compiler as compiler
+
+        def unexpected_render(*args, **kwargs):
+            pytest.fail("Refused raw SQL must not reach rendering")
+
+        parsed = parse_to_ir(parse_schema(_single_table(body)))
+        monkeypatch.setattr(compiler, "render", unexpected_render)
+        with pytest.raises(SqlCompilationError, match=f"{key}.*raw SQL fragments"):
+            compile_select(parsed, dialect=target)
+
+    def test_historical_rejections_precede_capability_preflight(self, monkeypatch):
+        import skifer.core.sql_compiler as compiler
+
+        parsed = parse_to_ir(parse_schema(_single_table('''business_rules: [flag_high_value]
+aggregate:
+  group_by: [country]
+  measures: [[amount, m, first]]
+''')))
+
+        def unexpected_report(*args, **kwargs):
+            pytest.fail("Uncompilable schemas must be rejected before capability preflight")
+
+        monkeypatch.setattr(compiler, "capability_report", unexpected_report)
+        with pytest.raises(SqlCompilationError) as raised:
+            compile_select(parsed, dialect="snowflake")
+        assert str(raised.value) == (
+            "Python business_rules ['flag_high_value'] cannot be compiled to SQL. "
+            "Materialize them upstream in a silver table, then join/aggregate that table here."
+        )
+
+    def test_report_rejects_unknown_target_even_without_operations(self):
+        from skifer.core.sql_compiler import capability_report
+
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        with pytest.raises(SqlCompilationError, match="oracle"):
+            capability_report(parsed, "oracle")
