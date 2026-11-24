@@ -63,6 +63,7 @@ def _execute(schema, expected_columns):
                     names.update(join.keys_left)
                 if join.alias_right == table.alias:
                     names.update(join.keys_right)
+            names.discard(None)  # Keyless cross joins have no key column to create.
             if parsed.aggregate:
                 names.update(parsed.aggregate.group_by)
                 names.update(m.source for m in parsed.aggregate.measures if m.source != "*")
@@ -139,6 +140,7 @@ def test_join_executes(join_type):
     )
     # A cross join has no USING clause; select a uniquely named left column.
     if join_type == "cross":
+        schema["join"] = [{"table_from": "ord", "table_to": "cust", "type": "cross"}]
         schema["select_final"] = [["order_id", "out"]]
     schema["tables"].append({"name": "customers", "alias": "cust"})
     _execute(schema, ["out"])

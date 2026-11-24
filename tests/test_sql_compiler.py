@@ -246,8 +246,8 @@ keep_all_columns: true
         assert keyword in sql
 
     def test_cross_join_has_no_on_clause(self):
-        sql = _compile(self._two_tables("  - table_from: [ord, customer_id]\n"
-                                        "    table_to: [cust, id]\n"
+        sql = _compile(self._two_tables("  - table_from: ord\n"
+                                        "    table_to: cust\n"
                                         "    type: cross\n"))
         assert "CROSS JOIN `cust`" in sql
         assert " ON " not in sql

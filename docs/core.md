@@ -228,6 +228,9 @@ schema = {
 }
 ```
 
+`cross` takes no keys (refused at load) and does not deduplicate same-name columns
+(no `USING`); rename them via `fields:` when needed.
+
 The runnable walkthrough in `examples/07_sources_and_shaping/` reads checked-in
 JSON, applies an OR-of-ANDs filter, joins labels supplied by a registered loader,
 limits the development input, and prints the aggregate built from an added month
@@ -832,9 +835,10 @@ exécutée de 46.6 ; un rendu SQL valide ne suffit pas à promouvoir une capacit
 | `op:to_date` | sqlglot traduit les tokens Java en formats strptime. | Formats `yyyy-MM-dd` et `dd/MM/yyyy` uniquement. |
 
 Le harnais a aussi révélé un défaut Skifer : `type: cross` appliquait les clés dans la voie
-DataFrame (24 lignes au lieu de 360). Cette voie ignore maintenant les clés, avertit si elles
-sont déclarées et conserve les colonnes droites : les trois voies rendent le même produit
-cartésien de 360 lignes.
+DataFrame (24 lignes au lieu de 360). Le chargement refuse maintenant les clés sur `cross`
+pour les deux voies ; sans clé, les colonnes droites sont conservées et les trois voies
+rendent le même produit cartésien de 360 lignes. Les dictionnaires passés directement à
+`process_schema` conservent l'avertissement si des clés sont ignorées.
 
 Pour ajouter une capacité, ajouter d'abord un cas exécuté et sa condition éventuelle,
 passer le gate de parité, puis mettre à jour la matrice avec la preuve obtenue et repasser

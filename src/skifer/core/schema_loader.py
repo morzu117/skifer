@@ -1608,6 +1608,14 @@ def _normalize_schema(schema_dict, params=None, base_dir=None, seen_paths=None):
         sorted_refs = sorted(known_refs)
         join_errors: list[str] = []
         for j in schema_dict["join"]:
+            if _normalise_join_type(j.get("type", "left")) == "cross" and (
+                "on_from" in j or "on_to" in j
+            ):
+                join_errors.append(
+                    "  [join] 'type: cross' takes no keys — remove 'on_from'/'on_to' "
+                    "(use the plain alias form 'table_from: ord') ; "
+                    "a Cartesian product has no equality condition."
+                )
             for side in ("table_from", "table_to"):
                 ref = j.get(side)
                 if ref and ref not in known_refs:

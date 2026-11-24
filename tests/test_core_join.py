@@ -67,6 +67,30 @@ class TestProcessSchemaJoin:
         assert result is joined
         assert "cross join: declared keys" not in caplog.text
 
+    def test_cross_join_loaded_schema_returns_cartesian_product(self, spark):
+        from skifer.core.schema_loader import parse_schema
+        from tests.test_sql_compiler import _make_engine as make_real_engine
+
+        schema = parse_schema(
+            "tables:\n  - {name: cross_test_orders, alias: ord}\n"
+            "  - {name: cross_test_customers, alias: cust}\n"
+            "join:\n  - {table_from: ord, table_to: cust, type: cross}\n"
+        )
+        orders = spark.createDataFrame([(1,), (2,), (3,)], ["order_id"])
+        customers = spark.createDataFrame([(1,), (2,), (3,), (4,)], ["customer_id"])
+        engine = make_real_engine(SparkBackend(spark=spark, is_local=True))
+
+        try:
+            orders.createOrReplaceTempView("cross_test_orders")
+            customers.createOrReplaceTempView("cross_test_customers")
+            result = engine.process_schema(schema)
+
+            assert result.count() == 12
+            assert set(result.columns) == {"order_id", "customer_id"}
+        finally:
+            spark.catalog.dropTempView("cross_test_orders")
+            spark.catalog.dropTempView("cross_test_customers")
+
     def test_same_keys_uses_list_join(self):
         """on_from == on_to → join(df_to, on=['id'], how='inner'). No .columns call."""
         df_a = MagicMock(name="df_a")

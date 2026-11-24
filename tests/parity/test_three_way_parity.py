@@ -156,6 +156,8 @@ for _join_type in ("inner", "left", "right", "full", "cross", "left_semi", "left
                   "type": _join_type}],
         "select_final": [["order_id", "order_id"], ["customer_id", "customer_id"]],
     }
+    if _join_type == "cross":
+        _schema["join"] = [{"table_from": "ord", "table_to": "cust", "type": "cross"}]
     if _join_type not in {"left_semi", "left_anti"}:
         _schema["select_final"].extend([["name", "customer_name"], ["segment", "segment"]])
     CASES.append(ParityCase(f"join_{_join_type}", yaml.safe_dump(_schema)))

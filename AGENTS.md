@@ -107,6 +107,13 @@ Canonical join types: `left`, `right`, `inner`, `full`, `cross`, `left_anti`, `l
 Accepted aliases include `full outer`/`full_outer`/`outer` → `full`, `anti`/`left anti` → `left_anti`,
 and `semi`/`left semi` → `left_semi`. `left_anti` and `left_semi` are Spark DataFrame-only.
 
+```yaml
+join:
+  - table_from: ord
+    table_to: cust
+    type: cross  # cross : no keys (refused at load); no USING deduplication, rename via fields:
+```
+
 ### Post-join filters (Plan 43)
 A top-level `where:` / `where_groups:` block filters the DataFrame **after** every join and
 **before** `business_rules` — it is never pushed down into a table's `filter:`, because on an

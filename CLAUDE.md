@@ -285,6 +285,7 @@ join:
                                           # aliases acceptes : full outer/full_outer/outer -> full,
                                           # anti/left anti -> left_anti, semi/left semi -> left_semi
                                           # left_anti et left_semi : Spark DataFrame only for now
+                                          # cross : no keys (refused at load); no USING deduplication, rename via fields:
 
 where:                                   # optional (Plan 43) — post-join filter, applied AFTER
   - "ord_status:equals:ACTIVE"           # every join and BEFORE business_rules. Never pushed down

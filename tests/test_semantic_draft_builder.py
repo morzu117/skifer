@@ -626,9 +626,7 @@ tables:
     alias: customers_src
 join:
   - table_from: orders_src
-    on_from: [customer_fk]
     table_to: customers_src
-    on_to: [customer_pk]
     type: cross
   - table_from: orders_src
     on_from: [customer_fk]
@@ -649,9 +647,9 @@ sink: {type: delta, schema: gold, table: fact_orders}
     assert metadata["relationship_candidate_rejections"] == [
         {
             "alias_left": "orders_src",
-            "keys_left": ["customer_fk"],
+            "keys_left": [None],
             "alias_right": "customers_src",
-            "keys_right": ["customer_pk"],
+            "keys_right": [None],
             "join_type": "cross",
             "reason": "join_type 'cross' is not eligible for automatic semantic proposals (v1 supports only inner/left).",
         },

@@ -36,6 +36,13 @@ class TestCorpusEmission:
             "schemas/.drafts/gold/margin_v2.yaml",
         }
         assert all(a.status == "written" for a in report.artifacts if a.kind == "draft")
+        margin = yaml.safe_load((tmp_path / "schemas/.drafts/gold/margin_v2.yaml").read_text())
+        cross_joins = [join for join in margin["join"] if join["type"] == "cross"]
+        assert cross_joins
+        for join in cross_joins:
+            assert isinstance(join["table_from"], str)
+            assert isinstance(join["table_to"], str)
+            assert "on_from" not in join and "on_to" not in join
 
     def test_bare_select_scripts_are_skipped_with_a_reason(self, tmp_path):
         report = emit_corpus(_corpus_statements(), out_dir=tmp_path)
