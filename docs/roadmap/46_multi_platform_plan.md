@@ -248,6 +248,51 @@ regex Spark vs littéral DuckDB). Elles ne sont **pas** masquées : chacune devi
 **Terminé quand.** Parité verte sur toutes les ops `supported` ; chaque écart trouvé a sa ligne de
 matrice ; exemple exécuté par la suite.
 
+**Réalisé le 24 novembre 2026** (branche `feat/plan46-46.3-parity`, quatre commits Codex + trois
+correctifs issus de trois passes de review sans outil, gate 4307 tests). Écarts et décisions, assumés :
+
+- **Le harnais a trouvé un vrai défaut produit avant d'être fini.** Sur `type: cross`, le chemin
+  DataFrame appliquait les clés déclarées (24 lignes) là où le SQL compilé rendait le produit
+  cartésien (360). Décision en deux temps : le SQL est la référence, le DataFrame est aligné ; puis,
+  à la review, des clés sur un `cross` sont **refusées au chargement** (un produit cartésien n'a pas
+  de condition d'égalité) — forme sans clé `table_from: ord` / `table_to: cust`. Le mapper de
+  l'analyzer émettait des clés factices sur un `CROSS JOIN` : il émet désormais la forme sans clé,
+  sans quoi ses propres drafts auraient été refusés.
+- **Matrice DuckDB : 48 `Supported`, 7 `Conditional`, 2 `Refused`.** Le défaut reste `Conditional` ;
+  une clé n'est `Supported` que si elle figure dans la liste explicite `_DUCKDB_PROVEN`, gardée par un
+  test : exercée par au moins un cas vert et jamais citée dans la condition d'un cas. La première
+  version promouvait par défaut tout ce qui n'était pas listé — une clé ajoutée plus tard aurait été
+  `Supported` sans preuve (interdit n° 3).
+- **23 cas à trois voies + 3 pins de divergence**, 246 tests sur session Spark réelle. Les sept
+  `Conditional` portent un écart **mesuré**, pas supposé : `cast` (prouvé pour texte numérique →
+  double, entier → string, decimal → double ; ailleurs troncature contre arrondi, et un cast
+  invalide lève sous ANSI côté Spark là où le pin DuckDB observe `NULL`), `avg` (type de retour sur
+  `DECIMAL`), `first`/`last` (non déterministes sans ordre, sur des groupes multi-lignes),
+  `split`, `to_date`, et `approx_count_distinct` — exact sur le jeu canonique, mais seulement parce
+  qu'un groupe n'y porte jamais plus de deux valeurs distinctes : le motif le dit plutôt que de
+  promouvoir.
+- La comparaison est **exacte** : la tolérance numérique et les colonnes « approx » de la première
+  version ne servaient à aucun cas et ont été supprimées ; un cas dont le résultat est vide échoue.
+  La fixture retire ses vues temporaires et vérifie que la session est en mode ANSI.
+- L'exemple 26 **asserte** ses lignes, ses totaux et le refus d'`op:expr` sur DuckDB ; son README
+  reproduit la sortie réelle.
+- Review : retenus — défaut `Supported` implicite, fuite de vues temporaires, exemple non asserté,
+  condition de `cast` non épinglée, tolérance morte, clés d'un `cross` seulement averties, motifs
+  trop affirmatifs. Déclinés, avec raison : changer la règle `exercised` (une clé citée dans une
+  condition ne doit pas être promue par un autre cas), l'import privé du fabricant de moteur et les
+  imports `pyspark`/`duckdb` au niveau module, cohérents avec les tests existants (`duckdb` est dans
+  `[dev]`).
+- Piège appris : une erreur ANSI de Spark crée un `PySparkLogger` non propagé ; pytest y attache son
+  handler de capture, dont `addHandler` remplace le formateur par du JSON — un test de tracing sans
+  rapport échouait **après** le nouveau pin, selon l'ordre. Corrigé dans le pin seul (registre de
+  loggers restauré) ; ni le test de tracing ni le code de production n'ont bougé.
+- Reporté, noté ici : la parité du vocabulaire SQL du **résolveur sémantique** (pas la grammaire
+  pipeline) → 46.4, où un connecteur réel l'exécute ; les valeurs de filtre rendues en littéraux de
+  chaîne (`HAVING nb_orders > '1'`, comportement antérieur du compilateur, toléré par coercition
+  implicite sur les deux moteurs) → à trancher avec 46.4 ; Snowflake reste entièrement
+  `Conditional`/`Refused` jusqu'à 46.6 ; l'enum de jointure du JSON Schema ignore
+  `left_semi`/`left_anti` (antérieur à ce plan).
+
 ### 46.4 — Connecteur DuckDB v0.1 dans `skifer-duckdb` (M, 4 à 6 h)
 
 **But.** Premier runtime hors Spark, implémentant les trois contrats de 46.2 contre `skifer>=4.2`.
