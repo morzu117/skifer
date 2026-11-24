@@ -4,6 +4,8 @@ Core Engine Module. Handles the execution flow: Schema Parsing -> Processing -> 
 
 from __future__ import annotations
 
+from skifer.core import loaders  # noqa: F401 — registers built-in loaders
+
 import logging
 import re
 import yaml

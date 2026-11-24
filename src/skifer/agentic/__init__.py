@@ -1,16 +1,43 @@
-from .agent import GenBIAgent
-from .resolver import SemanticQuery, QueryResolver, ResolvedQuery, SemanticQueryError
-from .models import (
-    AgentResponse, CapabilityRequest, CapabilityResponse, FormattedResult, ResponseFormat,
-    LineageResponse, QualityResponse, DictionaryResponse, BuilderResponse,
-)
-from .history import HistoryEntry, SessionHistory
-from .exporter import HistoryExporter
-from .lineage_agent import LineageAgent
-from .quality_agent import QualityAgent
-from .dictionary_agent import DictionaryAgent
-from .hub import AgenticHub
-from .user_profile import UserProfile
+import importlib
+
+_EXPORTS = {
+    "GenBIAgent": "agent",
+    "SemanticQuery": "resolver",
+    "QueryResolver": "resolver",
+    "ResolvedQuery": "resolver",
+    "SemanticQueryError": "resolver",
+    "AgentResponse": "models",
+    "CapabilityRequest": "models",
+    "CapabilityResponse": "models",
+    "FormattedResult": "models",
+    "ResponseFormat": "models",
+    "LineageResponse": "models",
+    "QualityResponse": "models",
+    "DictionaryResponse": "models",
+    "BuilderResponse": "models",
+    "HistoryEntry": "history",
+    "SessionHistory": "history",
+    "HistoryExporter": "exporter",
+    "LineageAgent": "lineage_agent",
+    "QualityAgent": "quality_agent",
+    "DictionaryAgent": "dictionary_agent",
+    "AgenticHub": "hub",
+    "UserProfile": "user_profile",
+}
+
+
+def __getattr__(name):
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    obj = getattr(importlib.import_module(f"{__name__}.{module}"), name)
+    globals()[name] = obj
+    return obj
+
+
+def __dir__():
+    return sorted(__all__)
+
 
 __all__ = [
     "GenBIAgent",
