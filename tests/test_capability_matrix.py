@@ -52,17 +52,46 @@ def test_status_is_frozen(status):
 @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
 def test_explicit_conditional_reasons(target):
     reasons = {
-        "op:split": (
-            "Spark split() is a regex split; sqlglot maps it to str_split_regex, "
-            "verify the separator semantics in parity" if target == "duckdb" else
-            "Spark split() takes a regex, the target splits on a literal separator"
-        ),
+        "op:split": "Spark split() takes a regex, the target splits on a literal separator",
         "op:to_date": "date format strings differ between Spark and the target",
         "op:cast": (
-            "type names are rendered by sqlglot and Spark casts return NULL on failure "
-            "where the target raises; verify in parity"
+            "type names are rendered by sqlglot; cast failure semantics are unverified until parity (Plan 46.6)"
         ),
     }
+    if target == "duckdb":
+        reasons = {
+            "op:cast": (
+                'TRY_CAST on DuckDB: a double->int cast truncates on Spark but rounds on DuckDB, and '
+                'an unconvertible value raises on Spark (ANSI) but yields NULL on DuckDB; parity '
+                'proven for lossless casts only (numeric text->double, number->string, '
+                'decimal->double)'
+            ),
+            "op:split": (
+                'both engines split on a regex (Spark split, DuckDB str_split_regex) and sqlglot '
+                'shifts the 0-based index; parity proven for a literal separator only, Java and RE2 '
+                'regex syntax diverge beyond that'
+            ),
+            "op:to_date": (
+                'sqlglot translates Java date tokens to strptime; parity proven for yyyy-MM-dd and '
+                'dd/MM/yyyy only'
+            ),
+            "agg:avg": (
+                'AVG over DECIMAL yields DECIMAL(p+4,s+4) on Spark and DOUBLE on DuckDB; parity proven '
+                'over DOUBLE inputs only'
+            ),
+            "agg:first": (
+                'order-dependent without ORDER BY; parity proven only when every group holds a single '
+                'non-null distinct value'
+            ),
+            "agg:last": (
+                'order-dependent without ORDER BY; parity proven only when every group holds a single '
+                'non-null distinct value'
+            ),
+            "agg:approx_count_distinct": (
+                'approximate algorithms differ by engine; parity proven exact on the canonical dataset '
+                '(cardinalities below 50)'
+            ),
+        }
     for key, reason in reasons.items():
         assert capability(target, key) == Conditional(reason)
 

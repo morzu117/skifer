@@ -1,4 +1,4 @@
-"""Explicit SQL capability declarations, pending executed parity in Plan 46.3."""
+"""Explicit SQL capabilities: DuckDB parity executed (46.3), Snowflake pending (46.6)."""
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -45,8 +45,8 @@ _KEYS = frozenset({
 
 _matrix: dict[str, dict[str, Status]] = {
     "databricks": {key: Supported() for key in _KEYS},
-    "duckdb": {key: Conditional("parity not executed yet (Plan 46.3)") for key in _KEYS},
-    "snowflake": {key: Conditional("parity not executed yet (Plan 46.3)") for key in _KEYS},
+    "duckdb": {key: Supported() for key in _KEYS},
+    "snowflake": {key: Conditional("parity not executed yet (Plan 46.6)") for key in _KEYS},
 }
 for _target in ("duckdb", "snowflake"):
     for _key in ("filter:sql", "op:expr"):
@@ -60,8 +60,7 @@ for _target in ("duckdb", "snowflake"):
         "date format strings differ between Spark and the target"
     )
     _matrix[_target]["op:cast"] = Conditional(
-        "type names are rendered by sqlglot and Spark casts return NULL on failure "
-        "where the target raises; verify in parity"
+        "type names are rendered by sqlglot; cast failure semantics are unverified until parity (Plan 46.6)"
     )
 for _key in ("agg:first", "agg:last"):
     _matrix["snowflake"][_key] = Refused(
@@ -70,9 +69,35 @@ for _key in ("agg:first", "agg:last"):
 for _key in ("join:left_semi", "join:left_anti"):
     _matrix["snowflake"][_key] = Refused("no SEMI/ANTI JOIN syntax on this target")
 
+_matrix["duckdb"]["op:cast"] = Conditional(
+    'TRY_CAST on DuckDB: a double->int cast truncates on Spark but rounds on DuckDB, and an '
+    'unconvertible value raises on Spark (ANSI) but yields NULL on DuckDB; parity proven for '
+    'lossless casts only (numeric text->double, number->string, decimal->double)'
+)
 _matrix["duckdb"]["op:split"] = Conditional(
-    "Spark split() is a regex split; sqlglot maps it to str_split_regex, "
-    "verify the separator semantics in parity"
+    'both engines split on a regex (Spark split, DuckDB str_split_regex) and sqlglot shifts the '
+    '0-based index; parity proven for a literal separator only, Java and RE2 regex syntax diverge '
+    'beyond that'
+)
+_matrix["duckdb"]["op:to_date"] = Conditional(
+    'sqlglot translates Java date tokens to strptime; parity proven for yyyy-MM-dd and dd/MM/yyyy '
+    'only'
+)
+_matrix["duckdb"]["agg:avg"] = Conditional(
+    'AVG over DECIMAL yields DECIMAL(p+4,s+4) on Spark and DOUBLE on DuckDB; parity proven over '
+    'DOUBLE inputs only'
+)
+_matrix["duckdb"]["agg:first"] = Conditional(
+    'order-dependent without ORDER BY; parity proven only when every group holds a single non-null '
+    'distinct value'
+)
+_matrix["duckdb"]["agg:last"] = Conditional(
+    'order-dependent without ORDER BY; parity proven only when every group holds a single non-null '
+    'distinct value'
+)
+_matrix["duckdb"]["agg:approx_count_distinct"] = Conditional(
+    'approximate algorithms differ by engine; parity proven exact on the canonical dataset '
+    '(cardinalities below 50)'
 )
 MATRIX = MappingProxyType({
     target: MappingProxyType(entries) for target, entries in _matrix.items()
