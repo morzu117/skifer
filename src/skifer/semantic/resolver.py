@@ -665,7 +665,7 @@ class QueryResolver:
                     "timestamp",
                     "datetime",
                 }:
-                    from ..semantic.planner import DimensionRef
+                    from .planner import DimensionRef
 
                     return DimensionRef(
                         model_key=model_key,

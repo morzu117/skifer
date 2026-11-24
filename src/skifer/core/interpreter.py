@@ -21,6 +21,7 @@ from skifer.core.sandbox import SandboxResolver
 from skifer.core.rule_analyzer import RuleAnalyzer
 from skifer.core.rule_planner import RulePlanner
 from skifer.core.rule_executor import RuleExecutor
+from skifer.core import loaders  # noqa: F401 — registers built-in loaders where they are consumed
 
 if TYPE_CHECKING:
     from skifer.core.context import ExecutionContext

@@ -161,6 +161,9 @@ markers = [
 [tool.importlinter]
 root_package = "skifer"
 include_external_packages = true
+# Contracts guard runtime structure: TYPE_CHECKING imports never execute or load modules.
+# tests/test_import_boundaries.py verifies actual loads in fresh interpreters.
+exclude_type_checking_imports = true
 
 [[tool.importlinter.contracts]]
 name = "Language core (op_catalog, constants, ir) stays free of the governed layer and Spark"

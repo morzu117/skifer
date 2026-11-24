@@ -1,4 +1,10 @@
 import importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .core import SkiferEngine
+    from .registry import RuleRegistry
+    from .config import ConfigurationManager
 
 _EXPORTS = {
     "SkiferEngine": "core",

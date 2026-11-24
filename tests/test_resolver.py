@@ -624,7 +624,6 @@ def test_wellformed_filter_values_keep_their_previous_rendering(
 
 
 def test_legacy_resolver_import_warns_and_preserves_identity():
-    import importlib
     import skifer.semantic.resolver
 
     sys.modules.pop("skifer.agentic.resolver", None)
@@ -632,5 +631,10 @@ def test_legacy_resolver_import_warns_and_preserves_identity():
         DeprecationWarning,
         match=r"skifer\.agentic\.resolver moved to skifer\.semantic\.resolver",
     ):
-        legacy = importlib.import_module("skifer.agentic.resolver")
-    assert legacy.QueryResolver is skifer.semantic.resolver.QueryResolver
+        import skifer.agentic.resolver as old
+    assert old is skifer.semantic.resolver
+    for name in (
+        "SemanticQuery", "QueryResolver", "ResolvedQuery",
+        "SemanticQueryError", "SelectedExpression",
+    ):
+        assert getattr(old, name) is getattr(skifer.semantic.resolver, name)

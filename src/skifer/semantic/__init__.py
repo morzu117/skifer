@@ -1,4 +1,33 @@
 import importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .semantic import SemanticEngine
+    from .builder import SemanticBuilder
+    from .domain import EntityDef
+    from .domain import EntityRef
+    from .domain import RelationshipDef
+    from .draft_builder import SemanticDraftBuilder
+    from .llm_provider import LLMProvider
+    from .llm_provider import get_llm_provider
+    from .validator import SemanticValidator
+    from .validator import ValidationResult
+    from .extractor import NotebookExtractor
+    from .extractor import RuleInspector
+    from .glossary import GlossaryReader
+    from .output_projection import OutputProjector
+    from .output_projection import ProjectedField
+    from .output_projection import ProjectedSchema
+    from .sync import SemanticChange
+    from .sync import SemanticConflict
+    from .sync import SemanticSynchronizer
+    from .sync import SyncReport
+    from .evidence import SourceEvidence
+    from .evidence import ExecutionResult
+    from .evidence import MetricEvidence
+    from .evidence import SemanticEvidence
+    from .evidence import SemanticExecutionError
+    from .evidence import SemanticResult
 
 _EXPORTS = {
     "SemanticEngine": "semantic",

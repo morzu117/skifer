@@ -1,4 +1,29 @@
 import importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .agent import GenBIAgent
+    from ..semantic.resolver import SemanticQuery
+    from ..semantic.resolver import QueryResolver
+    from ..semantic.resolver import ResolvedQuery
+    from ..semantic.resolver import SemanticQueryError
+    from .models import AgentResponse
+    from .models import CapabilityRequest
+    from .models import CapabilityResponse
+    from .models import FormattedResult
+    from .models import ResponseFormat
+    from .lineage_agent import LineageAgent
+    from .models import LineageResponse
+    from .quality_agent import QualityAgent
+    from .models import QualityResponse
+    from .dictionary_agent import DictionaryAgent
+    from .models import DictionaryResponse
+    from .models import BuilderResponse
+    from .history import HistoryEntry
+    from .history import SessionHistory
+    from .exporter import HistoryExporter
+    from .hub import AgenticHub
+    from .user_profile import UserProfile
 
 _EXPORTS = {
     "GenBIAgent": ".agent",

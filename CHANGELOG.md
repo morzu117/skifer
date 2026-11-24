@@ -19,13 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Plan 46.1 — import boundaries.** Package exports in `skifer`, `core`, `semantic` and
-  `agentic` resolve lazily, preserving the public API; built-in loaders register when the
-  engine module loads. The deterministic query resolver moves to `skifer.semantic.resolver`,
+  `agentic` resolve lazily; loaders are registered when `skifer.core.core` or
+  `skifer.core.interpreter` is imported, i.e. on every path that can consume them; a bare
+  `import skifer` no longer registers them. The deterministic query resolver moves to `skifer.semantic.resolver`,
   with a deprecated compatibility shim at `skifer.agentic.resolver`. Three `import-linter`
   contracts protect the language core, the semantic-to-agentic dependency boundary and lazy
   package roots. Subprocess boundary tests cover language imports, public exports and loader
   registration. `import skifer.core.op_catalog` now loads **3 Skifer modules instead of 87**;
   `sql_compiler` and `schema_loader` each load 6, all within the language core.
+  Re-exports remain visible to static tooling through `TYPE_CHECKING` imports. Import-linter
+  excludes these imports to guard the runtime package structure; as a tradeoff, cross-layer
+  typing dependencies are no longer checked by `lint-imports`. Fresh-interpreter tests in
+  `tests/test_import_boundaries.py` verify the modules actually loaded.
+
+### Deprecated
+
+- `skifer.agentic.resolver` is a module alias of `skifer.semantic.resolver` and emits a
+  `DeprecationWarning` on import; it will be removed in the next major version.
 
 ## [4.1.0] - 2026-11-03
 
