@@ -1,0 +1,6 @@
+tables:
+  - name: silver.orders
+    alias: ord
+select_final:
+  - [order_id, order_id]
+  - [amount, doubled, ["expr:amount * 2"]]
