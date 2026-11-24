@@ -13,6 +13,7 @@ import pytest
 
 
 LANGUAGE_MODULES = {
+    "skifer.core.capability_matrix",
     "skifer.core.connector",
     "skifer.core.dialect",
     "skifer.core.constants",
@@ -58,6 +59,7 @@ def _run_python(source):
 @pytest.mark.parametrize(
     ("module", "measured_count"),
     [
+        ("skifer.core.capability_matrix", 3),
         ("skifer.core.connector", 4),
         ("skifer.core.dialect", 3),
         ("skifer.core.constants", 3),

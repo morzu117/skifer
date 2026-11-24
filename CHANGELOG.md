@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plan 46.2 — capability matrix.** Explicit supported/conditional/refused statuses
+  for every canonical operation and target, with catalog drift guards and named refusals.
 - **Plan 46.2 — dialect rendering.** Shared lazy sqlglot rendering for DuckDB and
   Snowflake, byte-preserving Databricks SQL and explicit dependency/rendering errors.
 - **Plan 46.2 — connector contracts.** Three runtime-checkable SQL protocols, frozen
