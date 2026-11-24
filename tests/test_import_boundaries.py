@@ -66,7 +66,7 @@ def _run_python(source):
         ("skifer.core.op_catalog", 3),
         ("skifer.core.ir", 4),
         ("skifer.core.schema_loader", 6),
-        ("skifer.core.sql_compiler", 6),
+        ("skifer.core.sql_compiler", 8),
         ("skifer.core.json_schema", 5),
         ("skifer.core.registry", 3),
         ("skifer.core.rule_analyzer", 4),

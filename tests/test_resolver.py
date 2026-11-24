@@ -656,3 +656,27 @@ def test_legacy_resolver_import_warns_and_preserves_identity():
             assert len(recorded) == 1, recorded
         """
     )
+
+
+def test_snowflake_dialect_is_accepted(model):
+    resolver = QueryResolver(dialect="snowflake")
+    result = resolver.resolve(
+        SemanticQuery(model_name="kpi_orders.erp", metrics=["gross_revenue"]), model, None,
+    )
+    assert result.dialect == "snowflake"
+    assert '`' not in result.full_sql
+
+
+def test_oracle_dialect_is_refused():
+    with pytest.raises(SemanticQueryError, match="oracle"):
+        QueryResolver(dialect="oracle")
+
+
+def test_missing_sqlglot_reports_shared_rendering_dependency(monkeypatch, model):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "sqlglot", None)
+    with pytest.raises(SemanticQueryError, match="sqlglot"):
+        QueryResolver(dialect="duckdb").resolve(
+            SemanticQuery(model_name="kpi_orders.erp", metrics=["gross_revenue"]), model, None,
+        )

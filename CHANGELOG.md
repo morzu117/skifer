@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plan 46.2 — compiler integration.** Public capability collection and guarded
+  dialect rendering for pipelines and semantic queries; explicit execution contracts
+  retain the warning-free legacy backend path used by Board.
 - **Plan 46.2 — capability matrix.** Explicit supported/conditional/refused statuses
   for every canonical operation and target, with catalog drift guards and named refusals.
 - **Plan 46.2 — dialect rendering.** Shared lazy sqlglot rendering for DuckDB and

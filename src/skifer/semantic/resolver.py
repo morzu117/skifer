@@ -16,6 +16,8 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from skifer.core.dialect import TARGETS, DialectError, render
+
 from .calendar import parse_iso_date
 
 logger = logging.getLogger(__name__)
@@ -151,7 +153,7 @@ class QueryResolver:
     """
 
     def __init__(self, planner=None, *, dialect: str = "databricks") -> None:
-        if dialect not in {"databricks", "duckdb"}:
+        if dialect not in TARGETS:
             raise SemanticQueryError(f"Unsupported semantic SQL dialect: {dialect!r}.")
         self.planner = planner
         self.dialect = dialect
@@ -200,30 +202,10 @@ class QueryResolver:
     def _target_sql(self, resolved: ResolvedQuery) -> ResolvedQuery:
         """Render the requested dialect after deterministic semantic compilation."""
         resolved.dialect = self.dialect
-        if self.dialect == "databricks":
-            return resolved
         try:
-            import sqlglot
-        except ImportError as exc:
-            raise SemanticQueryError(
-                "DuckDB SQL requires sqlglot: install skifer[analyzer]."
-            ) from exc
-
-        # sqlglot's Spark reader treats a doubled quote as two adjacent
-        # literals. Convert only inside complete SQL string literals before
-        # parsing; the output dialect restores the SQL-standard escaping.
-        literal = re.compile(r"'(?:[^']|'')*'")
-        source = literal.sub(
-            lambda match: match.group(0).replace("''", "\\'"),
-            resolved.full_sql,
-        )
-        try:
-            statements = sqlglot.transpile(source, read="spark", write="duckdb")
-        except sqlglot.SqlglotError as exc:
-            raise SemanticQueryError("Semantic SQL cannot be rendered as DuckDB SQL.") from exc
-        if len(statements) != 1:
-            raise SemanticQueryError("Semantic SQL must compile to one statement.")
-        resolved.full_sql = statements[0]
+            resolved.full_sql = render(resolved.full_sql, self.dialect)
+        except DialectError as exc:
+            raise SemanticQueryError(str(exc)) from exc
         return resolved
 
     def compile_plan(

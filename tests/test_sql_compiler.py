@@ -26,7 +26,10 @@ from skifer.core.sql_compiler import (
 
 
 def _compile(yaml_schema: str, **kwargs) -> str:
-    return compile_select(parse_to_ir(parse_schema(yaml_schema)), **kwargs)
+    parsed = parse_to_ir(parse_schema(yaml_schema))
+    result = compile_select(parsed, **kwargs)
+    assert result == compile_select(parsed, dialect="databricks", **kwargs)
+    return result
 
 
 def _single_table(body: str) -> str:
@@ -425,6 +428,7 @@ class TestParity:
 
         df_path = engine.process_schema(schema)
         sql_text = compile_select(parse_to_ir(schema))
+        assert sql_text == compile_select(parse_to_ir(schema), dialect="databricks")
         df_sql = spark.sql(sql_text)
 
         assert sorted(df_sql.columns) == sorted(df_path.columns), (
@@ -599,3 +603,104 @@ tables:
       - "status:equals:DONE"
 keep_all_columns: true
 """)
+
+
+class TestDialectRendering:
+    """Default identity is also checked by _compile and _assert_parity above,
+    so every pre-existing YAML case exercises explicit Databricks rendering.
+    """
+
+    def test_default_is_databricks(self):
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        assert compile_select(parsed) == compile_select(parsed, dialect="databricks")
+
+    def test_used_capabilities_includes_nested_ops(self):
+        from skifer.core.sql_compiler import used_capabilities
+
+        parsed = parse_to_ir(parse_schema('''
+tables:
+  - name: orders
+    alias: ord
+    filter: ["status:eq:DONE"]
+    filter_groups: [["amount:between:1,10"]]
+    fields:
+      - [country, country, [upper]]
+      - [amount, amount, [cast:double]]
+      - [id, id]
+  - name: customers
+    alias: cust
+    filter: ["id:is_not_null"]
+join:
+  - table_from: [ord, id]
+    table_to: [cust, id]
+    type: left outer
+where: ["amount:greater_than:0"]
+where_groups: [["country:not_equals:US"]]
+add_columns:
+  - [amount, rounded, ["when:less_than:5", "then:round:1", "else:nvl:0"]]
+  - source: country
+    target: label
+    ops:
+      - when: "in:FR,DE"
+        then: "lower"
+      - else: "lit:other"
+aggregate:
+  group_by: [country]
+  measures: [[rounded, total, sum]]
+  having: ["total:greater_than_equal:1"]
+'''))
+        assert used_capabilities(parsed) == {
+            "filter:equals", "filter:between", "filter:is_not_null",
+            "filter:greater_than", "filter:not_equals", "filter:less_than",
+            "filter:in", "filter:greater_than_equal", "op:upper", "op:cast",
+            "op:when", "op:then", "op:else", "op:round", "op:nvl",
+            "op:lower", "op:lit", "agg:sum", "join:left",
+        }
+
+    def test_select_final_raw_and_nested_capabilities(self):
+        from skifer.core.sql_compiler import used_capabilities
+
+        parsed = parse_to_ir(parse_schema(_single_table('''    filter: ["amount:sql:amount > 0"]
+select_final:
+  - [amount, out, ["when:is_null", "then:expr:1 + 2", "else:cast:double"]]
+''')))
+        assert used_capabilities(parsed) == {
+            "filter:sql", "filter:is_null", "op:when", "op:then", "op:else",
+            "op:expr", "op:cast",
+        }
+
+    def test_generated_null_filter_is_collected(self):
+        from skifer.core.sql_compiler import used_capabilities
+
+        parsed = parse_to_ir(parse_schema(_single_table('''    quality_checks:
+      drop_nulls_in: [amount]
+keep_all_columns: true
+''')))
+        assert used_capabilities(parsed) == {"filter:is_not_null"}
+
+    def test_snowflake_refuses_first_but_duckdb_renders(self):
+        parsed = parse_to_ir(parse_schema(_single_table('''aggregate:
+  group_by: [country]
+  measures: [[amount, first_amount, first]]
+''')))
+        with pytest.raises(
+            SqlCompilationError,
+            match="agg:first.*non-deterministic without ORDER BY; no portable equivalent",
+        ):
+            compile_select(parsed, dialect="snowflake")
+        assert 'FIRST(' in compile_select(parsed, dialect="duckdb")
+
+    def test_unknown_dialect(self):
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        with pytest.raises(SqlCompilationError, match="oracle"):
+            compile_select(parsed, dialect="oracle")
+
+    def test_dialect_error_is_chained(self, monkeypatch):
+        import sys
+        from skifer.core.dialect import DialectError
+
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        monkeypatch.setitem(sys.modules, "sqlglot", None)
+        with pytest.raises(SqlCompilationError, match="sqlglot") as raised:
+            compile_select(parsed, dialect="duckdb")
+        assert isinstance(raised.value.__cause__, DialectError)

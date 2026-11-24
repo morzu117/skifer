@@ -998,3 +998,35 @@ def test_to_dict_serializes_metric_certification():
     assert candidate["certification"] == "CANDIDATE"
     assert candidate["candidate_id"] == _CANDIDATE_ID
     json.dumps(payload)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_execution_contract_and_legacy_backend_are_warning_free(tmp_path, legacy):
+    import warnings
+    from skifer.core.connector import ExecutionContract, ExecutionResult
+
+    engine, legacy_backend = _semantic_engine(tmp_path)
+
+    class ContractBackend:
+        def execute_sql_with_metadata(self, sql):
+            return ExecutionResult({"dataframe": True}, statement_id="contract-statement")
+
+    backend = legacy_backend if legacy else ContractBackend()
+    assert isinstance(backend, ExecutionContract) is (not legacy)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        runtime = SemanticEngine.from_backend(
+            backend, models_dir=str(engine.models_dir), dialect="snowflake",
+        )
+        result = runtime.query_with_evidence(_query())
+    assert not any(issubclass(w.category, DeprecationWarning) for w in caught)
+    assert result.dataframe == {"dataframe": True}
+    assert result.evidence.sql_dialect == "snowflake"
+    if not legacy:
+        assert result.evidence.statement_id == "contract-statement"
+
+
+def test_semantic_engine_rejects_unknown_dialect(tmp_path):
+    engine, backend = _semantic_engine(tmp_path)
+    with pytest.raises(ValueError, match="oracle"):
+        SemanticEngine.from_backend(backend, models_dir=str(engine.models_dir), dialect="oracle")

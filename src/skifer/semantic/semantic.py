@@ -21,6 +21,9 @@ from uuid import uuid4
 
 import yaml
 
+from skifer.core.connector import ExecutionContract
+from skifer.core.dialect import TARGETS
+
 from ..observability.tracing import (
     TRACE_FORMAT_VERSION,
     NoOpTracer,
@@ -93,7 +96,7 @@ class SemanticEngine:
             certification_store: Store optionnel de certification sémantique.
         """
         self.core = core_engine
-        if dialect not in {"databricks", "duckdb"}:
+        if dialect not in TARGETS:
             raise ValueError(f"Unsupported semantic SQL dialect: {dialect!r}.")
         self.dialect = dialect
         # Note: self.spark supprimé — toutes les requêtes SQL passent par self.core._get_backend().execute_sql()
@@ -127,13 +130,13 @@ class SemanticEngine:
     ) -> "SemanticEngine":
         """Build a semantic runtime around an injected SQL backend, without Spark.
 
-        ``backend`` must expose ``execute_sql(sql)`` or
-        ``execute_sql_with_metadata(sql) -> ExecutionResult``. The caller owns
+        ``backend`` must satisfy ``ExecutionContract`` or expose the historical
+        ``execute_sql(sql)`` method (supported without deprecation). The caller owns
         connectivity and result limits. Certification remains enforced here.
         """
         if backend is None or not (
-            callable(getattr(backend, "execute_sql", None))
-            or callable(getattr(backend, "execute_sql_with_metadata", None))
+            isinstance(backend, ExecutionContract)
+            or callable(getattr(backend, "execute_sql", None))
         ):
             raise TypeError("A SQL backend with an execution method is required.")
         if catalog is not None and not isinstance(catalog, str):
