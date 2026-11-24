@@ -1,6 +1,8 @@
 """Import boundaries checked in fresh interpreters, without pytest's module cache."""
 
+import ast
 import importlib
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -40,9 +42,10 @@ def _run_python(source):
         capture_output=True,
         text=True,
         check=False,
+        timeout=120,
     )
     assert result.returncode == 0, (
-        f"Subprocess exited with {result.returncode}:\n{result.stderr}"
+        f"Subprocess exited with {result.returncode}:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     module_file, separator, output = result.stdout.partition("\n")
     assert separator, f"Missing skifer.__file__ in subprocess output: {result.stdout!r}"
@@ -69,7 +72,7 @@ def test_language_imports_stay_within_language(module, measured_count):
         import sys, {module}
         print('\\n'.join(sorted(
             m for m in sys.modules
-            if m.startswith(('skifer', 'pyspark', 'delta'))
+            if m == 'skifer' or m.startswith(('skifer.', 'pyspark', 'delta'))
         )))
         """
     ).splitlines()
@@ -80,7 +83,7 @@ def test_language_imports_stay_within_language(module, measured_count):
         for name in names
     ), names
     assert set(names) <= LANGUAGE_MODULES | {"skifer", "skifer.core"}, names
-    skifer_count = sum(name.startswith("skifer") for name in names)
+    skifer_count = sum(name == "skifer" or name.startswith("skifer.") for name in names)
     assert skifer_count == measured_count, (
         f"{module}: {skifer_count} Skifer modules loaded; "
         f"Plan 46.1 measured baseline: {measured_count}. {names}"
@@ -134,7 +137,7 @@ def test_engine_import_registers_builtin_loaders(module):
         import sys
         from skifer.core.registry import RuleRegistry
 
-        assert not RuleRegistry.list_loaders()
+        assert 'skifer.core.loaders' not in sys.modules
         import {module}
 
         assert 'skifer.core.loaders' in sys.modules
@@ -156,7 +159,7 @@ def test_package_roots_load_only_themselves(module, expected_modules):
     names = _run_python(
         f"""
         import sys, {module}
-        print('\\n'.join(sorted(m for m in sys.modules if m.startswith('skifer'))))
+        print('\\n'.join(sorted(m for m in sys.modules if m == 'skifer' or m.startswith('skifer.'))))
         """
     ).splitlines()
     assert set(names) == expected_modules
@@ -170,4 +173,77 @@ def test_all_public_exports_resolve(module):
         if name == "__version__":
             continue
         obj = getattr(package, name)
-        assert obj.__module__.startswith("skifer."), (module, name, obj)
+        target = _resolve_export_target(package, name)
+        assert obj.__module__ == target or obj.__module__.startswith(target + "."), (
+            module, name, obj, target
+        )
+
+
+def _resolve_export_target(package, name):
+    target = package._EXPORTS[name]
+    if not target.startswith("."):
+        target = "." + target
+    return importlib.util.resolve_name(target, package.__name__)
+
+
+@pytest.mark.parametrize("module", ["skifer", "skifer.core", "skifer.semantic", "skifer.agentic"])
+def test_type_checking_imports_match_lazy_exports(module):
+    package = importlib.import_module(module)
+    tree = ast.parse(Path(package.__file__).read_text())
+    blocks = [
+        node for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "TYPE_CHECKING"
+    ]
+    assert len(blocks) == 1
+    imports = {}
+    for node in ast.walk(blocks[0]):
+        if isinstance(node, ast.ImportFrom):
+            source = importlib.util.resolve_name(
+                "." * node.level + (node.module or ""), package.__name__
+            )
+            for alias in node.names:
+                imports[alias.asname or alias.name] = source
+    assert imports == {
+        name: _resolve_export_target(package, name)
+        for name in package._EXPORTS if name != "__version__"
+    }
+
+
+def test_registry_lists_builtin_loaders_without_engine():
+    output = _run_python(
+        """
+        import sys
+        from skifer import RuleRegistry
+
+        print(bool(RuleRegistry.list_loaders()))
+        assert 'skifer.core.core' not in sys.modules
+        assert 'skifer.core.interpreter' not in sys.modules
+        RuleRegistry.clear(loaders=True)
+        assert RuleRegistry.list_loaders() == []
+        """
+    )
+    assert output.strip() == "True"
+
+
+def test_registry_gets_builtin_loader_without_engine():
+    _run_python(
+        """
+        import sys
+        from skifer import RuleRegistry
+
+        loader = RuleRegistry.get_loader('load_and_union_tables')
+        assert loader.__module__ == 'skifer.core.loaders'
+        assert 'skifer.core.core' not in sys.modules
+        assert 'skifer.core.interpreter' not in sys.modules
+        RuleRegistry.clear(loaders=True)
+        try:
+            RuleRegistry.get_loader('load_and_union_tables')
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('get_loader re-registered a cleared loader')
+        assert RuleRegistry.list_loaders() == []
+        """
+    )

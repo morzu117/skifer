@@ -166,7 +166,7 @@ include_external_packages = true
 exclude_type_checking_imports = true
 
 [[tool.importlinter.contracts]]
-name = "Language core (op_catalog, constants, ir) stays free of the governed layer and Spark"
+name = "Language core (8 modules) stays free of the governed layer, the engine and Spark"
 type = "forbidden"
 source_modules = [
     "skifer.core.op_catalog",

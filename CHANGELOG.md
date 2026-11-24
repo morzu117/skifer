@@ -20,8 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Plan 46.1 — import boundaries.** Package exports in `skifer`, `core`, `semantic` and
   `agentic` resolve lazily; loaders are registered when `skifer.core.core` or
-  `skifer.core.interpreter` is imported, i.e. on every path that can consume them; a bare
-  `import skifer` no longer registers them. The deterministic query resolver moves to `skifer.semantic.resolver`,
+  `skifer.core.interpreter` is imported, i.e. on every path that can consume them;
+  `RuleRegistry.get_loader()` / `list_loaders()` register the built-in loaders on first call,
+  so a bare `import skifer` stays free of the engine without changing what the registry answers.
+  The deterministic query resolver moves to `skifer.semantic.resolver`,
   with a deprecated compatibility shim at `skifer.agentic.resolver`. Three `import-linter`
   contracts protect the language core, the semantic-to-agentic dependency boundary and lazy
   package roots. Subprocess boundary tests cover language imports, public exports and loader

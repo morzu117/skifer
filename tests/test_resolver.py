@@ -633,8 +633,26 @@ def test_legacy_resolver_import_warns_and_preserves_identity():
     ):
         import skifer.agentic.resolver as old
     assert old is skifer.semantic.resolver
-    for name in (
-        "SemanticQuery", "QueryResolver", "ResolvedQuery",
-        "SemanticQueryError", "SelectedExpression",
-    ):
-        assert getattr(old, name) is getattr(skifer.semantic.resolver, name)
+    from tests.test_import_boundaries import _run_python
+
+    _run_python(
+        """
+        import sys
+        import warnings
+
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            from skifer.agentic.resolver import QueryResolver
+            assert len(recorded) == 1, recorded
+            assert recorded[0].category is DeprecationWarning
+            assert str(recorded[0].message) == (
+                "skifer.agentic.resolver moved to skifer.semantic.resolver"
+            )
+            import skifer.semantic.resolver
+            assert QueryResolver is skifer.semantic.resolver.QueryResolver
+            from skifer.agentic import resolver
+            assert resolver is sys.modules["skifer.semantic.resolver"]
+            import skifer.agentic.resolver
+            assert len(recorded) == 1, recorded
+        """
+    )
