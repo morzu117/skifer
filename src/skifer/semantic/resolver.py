@@ -748,8 +748,14 @@ class QueryResolver:
 
     @staticmethod
     def _assert_safe_scalar(value: str, col_sql: str) -> None:
-        """Raise SemanticQueryError if value contains SQL-injection-risky characters."""
-        if re.search(r"[;'\"\-\-]", value):
+        """Raise SemanticQueryError if value contains SQL-injection-risky characters.
+
+        The risky set is a quote, a semicolon or the ``--`` comment sequence. A
+        lone hyphen is safe and common (ISO dates like ``2026-02-01``): the old
+        character class lumped a single hyphen in with the comment marker, so
+        every dated equality filter was refused.
+        """
+        if re.search(r"[;'\"]|--", value):
             raise SemanticQueryError(
                 f"Filter value for '{col_sql}' contains unsafe characters: {value!r}. "
                 "Only plain scalar values are accepted."

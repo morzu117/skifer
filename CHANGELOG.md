@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation even though `ir.VALID_JOIN_TYPES` accepts them and they are documented. The
   enum now covers every canonical join type; a regression test pins it as a superset of
   `ir.VALID_JOIN_TYPES`.
+- **Semantic resolver — ISO dates accepted in equality filters.** `QueryResolver`'s literal
+  safety check rejected any value containing a hyphen (its `[;'"\-\-]` class matched a single
+  `-` instead of the `--` comment sequence), so a dated `eq` filter such as `2026-02-01` was
+  refused even though the `date_from`/`date_to` bounds path accepted it. The check now blocks
+  a quote, a semicolon or the `--` sequence while allowing a lone hyphen; injection vectors
+  stay refused.
 
 ### Added
 - **Plan 46.6 — Snowflake integration.** Document the separate injected DB-API connector,

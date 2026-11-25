@@ -143,15 +143,17 @@ def test_effectifs_two_snapshots_pinned_by_group_by(atlas_runtime):
     assert pinned == [(date(2026, 2, 1), 30)]
 
 
-def test_effectifs_iso_equality_filter_currently_refused_before_sql(atlas_runtime):
-    # Existing resolver limitation (also reproduced on 0e0129a): its literal
-    # safety check rejects a single hyphen. This is not a DuckDB dialect error.
+def test_effectifs_iso_equality_filter_compiles_and_runs(atlas_runtime):
+    # A lone hyphen in an ISO date is safe: the eq filter now compiles and runs,
+    # matching the date_from/date_to bounds path above. Injection vectors (quote,
+    # semicolon, -- comment) stay refused — see the semantic domain e2e test.
     engine, backend = atlas_runtime
-    with pytest.raises(SemanticQueryError, match="contains unsafe characters"):
-        engine.query(SemanticQuery("effectifs", metrics=["effectif"], filters=[
-            {"column": "mois_snapshot", "operator": "eq", "value": "2026-02-01"},
-        ]))
-    assert backend.sql == []
+    result = engine.query(SemanticQuery(
+        "effectifs", metrics=["effectif"], group_by=["mois_snapshot"],
+        filters=[{"column": "mois_snapshot", "operator": "eq", "value": "2026-02-01"}],
+    ))
+    assert result == [(date(2026, 2, 1), 30)]
+    assert any("'2026-02-01'" in sql for sql in backend.sql)
 
 
 def test_effectifs_without_pinned_month_is_refused_before_sql(atlas_runtime):

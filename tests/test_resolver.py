@@ -149,6 +149,15 @@ def test_validate_valid_query_passes(resolver, model):
     resolver._validate(sq, model)
 
 
+def test_render_literal_accepts_iso_date_and_refuses_injection():
+    # A lone hyphen (ISO date like 2026-02-01) is safe and must render as a
+    # quoted literal; a quote, a semicolon or the -- comment sequence stay refused.
+    assert QueryResolver._render_literal("2026-02-01", "order_date") == "'2026-02-01'"
+    for bad in ("paid' OR 1=1 --", "x; DROP", "a--b", 'a"b'):
+        with pytest.raises(SemanticQueryError, match="unsafe characters"):
+            QueryResolver._render_literal(bad, "order_date")
+
+
 # ---------------------------------------------------------------------------
 # QueryResolver.resolve — construction SQL
 # ---------------------------------------------------------------------------
