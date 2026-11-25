@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "skifer-engine"
+version = "4.1.0"
+description = "Skifer runtime for Spark and Databricks: Spark/Delta execution of compiled pipelines, built-in loaders, streaming and materialized-view writes."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Julien Houbart", email = "houbartjulien80@gmail.com" }
+]
+keywords = ["spark", "pyspark", "delta-lake", "databricks", "runtime", "data-engineering"]
+requires-python = ">=3.10"
+# The runtime builds on the governed layer: its interpreter uses rule_planner and
+# the sandbox resolver, which ship in `skifer`. Installing skifer-engine is how a
+# user opts into Spark execution — it brings pyspark and delta with it.
+dependencies = [
+    "skifer==4.1.0",
+    "pyspark>=3.3.0",
+    "delta-spark>=2.0.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Topic :: Database",
+]
+
+[project.urls]
+Homepage = "https://github.com/morzu117/skifer"
+Repository = "https://github.com/morzu117/skifer"
+
+# One shared src/ tree. skifer-engine ships the six Spark-requiring modules; the
+# lazy package roots and the governed layer come from skifer-core / skifer.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../src/skifer/spark_factory.py" = "skifer/spark_factory.py"
+"../../src/skifer/core/spark_backend.py" = "skifer/core/spark_backend.py"
+"../../src/skifer/core/writer.py" = "skifer/core/writer.py"
+"../../src/skifer/core/loaders.py" = "skifer/core/loaders.py"
+"../../src/skifer/core/interpreter.py" = "skifer/core/interpreter.py"
+"../../src/skifer/core/rule_executor.py" = "skifer/core/rule_executor.py"

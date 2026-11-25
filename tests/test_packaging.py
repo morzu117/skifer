@@ -78,11 +78,53 @@ def test_importing_core_engine_does_not_eagerly_load_the_runtime():
     )
 
 
+RUNTIME_MODULES = {
+    "skifer/spark_factory.py",
+    "skifer/core/spark_backend.py",
+    "skifer/core/writer.py",
+    "skifer/core/loaders.py",
+    "skifer/core/interpreter.py",
+    "skifer/core/rule_executor.py",
+}
+
+
+def _force_include(pyproject_rel: str) -> dict:
+    wheel = _load(pyproject_rel)["tool"]["hatch"]["build"]["targets"]["wheel"]
+    return wheel.get("force-include", {})
+
+
 @pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
-def test_core_and_governed_wheels_share_one_version():
-    # The governed wheel pins skifer-core==<its version>; a drifting pair would be
-    # unco-installable. Keep the two [project] versions and the dependency aligned.
-    core = _load("packaging/skifer-core/pyproject.toml")["project"]["version"]
+def test_skifer_engine_wheel_ships_exactly_the_runtime_modules():
+    dests = set(_force_include("packaging/skifer-engine/pyproject.toml").values())
+    assert dests == RUNTIME_MODULES
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_packaging_wheels_are_disjoint():
+    # No source file may be shipped by two distributions — co-installing them would
+    # be a path collision, and which one wins is install-order-dependent.
+    seen: dict[str, str] = {}
+    duplicates = []
+    for pyproject in sorted((ROOT / "packaging").glob("*/pyproject.toml")):
+        name = pyproject.parent.name
+        for dest in _force_include(str(pyproject.relative_to(ROOT))).values():
+            if dest in seen:
+                duplicates.append((dest, seen[dest], name))
+            seen[dest] = name
+    assert not duplicates, f"files shipped by two wheels: {duplicates}"
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_all_packaging_distributions_share_one_version():
+    # The distributions pin each other by exact version; a drifting pair would be
+    # unco-installable. Keep every [project] version aligned.
+    versions = {}
+    for pyproject in sorted((ROOT / "packaging").glob("*/pyproject.toml")):
+        project = _load(str(pyproject.relative_to(ROOT)))["project"]
+        versions[project["name"]] = project["version"]
+    assert len(set(versions.values())) == 1, versions
+    shared = next(iter(versions.values()))
     governed = _load("packaging/skifer/pyproject.toml")["project"]
-    assert governed["version"] == core
-    assert f"skifer-core=={core}" in governed["dependencies"]
+    assert f"skifer-core=={shared}" in governed["dependencies"]
+    engine = _load("packaging/skifer-engine/pyproject.toml")["project"]
+    assert f"skifer=={shared}" in engine["dependencies"]

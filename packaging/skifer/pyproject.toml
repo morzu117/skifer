@@ -45,7 +45,10 @@ Changelog = "https://github.com/morzu117/skifer/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 schema = ["jsonschema>=4.0"]
-spark = ["pyspark>=3.3.0", "delta-spark>=2.0.0"]
+# Spark execution now lives in the skifer-engine distribution (it brings pyspark
+# and delta). `pip install skifer` stays Spark-free; `pip install skifer[spark]`
+# opts into the runtime.
+spark = ["skifer-engine==4.1.0"]
 llm-openai = ["openai>=1.0.0"]
 llm-anthropic = ["anthropic>=0.30.0"]
 llm-google = ["google-generativeai>=0.5.0"]
@@ -111,18 +114,12 @@ exclude = ["**/__pycache__", "**/*.pyc"]
 "../../src/skifer/sinks" = "skifer/sinks"
 "../../src/skifer/cli.py" = "skifer/cli.py"
 "../../src/skifer/registry.py" = "skifer/registry.py"
-"../../src/skifer/spark_factory.py" = "skifer/spark_factory.py"
 "../../src/skifer/utils.py" = "skifer/utils.py"
 "../../src/skifer/core/core.py" = "skifer/core/core.py"
 "../../src/skifer/core/config.py" = "skifer/core/config.py"
 "../../src/skifer/core/context.py" = "skifer/core/context.py"
 "../../src/skifer/core/catalog_inspector.py" = "skifer/core/catalog_inspector.py"
 "../../src/skifer/core/environment.py" = "skifer/core/environment.py"
-"../../src/skifer/core/interpreter.py" = "skifer/core/interpreter.py"
-"../../src/skifer/core/loaders.py" = "skifer/core/loaders.py"
 "../../src/skifer/core/patterns.py" = "skifer/core/patterns.py"
-"../../src/skifer/core/rule_executor.py" = "skifer/core/rule_executor.py"
 "../../src/skifer/core/rule_planner.py" = "skifer/core/rule_planner.py"
 "../../src/skifer/core/sandbox.py" = "skifer/core/sandbox.py"
-"../../src/skifer/core/spark_backend.py" = "skifer/core/spark_backend.py"
-"../../src/skifer/core/writer.py" = "skifer/core/writer.py"
