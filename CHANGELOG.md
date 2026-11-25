@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Pipeline JSON Schema — `left_anti` / `left_semi` join types.** The `JoinDef.type`
+  enum in `generate_json_schema()` (and the committed `schemas/skifer-pipeline.schema.json`)
+  omitted `left_anti` and `left_semi`, so a pipeline declaring either failed JSON Schema
+  validation even though `ir.VALID_JOIN_TYPES` accepts them and they are documented. The
+  enum now covers every canonical join type; a regression test pins it as a superset of
+  `ir.VALID_JOIN_TYPES`.
+
 ### Added
 - **Plan 46.6 — Snowflake integration.** Document the separate injected DB-API connector,
   exact-case quoted identifiers, fake-cursor protocol tests and 20 compiled / 3 refused

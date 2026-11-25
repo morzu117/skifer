@@ -566,7 +566,7 @@ def generate_json_schema() -> dict:
                     "on_to": {"type": "string", "description": "Right join key column."},
                     "type": {
                         "type": "string",
-                        "enum": ["left", "inner", "right", "outer", "cross", "full"],
+                        "enum": ["left", "inner", "right", "outer", "cross", "full", "left_anti", "left_semi"],
                         "default": "left",
                     },
                 },
