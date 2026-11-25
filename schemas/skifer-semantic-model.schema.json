@@ -31,7 +31,10 @@
           "minLength": 1
         },
         "key": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "table": {
           "type": "string",
@@ -79,7 +82,7 @@
               },
               "then": {
                 "type": "string",
-                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
               }
             },
             {
@@ -89,7 +92,7 @@
               "then": {
                 "items": {
                   "type": "string",
-                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
                 },
                 "uniqueItems": true
               }
@@ -100,7 +103,7 @@
           "anyOf": [
             {
               "type": "string",
-              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
             },
             {
               "type": "null"
@@ -117,11 +120,11 @@
           "properties": {
             "column": {
               "type": "string",
-              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
             },
             "attribute": {
               "type": "string",
-              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
             }
           }
         },
@@ -142,7 +145,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
         },
         "sql": {
           "type": "string",
@@ -166,7 +169,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
         },
         "sql": {
           "type": "string",
@@ -212,7 +215,7 @@
                 "minItems": 1,
                 "items": {
                   "type": "string",
-                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
                 }
               }
             }
@@ -246,7 +249,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
         },
         "type": {
           "enum": [
@@ -259,13 +262,13 @@
           "oneOf": [
             {
               "type": "string",
-              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
             },
             {
               "type": "array",
               "items": {
                 "type": "string",
-                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
               },
               "minItems": 1,
               "uniqueItems": true
@@ -287,19 +290,19 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
         },
         "from_entity": {
           "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
         },
         "to_model": {
           "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
         },
         "to_entity": {
           "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
         },
         "cardinality": {
           "enum": [

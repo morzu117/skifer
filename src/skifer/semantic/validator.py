@@ -101,6 +101,9 @@ class SemanticValidator:
         """
         result = ValidationResult()
 
+        if not isinstance(model, dict):
+            result.add_error("model: doit être un dict")
+            return result
         self._check_string_fields(model, result)
         if not result.ok:
             return result
@@ -151,13 +154,17 @@ class SemanticValidator:
             return result
 
         models = yaml_content["models"]
+        if not isinstance(models, list):
+            result.add_error("models: doit être une liste")
+            return result
         if not models:
             result.add_error("La liste 'models' est vide")
             return result
 
+        sub_results = [self.validate(model) for model in models]
         available_models: dict[str, set[str]] = {}
-        for model in models:
-            if not isinstance(model, dict):
+        for model, sub_result in zip(models, sub_results):
+            if not sub_result.ok:
                 continue
             model_key = str(model.get("key") or model.get("name") or "")
             if model_key:
@@ -165,13 +172,12 @@ class SemanticValidator:
                     entity.name for entity in parse_entities(model) if entity.name
                 }
 
-        for i, model in enumerate(models):
-            sub_result = self.validate(model)
+        for i, (model, sub_result) in enumerate(zip(models, sub_results)):
             for err in sub_result.errors:
                 result.add_error(f"[model #{i}] {err}")
             for warn in sub_result.warnings:
                 result.add_warning(f"[model #{i}] {warn}")
-            if isinstance(model, dict):
+            if sub_result.ok:
                 self._check_relationship_targets(model, available_models, i, result)
 
         return result
@@ -227,20 +233,38 @@ class SemanticValidator:
         """Check raw values before domain parsing can coerce identifiers to strings."""
         def check(value, path):
             if not isinstance(value, str):
-                hint = " Quote boolean-looking YAML names (mettre entre guillemets)." if isinstance(value, bool) else ""
+                hint = ""
+                if isinstance(value, (bool, int, float)):
+                    hint = ' Mettre entre guillemets (quote YAML values), par exemple sql: "1".'
                 result.add_error(
                     f"{path}: expected a string, got {value!r} ({type(value).__name__}).{hint}"
                 )
 
         for field_name in ("name", "key", "table"):
-            if field_name in model:
+            if model.get(field_name) is not None:
                 check(model[field_name], field_name)
         for block in ("dimensions", "metrics"):
-            for index, item in enumerate(model.get(block, []) or []):
+            items = model.get(block, [])
+            if not isinstance(items, list):
+                result.add_error(f"{block}: doit être une liste")
+                continue
+            for index, item in enumerate(items):
                 if isinstance(item, dict):
-                    for field_name in ("name", "sql"):
+                    for field_name in ("name", "sql", "type"):
                         if field_name in item:
                             check(item[field_name], f"{block}[{index}].{field_name}")
+                    if block == "metrics":
+                        if "additivity" in item:
+                            check(item["additivity"], f"metrics[{index}].additivity")
+                        restricted = item.get("non_additive_dimensions")
+                        if isinstance(restricted, list):
+                            for offset, value in enumerate(restricted):
+                                check(value, f"metrics[{index}].non_additive_dimensions[{offset}]")
+                        filters = item.get("filters")
+                        if filters and not isinstance(filters, (list, dict, str)):
+                            result.add_error(f"metrics[{index}].filters: doit être une liste")
+                else:
+                    result.add_error(f"{block}[{index}]: doit être un dict")
         grain = model.get("grain")
         if isinstance(grain, list):
             for index, value in enumerate(grain):
@@ -307,7 +331,7 @@ class SemanticValidator:
                 result.add_error(f"Dimension #{i} : 'name' manquant")
             elif name in seen_names:
                 result.add_error(f"Dimension : nom en doublon '{name}'")
-            elif not _SAFE_IDENTIFIER.match(name):
+            elif not _SAFE_IDENTIFIER.fullmatch(name):
                 result.add_error(
                     f"Dimension '{name}' : nom invalide — un nom de dimension est interpolé "
                     "comme alias SQL et doit être un identifiant simple "
@@ -349,7 +373,7 @@ class SemanticValidator:
                 result.add_error(f"Métrique #{i} : 'name' manquant")
             elif name in seen_names:
                 result.add_error(f"Métrique : nom en doublon '{name}'")
-            elif not _SAFE_IDENTIFIER.match(name):
+            elif not _SAFE_IDENTIFIER.fullmatch(name):
                 result.add_error(
                     f"Métrique '{name}' : nom invalide — un nom de métrique est interpolé "
                     "comme alias SQL et doit être un identifiant simple "
@@ -419,7 +443,7 @@ class SemanticValidator:
         calendar_key = model.get("calendar")
         if calendar_key is None:
             return
-        if not isinstance(calendar_key, str) or not _SAFE_IDENTIFIER.match(calendar_key):
+        if not isinstance(calendar_key, str) or not _SAFE_IDENTIFIER.fullmatch(calendar_key):
             result.add_error(
                 f"[semantic.calendar] key '{calendar_key}' is invalid: calendar "
                 "keys must be safe SQL identifiers."
@@ -499,7 +523,7 @@ class SemanticValidator:
         seen: set[str] = set()
 
         for name in grain:
-            if not _SAFE_IDENTIFIER.match(name):
+            if not _SAFE_IDENTIFIER.fullmatch(name):
                 result.add_error(
                     f"[semantic.grain] '{name}' is invalid: grain entity names must be safe SQL identifiers."
                 )
@@ -523,7 +547,7 @@ class SemanticValidator:
                 result.add_error(
                     f"[semantic.entities] duplicate entity name '{entity.name}'."
                 )
-            elif not _SAFE_IDENTIFIER.match(entity.name):
+            elif not _SAFE_IDENTIFIER.fullmatch(entity.name):
                 result.add_error(
                     f"[semantic.entities] entity '{entity.name}' is invalid: entity names must be safe SQL identifiers."
                 )
@@ -544,7 +568,7 @@ class SemanticValidator:
 
             seen_columns: set[str] = set()
             for column in entity.key_columns:
-                if not _SAFE_IDENTIFIER.match(column):
+                if not _SAFE_IDENTIFIER.fullmatch(column):
                     result.add_error(
                         f"[semantic.entities] entity '{entity.name or '?'}' key column '{column}' is invalid: key columns must be safe SQL identifiers."
                     )
@@ -570,7 +594,7 @@ class SemanticValidator:
                 result.add_error(
                     f"[semantic.relationships] duplicate relationship name '{relationship.name}'."
                 )
-            elif not _SAFE_IDENTIFIER.match(relationship.name):
+            elif not _SAFE_IDENTIFIER.fullmatch(relationship.name):
                 result.add_error(
                     f"[semantic.relationships] relationship '{relationship.name}' is invalid: relationship names must be safe SQL identifiers."
                 )
@@ -582,7 +606,7 @@ class SemanticValidator:
                 result.add_error(
                     f"[semantic.relationships] relationship '{relationship.name or '?'}' must declare from_entity."
                 )
-            elif not _SAFE_IDENTIFIER.match(from_entity):
+            elif not _SAFE_IDENTIFIER.fullmatch(from_entity):
                 result.add_error(
                     f"[semantic.relationships] relationship '{relationship.name or '?'}' from_entity '{from_entity}' is invalid: entity names must be safe SQL identifiers."
                 )
@@ -596,7 +620,7 @@ class SemanticValidator:
                 result.add_error(
                     f"[semantic.relationships] relationship '{relationship.name or '?'}' must declare to_model."
                 )
-            elif not _SAFE_IDENTIFIER.match(to_model):
+            elif not _SAFE_IDENTIFIER.fullmatch(to_model):
                 result.add_error(
                     f"[semantic.relationships] relationship '{relationship.name or '?'}' to_model '{to_model}' is invalid: model keys must be safe SQL identifiers."
                 )
@@ -606,7 +630,7 @@ class SemanticValidator:
                 result.add_error(
                     f"[semantic.relationships] relationship '{relationship.name or '?'}' must declare to_entity."
                 )
-            elif not _SAFE_IDENTIFIER.match(to_entity):
+            elif not _SAFE_IDENTIFIER.fullmatch(to_entity):
                 result.add_error(
                     f"[semantic.relationships] relationship '{relationship.name or '?'}' to_entity '{to_entity}' is invalid: entity names must be safe SQL identifiers."
                 )

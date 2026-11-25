@@ -21,7 +21,7 @@ def generate_semantic_json_schema() -> dict:
     require ``SemanticValidator.validate_yaml``. Acceptance here is necessary,
     not sufficient. Case-insensitive aggregate types mirror ``str.lower()``.
     """
-    identifier = {"type": "string", "pattern": _SAFE_IDENTIFIER.pattern}
+    identifier = {"type": "string", "pattern": _SAFE_IDENTIFIER.pattern.removesuffix("$") + r"$(?![\s\S])"}
     text = {"type": "string", "minLength": 1}
     aggregate_pattern = "^(?:" + "|".join(
         "".join(f"[{c.lower()}{c.upper()}]" if c.isalpha() else c for c in value)
@@ -92,7 +92,7 @@ def generate_semantic_json_schema() -> dict:
         "type": "object", "required": ["name", "table", "dimensions", "metrics"],
         "properties": {
             # Model display names and keys are not identifier-pattern checked by the validator.
-            "name": text, "key": {"type": "string"}, "table": text,
+            "name": text, "key": {"type": ["string", "null"]}, "table": text,
             "dimensions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Dimension"}},
             "metrics": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Metric"}},
             "entities": {"type": ["array", "null"], "items": {"$ref": "#/$defs/Entity"}},

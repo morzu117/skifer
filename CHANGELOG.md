@@ -60,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Plan 46.5 — explicit SQL strings.** Numeric SQL is refused: `sql: 1` doit s'écrire `sql: "1"`; diagnostics explain quoting for numeric and boolean YAML values.
+
 - **Plan 46.1 — import boundaries.** Package exports in `skifer`, `core`, `semantic` and
   `agentic` resolve lazily; loaders are registered when `skifer.core.core` or
   `skifer.core.interpreter` is imported, i.e. on every path that can consume them;
@@ -84,8 +86,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Plan 46.5 — semantic string validation.** Reject non-string names, SQL expressions and
-  domain identifiers before coercion, with a quoting hint for YAML booleans. Existing
-  models and warning-only dimension types retain their validation behavior.
+  domain identifiers before coercion, with a quoting hint for YAML booleans.
+  Null model keys retain the name fallback and null required fields retain their historical
+  diagnostics. Malformed structures return named errors instead of exceptions; safe SQL
+  identifiers use full matches, including the generated schema. Unknown dimension types remain warnings.
 
 - **Plan 46.3 — cross joins reject declared keys at load.** Shared schema validation
   refuses keys on `type: cross` for both DataFrame and compiled SQL paths, including
