@@ -494,6 +494,17 @@ workflow de release, et **aucun** début avant 46.6 vert.
 **Terminé quand.** `pip install skifer` sans extra n'installe ni pyspark ni delta ; `pip install
 skifer-engine[spark]` rejoue les 25 exemples ; CHANGELOG porte la note de migration.
 
+**Décision de démarrage (Julien, 2026-11-25).** 46.7 démarre sur la base actuelle sans
+attendre 46.6 vert : Snowflake est déprioritisé (priorité = Databricks + SQL portable + GCP,
+Snowflake en dernier), donc le run d'intégration 46.6 n'est pas bloquant pour la découpe. Le
+gate « aucun début avant 46.6 vert » est explicitement levé pour ce motif, conformément à la
+décision 1 du reprise (« décider explicitement que 46.7 démarre sur la base actuelle »).
+
+**Nom du runtime — à réconcilier.** Le plan nomme le runtime `skifer-engine` (dépôt stub
+existant, quasi vide). L'intention produit exprimée est `skifer-databricks`. Décision à poser
+avant la phase 2 (migration du runtime) ; la phase 1 (`skifer-core` + `skifer`) en est
+indépendante. Par défaut : renommer/absorber le stub `skifer-engine` en `skifer-databricks`.
+
 ## 4. Séquencement, dépendances, estimation
 
 ```text
