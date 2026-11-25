@@ -359,30 +359,60 @@ commits Codex + trois correctifs de review, 79 tests ; côté cœur, branche
 **But.** Donner à Pierre une frontière stable sans accès en écriture au cœur : Atlas génère, Skifer
 valide et possède le format.
 
-**Livré côté cœur (M1).** Le générateur côté Atlas reste à réaliser.
-
-**Livrables.**
+**Créer.**
 - `schemas/skifer-semantic-model.schema.json` (versionné `$id` … `/v1`) : dérivé de
-  `SemanticValidator` ; nécessaire mais non suffisant. Le corpus de 38 documents épingle aucun faux
-  rejet sur les positifs, le refus de chaque négatif par le validateur et son étiquette
-  `schema_catches` exacte (14 négatifs capturés par le schéma seul, 8 par le validateur seulement).
-- `tests/fixtures/atlas/` : trois modèles sémantiques **reconstruits**, forme attendue du
-  futur pont, avec une copie du KPI Atlas dont la provenance est épinglée et un pipeline YAML de pont.
-  `test_atlas_contract.py` valide les trois modèles, vérifie la projection du premier par
-  `OutputProjector`, puis exécute des requêtes sur les vues nommées sur DuckDB.
+  `SemanticValidator` ; test d'équivalence : tout YAML accepté par le validateur passe le schema et
+  réciproquement sur un corpus de 20 modèles (positifs et négatifs).
+- `tests/fixtures/atlas/` : trois modèles sémantiques tels qu'Atlas les produit (fournis par Pierre ou
+  reconstruits depuis skifer-atlas), un pipeline YAML de pont, et `test_atlas_contract.py` qui les
+  valide, les projette par `OutputProjector`, et exécute la vue nommée sur DuckDB.
 - `docs/integrations/atlas/README.md` : recette « graphe virtuel Atlas → vue SQL nommée → modèle
   sémantique Skifer → certification », règles de réagrégation, qui possède quoi, processus de PR.
-- `skifer semantic validate --schema` : JSON Schema puis validateur complet, sans Spark, LLM ni réseau
-  (extra `[schema]`, codes 0/1). Le correctif préalable refuse les noms/SQL non textuels,
-  avec indication de mise entre guillemets des booléens YAML ; les types de dimension
-  non standard restent de simples warnings.
+- `skifer semantic validate --schema` : validation contre le JSON Schema sans Spark.
 
 **Dépend de.** Décision n° 1 (§5) : l'arbitrage est dans Atlas ; la recette le dit.
 
-**Critère côté cœur atteint.** À la publication de la version correspondante, Atlas pourra épingler
-`skifer>=4.2` au lieu de `v4.0.0` et valider ses modèles en CI avec
-`skifer semantic validate --schema` ; la fixture reconstruite est verte sur le cœur.
-La CI et le générateur Atlas ne sont pas livrés ici.
+**Terminé quand.** Atlas peut épingler `skifer>=4.2` au lieu de `v4.0.0` et valider ses modèles en CI
+avec `skifer semantic validate --schema` ; la fixture est verte des deux côtés.
+
+**Réalisé le 25 novembre 2026** (branche `feat/plan46-46.5-atlas-contract`, cinq commits Codex + trois
+correctifs de review, gate 4476 tests). **M1 est atteint côté cœur seulement** : rien n'a été fait
+dans Atlas. Écarts et décisions, assumés :
+
+- **La fixture est reconstruite, pas produite par Atlas.** Atlas n'émet aujourd'hui aucun modèle
+  sémantique Skifer, seulement des documents KPI (graphes). `tests/fixtures/atlas/` montre la forme
+  que le pont *devrait* produire : une copie gelée du KPI `revenu-net`, deux vues nommées, trois
+  modèles (`revenu_net`, référentiel `entites`, `effectifs` semi-additif), un pipeline de pont. Le
+  test lie la sortie du nœud KPI aux colonnes réelles de la vue DuckDB, à la projection du pont et
+  aux membres du modèle, et asserte des valeurs. « Verte des deux côtés » n'est donc **pas** tenu :
+  elle n'est verte que sur le cœur.
+- **Le JSON Schema est nécessaire, pas suffisant** — l'« équivalence » ci-dessus est abandonnée.
+  Le validateur porte des contrôles croisés (doublons, références de grain et de relation, `sql`
+  déjà agrégé) qu'un schéma n'exprime pas. À la place : *aucun faux rejet*, prouvé par un test
+  différentiel (2426 mutations des positifs, 1101 acceptées par le validateur, toutes acceptées par
+  le schéma — il a trouvé `key: null`, que le schéma refusait à tort) ; et un corpus de 44 documents
+  où chaque négatif épingle son erreur et dit si le schéma seul l'attrape (19) ou non (8). Là où le
+  validateur n'émet qu'un warning (type de dimension inconnu, clé inconnue), le schéma accepte.
+- **`skifer semantic validate --schema MODEL…` rend le verdict complet** : schéma par fichier puis
+  validateur sur **l'ensemble** des fichiers — la première version validait fichier par fichier et
+  laissait passer une relation cassée vers un autre fichier. Clé dupliquée entre fichiers = erreur ;
+  cible non fournie = warning explicite ; warnings du validateur affichés. Extra `[schema]`.
+  L'usage `PIPELINE MODEL` est inchangé à l'octet.
+- **Le validateur a été durci, hors plan** : il appliquait le motif d'identifiant à `str(name)`,
+  donc `name: no` (booléen YAML) devenait la dimension « False ». Noms, `sql`, clés d'entités,
+  grain et extrémités de relation doivent être des chaînes ; une forme inattendue est une erreur
+  nommée, plus un plantage ; les identifiants passent par `fullmatch` (`"abc\n"` passait).
+  **Changement de comportement assumé** : `sql: 1` doit s'écrire `sql: "1"`. `key: null` reste
+  accepté. Aucun modèle du dépôt n'a changé de verdict.
+- Version du schéma : `v1` tant qu'il ne fait que s'élargir, tout resserrement = `v2`. `$id` est un
+  identifiant, rien n'est servi à cette URL.
+- Reporté, noté ici : le générateur côté Atlas et sa CI ; `skifer>=4.2` n'est pas publié (la
+  recette donne l'installation depuis git) ; **`QueryResolver` refuse tout filtre dont la valeur
+  contient un tiret** — un `eq` sur une date ISO est rejeté avant SQL, donc une métrique
+  semi-additive ne peut pas être épinglée par égalité sur une dimension date (antérieur à ce plan,
+  épinglé par un test, à corriger dans le résolveur) ; trois modèles des exemples 03 et 25 sont
+  refusés par le validateur faute de `name` (antérieur, verdict épinglé) ; le handle de Pierre dans
+  CODEOWNERS.
 
 ### 46.6 — Connecteur Snowflake v0.1 dans `skifer-snowflake` (L, 8 à 12 h)
 
