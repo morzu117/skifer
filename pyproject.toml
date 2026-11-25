@@ -44,6 +44,7 @@ Changelog = "https://github.com/morzu117/skifer/blob/main/CHANGELOG.md"
 "Bug Tracker" = "https://github.com/morzu117/skifer/issues"
 
 [project.optional-dependencies]
+schema = ["jsonschema>=4.0"]
 # --- Runtime Spark / Databricks ---
 spark = [
     "pyspark>=3.3.0",

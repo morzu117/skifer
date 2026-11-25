@@ -186,7 +186,19 @@ skifer semantic sync PIPELINE --check         # report only, writes nothing
 skifer semantic sync PIPELINE --write-draft   # apply when the report is clean
 skifer semantic sync PIPELINE --promote       # draft → curated model + catalog
 skifer semantic validate PIPELINE MODEL       # cross-validate a model against a pipeline
+skifer semantic validate --schema MODEL [MODEL ...]  # standalone full model validation
 ```
+
+With `--schema`, every positional argument is a model document, without a pipeline.
+Install `pip install 'skifer[schema]'`. Validation runs the generated JSON Schema
+first, then `SemanticValidator`, locally without Spark, LLM or network access.
+The schema is necessary, not sufficient: cross-member references still require
+the validator. Warning-only metadata (including non-standard dimension types)
+remains accepted. The command reports each file and the JSON path for schema
+errors; it continues across files and returns `0` only when all pass, `1` on a
+validation or technical failure. Missing jsonschema reports the extra to install.
+The generator ships in the Python package; no repository `schemas/` file is needed.
+The historical `PIPELINE MODEL` command keeps its output and exit codes.
 
 Exit codes are the CI contract:
 

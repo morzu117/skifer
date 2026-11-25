@@ -1537,3 +1537,96 @@ assert "sqlglot" not in sys.modules
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+SCHEMA_CORPUS = Path(__file__).parent / "fixtures/semantic_schema_corpus"
+
+
+@pytest.mark.parametrize("filename,code,fragment", [
+    ("positive_unknown_dimension_type.yaml", 0, "valid (JSON Schema + SemanticValidator)"),
+    ("negative_numeric_sql.yaml", 1, "$.models[0].metrics[0].sql"),
+    ("negative_unknown_restriction.yaml", 1, "dimension non additive inconnue"),
+])
+def test_semantic_validate_schema_cli(filename, code, fragment):
+    path = str(SCHEMA_CORPUS / filename)
+    result = _run_cli("semantic", "validate", "--schema", path)
+    assert result.returncode == code, result.stderr
+    assert fragment in result.stdout
+    assert all(line.startswith(path + ":") for line in result.stdout.splitlines())
+
+
+def test_semantic_validate_schema_multiple_files_continues_after_errors(tmp_path):
+    missing = str(tmp_path / "missing.yaml")
+    invalid = str(SCHEMA_CORPUS / "negative_duplicate_metric.yaml")
+    valid = str(SCHEMA_CORPUS / "positive_synonyms.yaml")
+    result = _run_cli("semantic", "validate", "--schema", missing, invalid, valid)
+    assert result.returncode == 1
+    assert f"{missing}:" in result.stdout
+    assert f"{invalid}:" in result.stdout
+    assert f"{valid}: valid" in result.stdout
+    assert _run_cli("semantic", "validate", "--schema", valid, valid).returncode == 0
+
+
+def test_semantic_validate_schema_missing_dependency(monkeypatch, capsys):
+    from skifer.cli import run_semantic_schema_validate
+
+    real_import = builtins.__import__
+    def without_jsonschema(name, *args, **kwargs):
+        if name == "jsonschema":
+            raise ImportError("simulated missing optional dependency")
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", without_jsonschema)
+    path = str(SCHEMA_CORPUS / "positive_synonyms.yaml")
+    assert run_semantic_schema_validate([path]) == 1
+    message = capsys.readouterr().out
+    assert message.startswith(path + ":")
+    assert "pip install 'skifer[schema]'" in message
+
+
+def test_semantic_validate_schema_spark_llm_network_free():
+    path = str(SCHEMA_CORPUS / "positive_synonyms.yaml")
+    code = f"""
+import sys
+import socket
+socket.socket.connect = lambda *a, **k: (_ for _ in ()).throw(AssertionError('network forbidden'))
+from skifer.cli import run_semantic_schema_validate
+assert 'jsonschema' not in sys.modules
+assert run_semantic_schema_validate([{path!r}]) == 0
+assert not any(n == 'pyspark' or n.startswith('pyspark.') for n in sys.modules)
+assert not any(n in sys.modules for n in ('openai', 'anthropic', 'google.generativeai'))
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_semantic_validate_two_positionals_preserve_output(tmp_path, monkeypatch, capsys, invalid):
+    pipeline = tmp_path / "pipeline.yaml"
+    pipeline.write_text(BASE_SYNC_YAML, encoding="utf-8")
+    payload = _build_payload(tmp_path, BASE_SYNC_YAML)
+    if invalid:
+        payload["models"][0]["dimensions"][0]["sql"] = "missing_dimension"
+    model = tmp_path / "model.yaml"
+    _write_yaml(model, payload)
+    monkeypatch.chdir(tmp_path)
+    expected_code = run_semantic_validate(str(pipeline), str(model))
+    expected_output = capsys.readouterr().out
+    if invalid:
+        assert expected_code == 1
+        assert expected_output.startswith(
+            f"[semantic.validate] Validation failed for model '{model}' against pipeline '{pipeline}'.\n"
+        )
+    else:
+        assert expected_code == 0
+        assert expected_output == f"[semantic.validate] Model '{model}' is valid against pipeline '{pipeline}'.\n"
+    result = _run_cli("semantic", "validate", str(pipeline), str(model))
+    assert result.returncode == expected_code
+    assert result.stdout == expected_output
+
+
+def test_semantic_validate_schema_malformed_yaml(tmp_path):
+    path = tmp_path / "broken.yaml"
+    path.write_text("models: [", encoding="utf-8")
+    result = _run_cli("semantic", "validate", "--schema", str(path))
+    assert result.returncode == 1
+    assert result.stdout.startswith(str(path) + ":")

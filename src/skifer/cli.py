@@ -345,14 +345,12 @@ def main() -> None:
         help="Validate one semantic model YAML against one pipeline projection.",
     )
     semantic_validate_parser.add_argument(
-        "pipeline",
-        metavar="PIPELINE",
-        help="Pipeline YAML file path.",
+        "--schema", action="store_true",
+        help="Validate MODEL [MODEL ...] with JSON Schema and semantic rules, without a pipeline.",
     )
     semantic_validate_parser.add_argument(
-        "model",
-        metavar="MODEL",
-        help="Semantic model YAML file path.",
+        "paths", nargs="+", metavar="PATH",
+        help="PIPELINE MODEL, or MODEL [MODEL ...] with --schema.",
     )
 
     semantic_metric_views_parser = semantic_subparsers.add_parser(
@@ -719,6 +717,9 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if (args.command == "semantic" and args.semantic_command == "validate"
+            and not args.schema and len(args.paths) != 2):
+        parser.error("semantic validate requires PIPELINE MODEL, or --schema MODEL [MODEL ...]")
 
     if args.command == "validate":
         _run_validate(args)
@@ -2316,7 +2317,9 @@ def _run_semantic(args: argparse.Namespace) -> None:
     if args.semantic_command == "sync":
         sys.exit(run_semantic_sync(args.pipeline, mode=_semantic_sync_mode(args)))
     if args.semantic_command == "validate":
-        sys.exit(run_semantic_validate(args.pipeline, args.model))
+        if args.schema:
+            sys.exit(run_semantic_schema_validate(args.paths))
+        sys.exit(run_semantic_validate(*args.paths))
     if args.semantic_command == "metric-views":
         sys.exit(
             run_semantic_metric_views(
@@ -2573,6 +2576,43 @@ def _record_candidate_certified(candidate_id: str, model_key: str, models_dir: s
                 store.close()
             except Exception:
                 pass
+
+
+def run_semantic_schema_validate(model_paths: list[str]) -> int:
+    """Validate complete model documents locally: JSON Schema, then semantic rules."""
+    try:
+        import jsonschema
+    except ImportError:
+        for path in model_paths:
+            print(f"{path}: JSON Schema validation requires jsonschema. Install: pip install 'skifer[schema]'.")
+        return SEMANTIC_EXIT_ERROR
+
+    from skifer.semantic.json_schema import generate_semantic_json_schema
+    from skifer.semantic.validator import SemanticValidator
+
+    schema_validator = jsonschema.Draft7Validator(generate_semantic_json_schema())
+    failed = False
+    for path in model_paths:
+        try:
+            payload = _load_yaml_file(path)
+            errors = sorted(schema_validator.iter_errors(payload), key=lambda error: error.json_path)
+            if errors:
+                failed = True
+                for error in errors:
+                    print(f"{path}: {error.json_path}: {error.message}")
+                continue
+            result = SemanticValidator().validate_yaml(payload)
+            if not result.ok:
+                failed = True
+                for error in result.errors:
+                    print(f"{path}: {error}")
+                continue
+        except Exception as exc:
+            failed = True
+            print(f"{path}: {type(exc).__name__}: {exc}")
+            continue
+        print(f"{path}: valid (JSON Schema + SemanticValidator).")
+    return SEMANTIC_EXIT_ERROR if failed else SEMANTIC_EXIT_OK
 
 
 def run_semantic_validate(pipeline_path: str, model_path: str) -> int:

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plan 46.5 — standalone semantic validation.** `skifer semantic validate --schema MODEL
+  [MODEL ...]` runs the generated JSON Schema then the complete semantic validator,
+  without Spark or a pipeline. Optional `skifer[schema]` installs jsonschema; errors
+  identify the file and schema path. Legacy pipeline/model validation is unchanged.
 - **Plan 46.5 — semantic JSON Schema.** Publish the draft-07 semantic document contract,
   derived from validator/domain constants, with a non-drift guard and a labeled corpus
   distinguishing structural refusals from validator-only cross-checks. Warning-only
