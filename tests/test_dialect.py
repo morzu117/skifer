@@ -109,3 +109,59 @@ def test_unsupported_rendering_raises_with_cause(monkeypatch, target):
     with pytest.raises(DialectError) as raised:
         render("SELECT 1", target)
     assert raised.value.__cause__ is error
+
+
+def _quoted_snowflake_ast(sql):
+    tree = sqlglot.parse_one(sql, read="snowflake")
+    identifiers = list(tree.find_all(sqlglot.exp.Identifier))
+    assert identifiers
+    assert all(identifier.args.get("quoted") for identifier in identifiers)
+    return tree
+
+
+def test_snowflake_preserves_authored_case_and_other_targets():
+    sql = "SELECT UPPER(country) AS Country, amount * 2 AS Doubled FROM Db.Sales.Orders"
+    assert render(sql, "databricks") == sql
+    assert render(sql, "duckdb") == sql
+    out = render(sql, "snowflake")
+    assert out == (
+        'SELECT UPPER("country") AS "Country", "amount" * 2 AS "Doubled" '
+        'FROM "Db"."Sales"."Orders"'
+    )
+    _quoted_snowflake_ast(out)
+
+
+def test_snowflake_pipeline_identifiers():
+    from skifer.core.ir import parse_to_ir
+    from skifer.core.schema_loader import parse_schema
+    from skifer.core.sql_compiler import compile_select
+
+    parsed = parse_to_ir(parse_schema("""
+        tables: [{name: Db.Sales.Orders, alias: Ord}]
+        select_final: [[country, Country, [upper]]]
+        where: ["amount:greater_than:2"]
+    """))
+    tree = _quoted_snowflake_ast(compile_select(parsed, dialect="snowflake"))
+    assert {table.name for table in tree.find_all(sqlglot.exp.Table)} == {"Orders", "Ord"}
+    assert tree.find(sqlglot.exp.Upper).this.name == "country"
+
+
+@pytest.mark.parametrize("expression,node,column", [
+    ("UPPER(country)", sqlglot.exp.Upper, "country"),
+    ("amount * 2", sqlglot.exp.Mul, "amount"),
+])
+def test_snowflake_semantic_expressions(expression, node, column):
+    from skifer.semantic.resolver import QueryResolver, SemanticQuery
+
+    model = {
+        "key": "orders", "table": "Db.Sales.Orders",
+        "dimensions": [{"name": "Computed", "sql": expression, "type": "string"}],
+        "metrics": [{"name": "Revenue", "sql": "amount", "type": "sum"}],
+    }
+    query = SemanticQuery("orders", metrics=["Revenue"], group_by=["Computed"],
+                          filters=[{"column": "Computed", "operator": "eq", "value": "FR"}])
+    out = QueryResolver(dialect="snowflake").resolve(query, model, None).full_sql
+    tree = _quoted_snowflake_ast(out)
+    assert tree.find(node).find(sqlglot.exp.Column).name == column
+    assert tree.find(sqlglot.exp.Table).name == "Orders"
+    assert tree.find(sqlglot.exp.Where) is not None

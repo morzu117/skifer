@@ -84,6 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DeprecationWarning` on import; it will be removed in the next major version.
 
 ### Fixed
+- **Plan 46.6 — Snowflake identifier rendering.** Always quote table, column and alias
+  identifiers in the shared Snowflake renderer, preserving authored case for pipeline
+  and semantic SQL, including domain joins, filters, calendars and expressions.
+  Databricks and DuckDB rendering remains unchanged.
 
 - **Plan 46.5 — Atlas referential fixture.** Separate the unique entity lookup from two
   months of semi-additive headcount snapshots, preserving revenue through joins. Tie the

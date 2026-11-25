@@ -1,4 +1,8 @@
-"""Render common Spark SQL to a closed set of target dialects."""
+"""Render common Spark SQL to a closed set of target dialects.
+
+Snowflake always quotes identifiers and preserves their authored case. An unquoted
+Snowflake table created as orders is named ORDERS: models must spell it ORDERS.
+"""
 
 import re
 
@@ -34,6 +38,7 @@ def render(sql: str, target: str) -> str:
     try:
         statements = sqlglot.transpile(
             source, read="spark", write=target, unsupported_level=ErrorLevel.RAISE,
+            identify=target == "snowflake",
         )
     except SqlglotError as exc:
         raise DialectError(f"SQL cannot be rendered for '{target}'.") from exc

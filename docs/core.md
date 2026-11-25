@@ -724,6 +724,13 @@ persisted SQL definition.
 
 ## Portabilité SQL (connecteurs, matrice, dialectes) — Plan 46
 
+Le rendu Snowflake cite **toujours** les identifiants (tables, colonnes et alias),
+y compris ceux présents dans les expressions sémantiques, en préservant exactement
+la casse écrite. Une table créée sans guillemets dans Snowflake sous le nom `orders`
+s’appelle `ORDERS` : il faut écrire `ORDERS` dans le YAML. Cette règle est centralisée
+dans le rendu, pour les pipelines comme pour les requêtes sémantiques ; les rendus
+Databricks et DuckDB restent inchangés.
+
 Le langage compile une fois en SQL Spark, puis rend ce SQL pour l'une des trois
 cibles fermées : `databricks`, `duckdb`, `snowflake`. Installer
 `pip install 'skifer[dialects]'` pour les rendus DuckDB et Snowflake ; `sqlglot`
