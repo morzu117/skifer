@@ -734,6 +734,11 @@ class QueryResolver:
         the boundary: only scalars are renderable. Anything else used to be
         interpolated through ``str()``, which carried its quotes into the query
         verbatim.
+
+        Rendering is type-honest: numbers render unquoted, strings render as
+        quoted literals. The resolver does not know the column's declared type,
+        so a numeric comparison must receive a number (``1``) — the string
+        ``"1"`` renders as ``'1'`` by design, not as a bug.
         """
         if isinstance(value, (bool, int, float)):
             return str(value)

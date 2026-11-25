@@ -149,6 +149,15 @@ def test_validate_valid_query_passes(resolver, model):
     resolver._validate(sq, model)
 
 
+def test_render_literal_is_type_honest():
+    # Numbers render unquoted, strings render quoted. The resolver cannot know a
+    # column's declared type, so a numeric comparison must pass a number (1), not
+    # the string "1" — which renders as '1' by design. Documented contract.
+    assert QueryResolver._render_literal(1, "amount") == "1"
+    assert QueryResolver._render_literal(2.5, "amount") == "2.5"
+    assert QueryResolver._render_literal("1", "code") == "'1'"
+
+
 def test_render_literal_accepts_iso_date_and_refuses_injection():
     # A lone hyphen (ISO date like 2026-02-01) is safe and must render as a
     # quoted literal; a quote, a semicolon or the -- comment sequence stay refused.
