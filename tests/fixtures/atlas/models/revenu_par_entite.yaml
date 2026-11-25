@@ -1,0 +1,36 @@
+models:
+- name: revenu_par_entite
+  key: revenu_par_entite
+  table: main.atlas_revenu_net
+  description: Revenu net par mois fiscal et entité, fixture reconstruite.
+  dimensions:
+  - name: mois_fiscal
+    sql: mois_fiscal
+    type: date
+  - name: entite
+    sql: entite
+    type: string
+  metrics:
+  - name: revenu_net
+    sql: revenu_net
+    type: sum
+    additivity: additive
+  grain:
+  - observation
+  entities:
+  - name: observation
+    type: primary
+    key:
+    - mois_fiscal
+    - entite
+  - name: entite
+    type: foreign
+    key: entite
+  relationships:
+  - name: revenu_entites
+    from_entity: entite
+    to_model: entites
+    to_entity: entite
+    cardinality: many_to_one
+    join_type: left
+    verified_by_contract: true

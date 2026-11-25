@@ -1,0 +1,38 @@
+data_product:
+  id: atlas.revenu_net
+  version: 1.0.0
+  owner: finance
+contract:
+  grain:
+  - mois_fiscal
+  - entite
+  output:
+    mois_fiscal:
+      logical_type: date
+      required: true
+    entite:
+      logical_type: string
+      required: true
+    revenu_net:
+      logical_type: decimal
+      required: true
+semantic:
+  model_key: revenu_net
+  dimensions:
+  - mois_fiscal
+  - entite
+  default_time_dimension: mois_fiscal
+tables:
+- name: main.atlas_revenu_net
+  alias: revenu
+select_final:
+- - mois_fiscal
+  - mois_fiscal
+- - entite
+  - entite
+- - revenu_net
+  - revenu_net
+sink:
+  type: delta
+  schema: gold
+  table: atlas_revenu_net

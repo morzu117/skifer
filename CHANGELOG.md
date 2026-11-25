@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plan 46.5 — reconstructed Atlas contract fixture.** Preserve the source KPI with
+  checkout provenance and test three reconstructed semantic models, a bridge projection,
+  and named SQL views on raw DuckDB. Assert revenue, relation traversal and semi-additive
+  restrictions; no Atlas generator or publication is implied by this fixture.
 - **Plan 46.5 — standalone semantic validation.** `skifer semantic validate --schema MODEL
   [MODEL ...]` runs the generated JSON Schema then the complete semantic validator,
   without Spark or a pipeline. Optional `skifer[schema]` installs jsonschema; errors

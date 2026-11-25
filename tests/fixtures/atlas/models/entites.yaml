@@ -1,0 +1,28 @@
+models:
+- name: entites
+  key: entites
+  table: main.atlas_entites
+  description: Référentiel illustratif, une observation par entité.
+  grain:
+  - entite
+  entities:
+  - name: entite
+    type: primary
+    key: entite
+  dimensions:
+  - name: entite
+    sql: entite
+    type: string
+  - name: segment
+    sql: segment
+    type: string
+  - name: mois_snapshot
+    sql: mois_snapshot
+    type: date
+  metrics:
+  - name: effectif
+    sql: effectif
+    type: sum
+    additivity: semi_additive
+    non_additive_dimensions:
+    - mois_snapshot
