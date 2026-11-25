@@ -101,6 +101,10 @@ class SemanticValidator:
         """
         result = ValidationResult()
 
+        self._check_string_fields(model, result)
+        if not result.ok:
+            return result
+
         self._check_required_fields(model, result)
         if not result.ok:
             return result  # Stop early si champs de base manquants
@@ -218,6 +222,50 @@ class SemanticValidator:
     # Vérifications
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _check_string_fields(model: dict, result: ValidationResult) -> None:
+        """Check raw values before domain parsing can coerce identifiers to strings."""
+        def check(value, path):
+            if not isinstance(value, str):
+                hint = " Quote boolean-looking YAML names (mettre entre guillemets)." if isinstance(value, bool) else ""
+                result.add_error(
+                    f"{path}: expected a string, got {value!r} ({type(value).__name__}).{hint}"
+                )
+
+        for field_name in ("name", "key", "table"):
+            if field_name in model:
+                check(model[field_name], field_name)
+        for block in ("dimensions", "metrics"):
+            for index, item in enumerate(model.get(block, []) or []):
+                if isinstance(item, dict):
+                    for field_name in ("name", "sql"):
+                        if field_name in item:
+                            check(item[field_name], f"{block}[{index}].{field_name}")
+        grain = model.get("grain")
+        if isinstance(grain, list):
+            for index, value in enumerate(grain):
+                check(value, f"grain[{index}]")
+        for block, fields in (
+            ("entities", ("name",)),
+            ("relationships", ("name", "from_entity", "to_model", "to_entity")),
+        ):
+            items = model.get(block)
+            if not isinstance(items, list):
+                continue
+            for index, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+                for field_name in fields:
+                    if field_name in item:
+                        check(item[field_name], f"{block}[{index}].{field_name}")
+                if block == "entities" and "key" in item:
+                    key = item["key"]
+                    if isinstance(key, list):
+                        for offset, value in enumerate(key):
+                            check(value, f"entities[{index}].key[{offset}]")
+                    else:
+                        check(key, f"entities[{index}].key")
+
     def _check_required_fields(self, model: dict, result: ValidationResult) -> None:
         for field_name in ("name", "table"):
             if not model.get(field_name):
@@ -259,7 +307,7 @@ class SemanticValidator:
                 result.add_error(f"Dimension #{i} : 'name' manquant")
             elif name in seen_names:
                 result.add_error(f"Dimension : nom en doublon '{name}'")
-            elif not _SAFE_IDENTIFIER.match(str(name)):
+            elif not _SAFE_IDENTIFIER.match(name):
                 result.add_error(
                     f"Dimension '{name}' : nom invalide — un nom de dimension est interpolé "
                     "comme alias SQL et doit être un identifiant simple "
@@ -301,7 +349,7 @@ class SemanticValidator:
                 result.add_error(f"Métrique #{i} : 'name' manquant")
             elif name in seen_names:
                 result.add_error(f"Métrique : nom en doublon '{name}'")
-            elif not _SAFE_IDENTIFIER.match(str(name)):
+            elif not _SAFE_IDENTIFIER.match(name):
                 result.add_error(
                     f"Métrique '{name}' : nom invalide — un nom de métrique est interpolé "
                     "comme alias SQL et doit être un identifiant simple "

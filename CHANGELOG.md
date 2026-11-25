@@ -71,6 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Plan 46.5 — semantic string validation.** Reject non-string names, SQL expressions and
+  domain identifiers before coercion, with a quoting hint for YAML booleans. Existing
+  models and warning-only dimension types retain their validation behavior.
+
 - **Plan 46.3 — cross joins reject declared keys at load.** Shared schema validation
   refuses keys on `type: cross` for both DataFrame and compiled SQL paths, including
   compact join declarations. Keyless cross joins return the Cartesian product without

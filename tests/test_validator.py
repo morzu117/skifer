@@ -622,3 +622,73 @@ def test_rejects_relationships_declared_as_bare_names(validator):
 
 def test_model_without_any_domain_block_still_validates(validator):
     assert validator.validate_yaml(_domain_model()).ok is True
+
+
+@pytest.mark.parametrize("block", ["dimensions", "metrics"])
+@pytest.mark.parametrize("token", ["no", "on", "yes"])
+def test_yaml_boolean_names_require_quotes(validator, valid_model, block, token):
+    import yaml
+
+    valid_model[block][0]["name"] = yaml.safe_load(f"name: {token}")["name"]
+    result = validator.validate_yaml({"models": [valid_model]})
+    assert not result.ok
+    message = " ".join(result.errors)
+    assert "bool" in message and "guillemets" in message
+    assert repr(valid_model[block][0]["name"]) in message
+    valid_model[block][0]["name"] = yaml.safe_load(f'name: "{token}"')["name"]
+    assert validator.validate_yaml({"models": [valid_model]}).ok
+
+
+@pytest.mark.parametrize("block", ["dimensions", "metrics"])
+@pytest.mark.parametrize("value", [42, True, None, [], {}, ""])
+def test_sql_requires_nonempty_string(validator, valid_model, block, value):
+    valid_model[block][0]["sql"] = value
+    result = validator.validate_yaml({"models": [valid_model]})
+    assert not result.ok
+    assert "sql" in " ".join(result.errors)
+
+
+@pytest.mark.parametrize("field", ["name", "key", "table"])
+def test_model_identifiers_require_strings(validator, valid_model, field):
+    valid_model[field] = True
+    result = validator.validate_yaml({"models": [valid_model]})
+    assert not result.ok
+    assert field in " ".join(result.errors)
+    assert "bool" in " ".join(result.errors)
+
+
+@pytest.mark.parametrize("block,entry", [
+    ("grain", [True]),
+    ("entities", [{"name": True, "key": "id", "type": "primary"}]),
+    ("entities", [{"name": "item", "key": True, "type": "primary"}]),
+    ("entities", [{"name": "item", "key": [True], "type": "primary"}]),
+    *[("relationships", [{field: True}])
+      for field in ("name", "from_entity", "to_model", "to_entity")],
+])
+def test_domain_identifiers_are_checked_before_coercion(validator, valid_model, block, entry):
+    valid_model[block] = entry
+    result = validator.validate_yaml({"models": [valid_model]})
+    assert not result.ok
+    assert "bool" in " ".join(result.errors)
+    assert block in " ".join(result.errors)
+
+
+@pytest.mark.parametrize("filename,expected_errors", [
+    ("03_semantic_and_question/semantic_models/fact_orders.yaml", ["[model #0] Champ obligatoire manquant : 'name'"]),
+    ("14_domain_graph/semantic_models/customers.yaml", []),
+    ("14_domain_graph/semantic_models/order_lines.yaml", []),
+    ("14_domain_graph/semantic_models/orders.yaml", []),
+    ("15_genbi_agent/semantic_models/inventory.yaml", []),
+    ("15_genbi_agent/semantic_models/orders.yaml", []),
+    ("25_metric_candidates/semantic_models/sales_customers.yaml", ["[model #0] Champ obligatoire manquant : 'name'"]),
+    ("25_metric_candidates/semantic_models/sales_orders.yaml", ["[model #0] Champ obligatoire manquant : 'name'"]),
+])
+def test_existing_model_verdicts_unchanged(validator, filename, expected_errors):
+    """Pin all eight model documents present before 46.5, including legacy refusals."""
+    from pathlib import Path
+    import yaml
+
+    path = Path(__file__).resolve().parents[1] / "examples" / filename
+    result = validator.validate_yaml(yaml.safe_load(path.read_text(encoding="utf-8")))
+    assert result.errors == expected_errors
+    assert result.ok == (not expected_errors)
