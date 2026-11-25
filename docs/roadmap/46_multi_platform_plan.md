@@ -432,6 +432,41 @@ une option.
 **Terminé quand.** Suite verte sur faux curseur ; au moins un run d'intégration réel documenté dans le
 README du dépôt.
 
+**Réalisé le 25 novembre 2026 — sur faux curseur uniquement ; le critère « run d'intégration réel »
+n'est PAS satisfait** (dépôt `skifer-snowflake`, branche `feat/plan46-46.6-connector`, deux commits
+Codex `a7c5dde`, `d52e193` + deux de correction après review `01875d9`, `3b22868` ; cœur, branche
+`feat/plan46-46.6-snowflake-connector` : `1d15671`, `5049a31`, `f30c4b8` ; gate cœur 4486 verts,
+connecteur 125 verts et 32 sautés ; rien n'est poussé). Écarts et décisions, assumés :
+
+- **Aucun compte Snowflake : rien n'a été exécuté.** La matrice reste à 0 `Supported`, 51
+  `Conditional`, 6 `Refused` ; aucune capacité n'est promue. Le test d'intégration (20 cas de parité
+  + 12 scénarios dans un schéma jetable) est écrit et **n'a jamais tourné** : chaque scénario nomme
+  l'hypothèse du README qu'il lèverait. Ce qui est prouvé se limite au SQL émis et à la séquence
+  d'appels DB-API.
+- **Connexion injectée**, jamais configurée ni fermée par le connecteur ; identifiants de cible
+  toujours cités à casse exacte ; catalogue par `INFORMATION_SCHEMA` à paramètres liés.
+- **Changement du cœur non prévu par le plan** : le rendu Snowflake cite désormais tous les
+  identifiants (`identify=True`, `1d15671`). Sans cela le chemin sémantique émettait du SQL non cité
+  que Snowflake replie en majuscules, vers d'autres objets que ceux cités par le connecteur.
+  Conséquence épinglée et documentée, non corrigée : la casse doit être cohérente dans tout le YAML
+  (`AS Total … ORDER BY total` donne `"Total"` et `"total"`, deux identifiants distincts) ;
+  `localtimestamp` sans parenthèses devient une colonne.
+- **SQL figé** : 20 cas compilent, 3 sont refusés (`first`/`last`, `left_semi`, `left_anti`). Le
+  golden fige le rendu du cœur ; `REGEXP_SPLIT(...)[0]` et les formats `TRY_TO_DATE` sont ce que
+  sqlglot produit, sans preuve que Snowflake les accepte.
+- **Review sans outil, deux bloquants corrigés** : la publication ne réécrit plus le SQL de
+  l'appelant (elle ajoutait des guillemets, donc changeait l'objet visé) ; les trois chemins
+  d'écriture refusent une transaction ouverte par l'appelant au lieu de la commiter par DDL. Aussi :
+  plus de `statement_id` fabriqué (`None` sans `sfqid`), faux curseur qui exige la fermeture de
+  chaque curseur interne. Réfuté : l'injection par nom de table (le cœur cite, épinglé par un test).
+- **Limites connues** : l'append compare les noms de colonnes, pas les types ; après un `COMMIT` en
+  erreur réseau l'issue est inconnue et une relance peut dupliquer ; sqlglot 30.35 côté connecteur,
+  30.33 côté cœur.
+- Reporté, noté ici : run réel et promotion de capacités ; contrôle de
+  `QUOTED_IDENTIFIERS_IGNORE_CASE` ; normalisation de `ColumnInfo.type` ; CI du connecteur rouge
+  tant que le cœur 4.2 n'est pas publié. **46.7 exige 46.6 « vert » : à l'utilisateur de décider si
+  la découpe démarre sans run réel.**
+
 ### 46.7 — Découpe : wheel `skifer-core`, migration du runtime Spark vers `skifer-engine` (L, 12 à 16 h)
 
 **But.** Le changement de distribution, exécuté seulement une fois les deux connecteurs livrés.
