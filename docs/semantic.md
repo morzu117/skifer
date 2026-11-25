@@ -190,11 +190,18 @@ skifer semantic validate --schema MODEL [MODEL ...]  # standalone full model val
 ```
 
 With `--schema`, every positional argument is a model document, without a pipeline.
-Install `pip install 'skifer[schema]'`. Validation runs the generated JSON Schema
-first, then `SemanticValidator`, locally without Spark, LLM or network access.
+The release containing this command is not published yet; from a Git clone
+containing these commits, install with
+`python -m pip install "skifer[schema] @ git+file://$(git rev-parse --show-toplevel)"`.
+Validation runs the generated JSON Schema per file, then one `SemanticValidator`
+validation over the supplied models, locally without Spark, LLM or network access.
+Cross-file relationship targets are checked; duplicate model keys fail at both
+file origins. Targets not supplied remain accepted with an explicit warning.
+Do not pass `semantic_catalog.yaml`: it is a discovery catalog, not a model.
 The schema is necessary, not sufficient: cross-member references still require
 the validator. Warning-only metadata (including non-standard dimension types)
-remains accepted. The command reports each file and the JSON path for schema
+remains accepted and every warning is printed as `<file>: warning: …`. The command
+reports each file and the JSON path for schema
 errors; it continues across files and returns `0` only when all pass, `1` on a
 validation or technical failure. Missing jsonschema reports the extra to install.
 The generator ships in the Python package; no repository `schemas/` file is needed.
@@ -202,6 +209,7 @@ The historical `PIPELINE MODEL` command keeps its output and exit codes. See the
 [published semantic JSON Schema](https://github.com/morzu117/skifer/blob/main/schemas/skifer-semantic-model.schema.json)
 (draft-07, `$id: https://skifer.io/schemas/semantic-model/v1`) and the
 [Atlas integration recipe](integrations/atlas/README.md).
+Schema `v1` remains `v1` for widening changes; any tightening requires `v2`.
 
 Exit codes are the CI contract:
 

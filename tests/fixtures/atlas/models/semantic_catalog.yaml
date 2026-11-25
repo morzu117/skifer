@@ -6,15 +6,6 @@ models:
   - entite
   metrics:
   - revenu_net
-  entities: []
-  related_models: []
-- key: revenu_par_entite
-  file: revenu_par_entite.yaml
-  dimensions:
-  - mois_fiscal
-  - entite
-  metrics:
-  - revenu_net
   entities:
   - observation
   - entite
@@ -25,9 +16,18 @@ models:
   dimensions:
   - entite
   - segment
+  metrics:
+  - nombre_entites
+  entities:
+  - entite
+  related_models: []
+- key: effectifs
+  file: effectifs.yaml
+  dimensions:
+  - entite
   - mois_snapshot
   metrics:
   - effectif
   entities:
-  - entite
+  - observation
   related_models: []

@@ -735,6 +735,8 @@ def test_numeric_sql_explains_quoting(validator, valid_model, block):
 ])
 def test_unexpected_model_shapes_are_named_errors(validator, valid_model, path, value):
     model = valid_model
+    if path and path[-1] == "non_additive_dimensions":
+        model["metrics"][0]["additivity"] = "semi_additive"
     if path:
         parent = model
         for part in path[:-1]:

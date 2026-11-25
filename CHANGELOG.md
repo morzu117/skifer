@@ -85,6 +85,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Plan 46.5 — Atlas referential fixture.** Separate the unique entity lookup from two
+  months of semi-additive headcount snapshots, preserving revenue through joins. Tie the
+  parsed KPI output to DuckDB view columns, bridge projection and semantic members; pin a
+  negative remote-entity mutation. Clarify the frozen copy, unpublished install path and
+  schema versioning in the integration recipe.
+
 - **Plan 46.5 — cross-file semantic validation.** Validate supplied models together after
   per-file schema checks, report duplicate model keys at both origins, and display validator
   warnings and unprovided relationship targets. A deterministic differential corpus checks

@@ -15,3 +15,22 @@ models:
     sql: revenu_net
     type: sum
     additivity: additive
+  grain:
+  - observation
+  entities:
+  - name: observation
+    type: primary
+    key:
+    - mois_fiscal
+    - entite
+  - name: entite
+    type: foreign
+    key: entite
+  relationships:
+  - name: revenu_entites
+    from_entity: entite
+    to_model: entites
+    to_entity: entite
+    cardinality: many_to_one
+    join_type: left
+    verified_by_contract: true
