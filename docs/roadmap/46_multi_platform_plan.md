@@ -313,6 +313,47 @@ matrice, lien vers l'exemple 26). Aucune dépendance de `skifer` vers `skifer-du
 **Terminé quand.** `pip install skifer-duckdb` puis `examples/26_portable_sql` tourne en remplaçant
 `duckdb.sql` par le connecteur ; skifer-board peut remplacer son backend ad hoc par `DuckDBConnector`.
 
+**Réalisé le 25 novembre 2026** (dépôt `skifer-duckdb`, branche `feat/plan46-46.4-connector`, deux
+commits Codex + trois correctifs de review, 79 tests ; côté cœur, branche
+`feat/plan46-46.4-duckdb-connector`, page d'intégration seule, gate 4307 tests). Rien n'est poussé.
+Écarts et décisions, assumés :
+
+- **DuckDB 2.x n'a pas la parité de 1.5.** Le venv neuf du connecteur a pris 2.0.1 et deux cas sont
+  tombés : `round(CAST(2.675 AS DOUBLE), 2)` y rend 2.67, contre 2.68 sur Spark et sur DuckDB 1.5.6
+  (reproduit à part). Le connecteur déclare `duckdb>=1.5.6,<2` ; la preuve de `op:round` dans la
+  matrice ne vaut donc que pour DuckDB 1.x. La référence figée enregistre les versions qui l'ont
+  produite et un test échoue si le majeur installé diffère.
+- **La parité est rejouée sans Spark** : les 23 cas du harnais de 46.3 sont figés en JSON par
+  `scripts/freeze_reference.py` (après égalité des trois voies) et rejoués par le connecteur. Les
+  types et l'ordre des colonnes DuckDB sont épinglés contre la référence, mais **non** comparés aux
+  types Spark ; les lignes sont comparées comme multi-ensemble, les nombres après quantification à
+  1e-9 — c'est l'oracle du cœur, recopié à l'identique, et la doc le dit au lieu d'annoncer « sans
+  tolérance ».
+- **L'append était positionnel** (trouvé en review, vérifié : un `2.7` s'insérait comme `3` dans une
+  colonne entière). Il est désormais par nom, à schéma exact : colonnes manquantes, en trop, dupliquées
+  ou de type différent sont refusées avant toute écriture. Pas de `BY NAME`, qui comblerait en `NULL`.
+- Un `select_sql` doit être **un seul SELECT** ; le catalogue est insensible à la casse comme DuckDB ;
+  `columns()` d'une relation absente lève au lieu de rendre `[]` ; l'append vise une table de base.
+- **Transactions** : une écriture ouvre la sienne, ou **rejoint** celle de l'appelant sans la
+  commiter. Un second `BEGIN` ne permet pas de la détecter — il invalide la transaction en cours ;
+  le connecteur compare deux lectures de `current_transaction_id()` (stable dans une transaction,
+  croissant en autocommit).
+- `DuckDBConnector(connection=…)` accepte une connexion existante, jamais fermée par le connecteur :
+  c'est ce qui rend le remplacement du backend ad hoc de Board possible. Ce remplacement n'a **pas**
+  été essayé dans skifer-board.
+- Gate sémantique testé avec le vrai `SqliteCertificationStore` : refus `MISSING`, puis exécution
+  une fois le dataset certifié.
+- Déclinés, documentés dans le README du connecteur : matérialiser les résultats (une relation
+  paresseuse se comporte comme un DataFrame Spark — une erreur d'exécution peut surgir à la lecture),
+  verrou multi-thread (un connecteur par thread), `overwrite` qui ne conserve ni contraintes ni index.
+- Reporté, noté ici : le cœur est encore estampillé 4.1.0 alors que le connecteur exige
+  `skifer>=4.2.0` — installation locale en `--no-deps`, et **la CI du connecteur restera rouge tant
+  que le Plan 46 n'est pas sur `main`** (elle installe le cœur depuis `main`, à repasser sur PyPI à
+  la 4.2) ; le support de DuckDB 2.x (rendre `op:round` conditionnel ou compiler un arrondi décimal)
+  est une décision du cœur ; `PublicationContract` reste étroit (pas de staging ni d'upsert) ; la
+  parité du vocabulaire SQL du résolveur sémantique n'est prouvée que sur un cas de bout en bout
+  (`SUM`/`GROUP BY`) ; les valeurs de filtre rendues en littéraux de chaîne restent inchangées.
+
 ### 46.5 — Contrat Atlas : JSON Schema sémantique, fixture, recette de vue nommée (M, 4 à 6 h)
 
 **But.** Donner à Pierre une frontière stable sans accès en écriture au cœur : Atlas génère, Skifer
