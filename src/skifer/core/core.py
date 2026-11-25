@@ -4,8 +4,6 @@ Core Engine Module. Handles the execution flow: Schema Parsing -> Processing -> 
 
 from __future__ import annotations
 
-from skifer.core import loaders  # noqa: F401 — registers built-in loaders
-
 import logging
 import re
 import yaml
@@ -20,7 +18,6 @@ from skifer.core.sandbox import SandboxResolver
 from skifer.core.schema_loader import _find_file_upwards as _find_file_upwards_fn
 from skifer.core import environment as _env
 from skifer.core.context import ExecutionContext
-from skifer.core.interpreter import SchemaInterpreter
 from skifer.core.patterns import PipelinePatterns
 from skifer.observability.tracing import (
     NoOpTracer,
@@ -237,6 +234,13 @@ class SkiferEngine:
 
         from skifer.core.spark_backend import SparkBackend
         self._backend = SparkBackend(spark=self.spark, is_local=self.is_local)
+
+        # The Spark runtime (skifer-engine distribution) is imported lazily, only
+        # when an engine is actually instantiated, so `import skifer` and
+        # `import skifer.core.core` stay free of pyspark. Importing loaders here
+        # registers the built-in Delta loaders on the RuleRegistry.
+        from skifer.core import loaders  # noqa: F401 — registers built-in loaders
+        from skifer.core.interpreter import SchemaInterpreter
 
         if self.spark:
             try:

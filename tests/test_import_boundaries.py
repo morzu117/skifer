@@ -136,7 +136,13 @@ def test_public_exports_resolve_lazily_and_are_cached():
     )
 
 
-@pytest.mark.parametrize("module", ["skifer.core.core", "skifer.core.interpreter"])
+# 46.7: core.core ships in the skifer wheel, loaders in skifer-engine, so core.core
+# no longer imports loaders at module load (it would break `import skifer` without the
+# engine). SkiferEngine.__init__ imports them instead, and
+# test_packaging.test_importing_core_engine_does_not_eagerly_load_the_runtime guards
+# that core.core stays runtime-free. The interpreter is an engine module shipped
+# alongside loaders, so importing it still registers the built-ins.
+@pytest.mark.parametrize("module", ["skifer.core.interpreter"])
 def test_engine_import_registers_builtin_loaders(module):
     _run_python(
         f"""
