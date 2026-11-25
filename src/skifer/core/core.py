@@ -219,8 +219,23 @@ class SkiferEngine:
         # ======================================================================
         # 1. BACKEND + SPARK SESSION
         # ======================================================================
-        # Connect v2 patches are applied inside SparkBackend.__init__
-        from skifer.spark_factory import get_spark_session
+        # Connect v2 patches are applied inside SparkBackend.__init__.
+        # The Spark runtime ships separately as the skifer-engine distribution and
+        # is absent from a Spark-free `pip install skifer`; import it here, where an
+        # engine is genuinely instantiated, so `import skifer` stays runtime-free.
+        # Importing loaders registers the built-in Delta loaders on the RuleRegistry.
+        try:
+            from skifer.spark_factory import get_spark_session
+            from skifer.core.spark_backend import SparkBackend
+            from skifer.core import loaders  # noqa: F401 — registers built-in loaders
+            from skifer.core.interpreter import SchemaInterpreter
+        except ImportError as exc:
+            raise RuntimeError(
+                "SkiferEngine requires the Spark runtime, which ships separately as "
+                "the skifer-engine distribution. Install it with "
+                "`pip install 'skifer[spark]'` (or `pip install skifer-engine`)."
+            ) from exc
+
         if spark:
             self.spark = spark
             self._spark_mode = "provided"
@@ -232,15 +247,7 @@ class SkiferEngine:
         if not self.spark:
             raise RuntimeError("CRITICAL: Failed to initialize Spark Session.")
 
-        from skifer.core.spark_backend import SparkBackend
         self._backend = SparkBackend(spark=self.spark, is_local=self.is_local)
-
-        # The Spark runtime (skifer-engine distribution) is imported lazily, only
-        # when an engine is actually instantiated, so `import skifer` and
-        # `import skifer.core.core` stay free of pyspark. Importing loaders here
-        # registers the built-in Delta loaders on the RuleRegistry.
-        from skifer.core import loaders  # noqa: F401 — registers built-in loaders
-        from skifer.core.interpreter import SchemaInterpreter
 
         if self.spark:
             try:

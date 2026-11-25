@@ -93,6 +93,17 @@ def _force_include(pyproject_rel: str) -> dict:
     return wheel.get("force-include", {})
 
 
+def test_skifer_engine_missing_gives_a_clear_install_hint(monkeypatch):
+    # Without skifer-engine the runtime modules are absent; instantiating
+    # SkiferEngine must point the user at the right distribution rather than
+    # surfacing a raw ImportError. Simulate the absence by blocking the import.
+    import skifer
+
+    monkeypatch.setitem(sys.modules, "skifer.spark_factory", None)
+    with pytest.raises(RuntimeError, match="skifer-engine"):
+        skifer.SkiferEngine()
+
+
 @pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
 def test_skifer_engine_wheel_ships_exactly_the_runtime_modules():
     dests = set(_force_include("packaging/skifer-engine/pyproject.toml").values())
