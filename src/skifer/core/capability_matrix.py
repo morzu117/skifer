@@ -66,7 +66,7 @@ _DUCKDB_PROVEN = frozenset({
 _matrix: dict[str, dict[str, Status]] = {
     "databricks": {key: Supported() for key in _KEYS},
     "duckdb": {key: Conditional("parity not executed for this key (Plan 46.3)") for key in _KEYS},
-    "snowflake": {key: Conditional("parity not executed yet (Plan 46.6)") for key in _KEYS},
+    "snowflake": {key: Conditional("parity not executed against a Snowflake account") for key in _KEYS},
 }
 for _key in _DUCKDB_PROVEN:
     _matrix["duckdb"][_key] = Supported()

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plan 46.6 — Snowflake integration.** Document the separate injected DB-API connector,
+  exact-case quoted identifiers, fake-cursor protocol tests and 20 compiled / 3 refused
+  golden SQL cases. No real account run or executed parity: Snowflake remains entirely
+  Conditional/Refused; its default reason now states the missing real-account parity.
 - **Plan 46.5 — reconstructed Atlas contract fixture.** Preserve the source KPI with
   checkout provenance and test three reconstructed semantic models, a bridge projection,
   and named SQL views on raw DuckDB. Assert revenue, relation traversal and semi-additive

@@ -121,3 +121,11 @@ def test_matrix_targets_are_read_only():
 def test_matrix_entries_are_read_only(target):
     with pytest.raises(TypeError):
         MATRIX[target]["op:cast"] = Supported()
+
+
+def test_snowflake_has_no_executed_parity_even_with_a_connector():
+    assert all(isinstance(status, (Conditional, Refused)) for status in MATRIX["snowflake"].values())
+    special = {"op:split", "op:to_date", "op:cast"}
+    for key, status in MATRIX["snowflake"].items():
+        if isinstance(status, Conditional) and key not in special:
+            assert status.reason == "parity not executed against a Snowflake account"

@@ -64,6 +64,7 @@ nav:
       - Governed Capabilities: capabilities.md
   - Integrations:
       - DuckDB: integrations/duckdb.md
+      - Snowflake: integrations/snowflake.md
       - Atlas: integrations/atlas/README.md
   - Reference:
       - YAML Model Reference: yaml_spec.md
