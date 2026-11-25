@@ -57,18 +57,34 @@ with DuckDBConnector() as connector:
     connector.create_or_replace_view("revenue_view", "SELECT * FROM revenue_by_country")
 ```
 
-`DuckDBConnector(path=":memory:", default_schema="main", read_only=False)` possède une connexion.
-`close()` ou la sortie du `with` la ferme. Consommer les relations avant cette fermeture ; `.df()`
-est aussi disponible avec les dépendances pandas de DuckDB. Un `statement_id` UUID est généré
+`DuckDBConnector(path=":memory:", *, connection=None, default_schema="main", read_only=False)`
+crée une connexion ou utilise celle fournie par l’appelant. `close()` ou la sortie du `with` ne
+ferme que les connexions créées par le connecteur. Avec `connection=`, laisser `path` et
+`read_only` à leur valeur par défaut. Consommer les relations avant la fermeture de la connexion ;
+`.df()` est aussi disponible avec les dépendances pandas de DuckDB. Un `statement_id` UUID est généré
 par le connecteur, ce n'est pas un identifiant de requête serveur. Le SQL brut est exécuté tel quel.
 
 Un nom nu devient `main.nom` (ou le `default_schema` choisi). Les noms à deux ou trois parties
 restent inchangés. Les noms vides, de plus de trois parties ou contenant des guillemets/backticks
-sont refusés. Aucun sandbox ni schéma n'est créé implicitement.
+sont refusés. Aucun sandbox ni schéma n'est créé implicitement. `table_exists()` et `columns()`
+interrogent le catalogue sans distinction de casse ; `columns()` lève `LookupError` avec le FQN
+résolu si la relation est absente.
 
-Chaque publication de table ou vue est transactionnelle : `BEGIN`, `COMMIT`, et `ROLLBACK` sur
-exception. `overwrite` remplace la table ; `append` exige une table existante. Tout autre mode
-est refusé avant exécution. Les erreurs DuckDB sont propagées.
+Chaque publication de table ou vue exige exactement un SELECT (un `;` final est accepté).
+`append` exige une table de base existante et les mêmes noms de colonnes (sans distinction de
+casse, sans doublons) et types exacts. L’insertion suit les noms dans l’ordre de la table ;
+convertir explicitement les types dans le SELECT si nécessaire. Les refus de validation lèvent
+`ValueError` avant écriture ; les erreurs d’exécution DuckDB sont propagées.
+
+`overwrite` utilise `CREATE OR REPLACE TABLE AS` : les contraintes, index et valeurs par défaut
+de la table remplacée ne sont pas conservés. Une publication rejoint la transaction déjà ouverte
+par l’appelant, sans COMMIT ni ROLLBACK du connecteur, y compris après une erreur. Sinon, le
+connecteur ouvre et termine sa propre transaction ; les tests vérifient qu’un append échouant
+sur une contrainte laisse la table inchangée et permet une écriture suivante.
+
+Les relations sont paresseuses : une erreur peut ne surgir qu’au `fetch`, comme avec un DataFrame
+Spark ; rien n’est figé entre l’appel et la lecture. Utiliser un connecteur par thread, sans
+partager une connexion DuckDB entre threads.
 
 ## Couche sémantique
 
@@ -118,8 +134,7 @@ seul est chargé au démarrage. Utiliser un chemin absolu pour `models_dir` : le
 `catalog=None` conserve `main.orders` ; `catalog="memory"` donne
 `memory.main.orders` en mémoire. `environment`, `config` et `certification_store` sont transmis
 au cœur, qui conserve ses contrôles de certification et sa politique de divulgation des preuves.
-Fournir explicitement le connecteur permet d'en gérer la fermeture ; sans argument, le helper
-crée une connexion en mémoire, accessible par `engine.core._get_backend()` pour la fermer.
+Fournir un connecteur explicite en `with`, comme dans l’exemple, permet d’en gérer la durée de vie.
 
 ## Limites issues de la matrice
 
@@ -153,9 +168,13 @@ tout le vocabulaire du résolveur sémantique.
 
 Les tests de `skifer-duckdb` rejouent **23 cas** contre les lignes Spark DataFrame figées dans
 `tests/fixtures/parity_reference.json`, avec le SHA du cœur, les données et leurs types.
-La normalisation est copiée du harnais du cœur : nombres en `Decimal` quantifiés à `1e-9`, dates
-ISO, colonnes et lignes triées, sans tolérance supplémentaire. Le script de régénération tourne
-dans le venv Spark du cœur et réutilise `run_three_way` ; les tests du connecteur n'importent pas Spark.
+La normalisation est copiée du harnais du cœur : valeurs numériques comparées après
+quantification à `1e-9` (`int`, `float` et `Decimal` confondus), dates en ISO et lignes comparées
+comme multi-ensemble ; l’ordre des lignes n’est pas prouvé. Les types et l’ordre des colonnes
+DuckDB sont épinglés contre la référence figée, mais ne sont pas comparés aux types Spark.
+Les versions DuckDB et PySpark sont enregistrées ; un changement de version majeure DuckDB
+exige de régénérer et revoir la parité. Le script de régénération tourne dans le venv Spark
+du cœur et réutilise `run_three_way` ; les tests du connecteur n’importent pas Spark.
 
 Le test d'intégration reprend aussi le YAML de
 [l'exemple 26 — SQL portable](https://github.com/morzu117/skifer/tree/main/examples/26_portable_sql)
