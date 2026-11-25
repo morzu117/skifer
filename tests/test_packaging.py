@@ -128,3 +128,5 @@ def test_all_packaging_distributions_share_one_version():
     assert f"skifer-core=={shared}" in governed["dependencies"]
     engine = _load("packaging/skifer-engine/pyproject.toml")["project"]
     assert f"skifer=={shared}" in engine["dependencies"]
+    databricks = _load("packaging/skifer-databricks/pyproject.toml")["project"]
+    assert f"skifer=={shared}" in databricks["dependencies"]
