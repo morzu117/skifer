@@ -1,0 +1,20 @@
+# Provenance: Reconstructed for Plan 46.5
+models:
+- name: revenue
+  key: revenue
+  table: main.revenue
+  dimensions:
+  - name: month
+    sql: month
+    type: date
+    custom: true
+  - name: entity
+    sql: entity
+    type: string
+  metrics:
+  - name: revenue
+    sql: amount
+    type: sum
+    custom: 42
+  extension:
+    anything: true

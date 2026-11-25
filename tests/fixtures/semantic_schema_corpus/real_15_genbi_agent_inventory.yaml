@@ -1,0 +1,10 @@
+models:
+  - name: inventory
+    key: inventory
+    description: Inventory by warehouse
+    layer: gold
+    table: gold.inventory
+    dimensions:
+      - {name: warehouse, sql: warehouse_code, type: string}
+    metrics:
+      - {name: units_on_hand, sql: units, type: sum}

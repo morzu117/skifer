@@ -1,0 +1,41 @@
+# Provenance: Reconstructed for Plan 46.5
+models:
+- name: revenue
+  key: revenue
+  table: main.revenue
+  dimensions:
+  - name: month
+    sql: month
+    type: date
+  - name: entity
+    sql: entity
+    type: string
+  metrics:
+  - name: revenue
+    sql: amount
+    type: sum
+  entities:
+  - name: entity
+    type: foreign
+    key: entity
+  relationships:
+  - name: lookup
+    from_entity: entity
+    to_model: other
+    to_entity: entity
+    cardinality: many_to_one
+    join_type: left
+- name: other
+  key: other
+  table: main.revenue
+  dimensions:
+  - name: month
+    sql: month
+    type: date
+  - name: entity
+    sql: entity
+    type: string
+  metrics:
+  - name: revenue
+    sql: amount
+    type: sum

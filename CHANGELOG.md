@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plan 46.5 — semantic JSON Schema.** Publish the draft-07 semantic document contract,
+  derived from validator/domain constants, with a non-drift guard and a labeled corpus
+  distinguishing structural refusals from validator-only cross-checks. Warning-only
+  metadata remains accepted; the validator supplies the complete verdict.
 - **Plan 46.4 — DuckDB integration.** Document the separate `skifer-duckdb` connector,
   pipeline and semantic usage, transactional publication, frozen Spark reference replay,
   and the exact seven conditional and two refused capability reasons from the core matrix.

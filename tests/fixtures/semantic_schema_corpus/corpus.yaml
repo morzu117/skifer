@@ -1,0 +1,190 @@
+- file: real_14_domain_graph_customers.yaml
+  valid: true
+  schema_catches: false
+  reason: Existing repository model, copied byte for byte
+  provenance: examples/14_domain_graph/semantic_models/customers.yaml
+- file: real_14_domain_graph_orders.yaml
+  valid: true
+  schema_catches: false
+  reason: Existing repository model, copied byte for byte
+  provenance: examples/14_domain_graph/semantic_models/orders.yaml
+- file: real_14_domain_graph_order_lines.yaml
+  valid: true
+  schema_catches: false
+  reason: Existing repository model, copied byte for byte
+  provenance: examples/14_domain_graph/semantic_models/order_lines.yaml
+- file: real_15_genbi_agent_inventory.yaml
+  valid: true
+  schema_catches: false
+  reason: Existing repository model, copied byte for byte
+  provenance: examples/15_genbi_agent/semantic_models/inventory.yaml
+- file: real_15_genbi_agent_orders.yaml
+  valid: true
+  schema_catches: false
+  reason: Existing repository model, copied byte for byte
+  provenance: examples/15_genbi_agent/semantic_models/orders.yaml
+- file: positive_semi_additive.yaml
+  valid: true
+  schema_catches: false
+  reason: Restricted dimension exists
+  provenance: Reconstructed for Plan 46.5
+- file: positive_non_additive.yaml
+  valid: true
+  schema_catches: false
+  reason: Non additive declaration
+  provenance: Reconstructed for Plan 46.5
+- file: positive_row_policy.yaml
+  valid: true
+  schema_catches: false
+  reason: Closed row policy identifiers
+  provenance: Reconstructed for Plan 46.5
+- file: positive_synonyms.yaml
+  valid: true
+  schema_catches: false
+  reason: Human metadata
+  provenance: Reconstructed for Plan 46.5
+- file: positive_unknown_dimension_type.yaml
+  valid: true
+  schema_catches: false
+  reason: Unknown dimension type only warns
+  provenance: Reconstructed for Plan 46.5
+- file: positive_mixed_case_aggregate.yaml
+  valid: true
+  schema_catches: false
+  reason: Aggregate types are case insensitive
+  provenance: Reconstructed for Plan 46.5
+- file: positive_warning_filters.yaml
+  valid: true
+  schema_catches: false
+  reason: Invalid inline filters only warn
+  provenance: Reconstructed for Plan 46.5
+- file: positive_unknown_fields.yaml
+  valid: true
+  schema_catches: false
+  reason: Unknown model and member keys are accepted
+  provenance: Reconstructed for Plan 46.5
+- file: positive_nullable_domain.yaml
+  valid: true
+  schema_catches: false
+  reason: Optional domain null values are accepted
+  provenance: Reconstructed for Plan 46.5
+- file: positive_grain_shorthand.yaml
+  valid: true
+  schema_catches: false
+  reason: Grain is optional and supports a string without entities
+  provenance: Reconstructed for Plan 46.5
+- file: positive_legacy_metadata.yaml
+  valid: true
+  schema_catches: false
+  reason: Unchecked metadata and non-list grain preserve legacy acceptance
+  provenance: Reconstructed for Plan 46.5
+- file: negative_missing_table.yaml
+  valid: false
+  schema_catches: true
+  reason: Required table absent
+  provenance: Reconstructed for Plan 46.5
+- file: negative_empty_dimensions.yaml
+  valid: false
+  schema_catches: true
+  reason: At least one dimension required
+  provenance: Reconstructed for Plan 46.5
+- file: negative_empty_metrics.yaml
+  valid: false
+  schema_catches: true
+  reason: At least one metric required
+  provenance: Reconstructed for Plan 46.5
+- file: negative_boolean_name.yaml
+  valid: false
+  schema_catches: true
+  reason: YAML boolean is not a name
+  provenance: Reconstructed for Plan 46.5
+- file: negative_numeric_sql.yaml
+  valid: false
+  schema_catches: true
+  reason: SQL must be a string
+  provenance: Reconstructed for Plan 46.5
+- file: negative_unsafe_name.yaml
+  valid: false
+  schema_catches: true
+  reason: Unsafe SQL alias
+  provenance: Reconstructed for Plan 46.5
+- file: negative_aggregate_type.yaml
+  valid: false
+  schema_catches: true
+  reason: Unsupported aggregate
+  provenance: Reconstructed for Plan 46.5
+- file: negative_additivity.yaml
+  valid: false
+  schema_catches: true
+  reason: Closed additivity vocabulary
+  provenance: Reconstructed for Plan 46.5
+- file: negative_missing_restrictions.yaml
+  valid: false
+  schema_catches: true
+  reason: Semi additive needs restrictions
+  provenance: Reconstructed for Plan 46.5
+- file: negative_row_policy_extra.yaml
+  valid: false
+  schema_catches: true
+  reason: Row policy rejects unknown keys
+  provenance: Reconstructed for Plan 46.5
+- file: negative_entity_shape.yaml
+  valid: false
+  schema_catches: true
+  reason: Entities must be mappings
+  provenance: Reconstructed for Plan 46.5
+- file: negative_calendar.yaml
+  valid: false
+  schema_catches: true
+  reason: Calendar reference must be an identifier
+  provenance: Reconstructed for Plan 46.5
+- file: negative_duplicate_dimension.yaml
+  valid: false
+  schema_catches: false
+  reason: Duplicate member names need validator
+  provenance: Reconstructed for Plan 46.5
+- file: negative_duplicate_metric.yaml
+  valid: false
+  schema_catches: false
+  reason: Duplicate metric names need validator
+  provenance: Reconstructed for Plan 46.5
+- file: negative_unknown_restriction.yaml
+  valid: false
+  schema_catches: false
+  reason: Restriction must reference a declared dimension
+  provenance: Reconstructed for Plan 46.5
+- file: negative_grain_reference.yaml
+  valid: false
+  schema_catches: false
+  reason: Grain must reference a declared entity
+  provenance: Reconstructed for Plan 46.5
+- file: negative_aggregated_sql.yaml
+  valid: false
+  schema_catches: false
+  reason: SQL expression already contains an aggregate
+  provenance: Reconstructed for Plan 46.5
+- file: negative_cardinality.yaml
+  valid: false
+  schema_catches: true
+  reason: Invalid relationship cardinality
+  provenance: Reconstructed for Plan 46.5
+- file: negative_join_type.yaml
+  valid: false
+  schema_catches: true
+  reason: Invalid relationship join_type
+  provenance: Reconstructed for Plan 46.5
+- file: negative_local_entity.yaml
+  valid: false
+  schema_catches: false
+  reason: Invalid relationship local_entity
+  provenance: Reconstructed for Plan 46.5
+- file: negative_self_relation.yaml
+  valid: false
+  schema_catches: false
+  reason: Invalid relationship self_relation
+  provenance: Reconstructed for Plan 46.5
+- file: negative_remote_entity.yaml
+  valid: false
+  schema_catches: false
+  reason: Known target model lacks referenced entity
+  provenance: Reconstructed for Plan 46.5

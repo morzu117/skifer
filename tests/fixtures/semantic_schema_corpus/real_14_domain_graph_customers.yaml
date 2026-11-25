@@ -1,0 +1,13 @@
+models:
+  - name: customers
+    key: customers
+    description: Customer attributes
+    layer: gold
+    table: gold.customers
+    grain: [customer]
+    dimensions:
+      - {name: segment, sql: segment, type: string}
+    metrics:
+      - {name: customer_count, sql: customer_id, type: count}
+    entities:
+      - {name: customer, type: primary, key: customer_id}
