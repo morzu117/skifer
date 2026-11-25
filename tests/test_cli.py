@@ -1552,19 +1552,25 @@ def test_semantic_validate_schema_cli(filename, code, fragment):
     result = _run_cli("semantic", "validate", "--schema", path)
     assert result.returncode == code, result.stderr
     assert fragment in result.stdout
+    if code == 0:
+        assert f"{path}: warning:" in result.stdout
+        assert "non standard" in result.stdout
     assert all(line.startswith(path + ":") for line in result.stdout.splitlines())
 
 
 def test_semantic_validate_schema_multiple_files_continues_after_errors(tmp_path):
     missing = str(tmp_path / "missing.yaml")
     invalid = str(SCHEMA_CORPUS / "negative_duplicate_metric.yaml")
-    valid = str(SCHEMA_CORPUS / "positive_synonyms.yaml")
+    valid = str(tmp_path / "valid.yaml")
+    payload = yaml.safe_load((SCHEMA_CORPUS / "positive_synonyms.yaml").read_text())
+    payload["models"][0]["key"] = "distinct_valid_model"
+    _write_yaml(Path(valid), payload)
     result = _run_cli("semantic", "validate", "--schema", missing, invalid, valid)
     assert result.returncode == 1
     assert f"{missing}:" in result.stdout
     assert f"{invalid}:" in result.stdout
     assert f"{valid}: valid" in result.stdout
-    assert _run_cli("semantic", "validate", "--schema", valid, valid).returncode == 0
+    assert _run_cli("semantic", "validate", "--schema", valid, valid).returncode == 1
 
 
 def test_semantic_validate_schema_missing_dependency(monkeypatch, capsys):
@@ -1630,3 +1636,44 @@ def test_semantic_validate_schema_malformed_yaml(tmp_path):
     result = _run_cli("semantic", "validate", "--schema", str(path))
     assert result.returncode == 1
     assert result.stdout.startswith(str(path) + ":")
+
+
+@pytest.mark.parametrize("mutation,code,fragment", [
+    ("remote_entity", 1, "unknown entity 'absent'"),
+    ("duplicate", 1, "duplicate model key"),
+    ("missing_target", 0, "cible non fournie, non vérifiée"),
+    ("nominal", 0, "valid (JSON Schema + SemanticValidator)"),
+])
+def test_semantic_validate_schema_cross_file_targets(tmp_path, mutation, code, fragment):
+    fixture = Path(__file__).parent / "fixtures/atlas/models"
+    payloads = [yaml.safe_load(path.read_text()) for path in sorted(fixture.glob("*.yaml"))
+                if path.name != "semantic_catalog.yaml"]
+    models = [model for payload in payloads for model in payload["models"]]
+    source = next(model for model in models if model.get("relationships"))
+    target_key = source["relationships"][0]["to_model"]
+    target = next(model for model in models if model["key"] == target_key)
+    if mutation == "remote_entity":
+        source["relationships"][0]["to_entity"] = "absent"
+    elif mutation == "duplicate":
+        target["key"] = source["key"]
+    elif mutation == "missing_target":
+        source["relationships"][0]["to_model"] = "not_supplied"
+    first, second = tmp_path / "source.yaml", tmp_path / "targets.yaml"
+    _write_yaml(first, {"models": [source]})
+    _write_yaml(second, {"models": [model for model in models if model is not source]})
+    result = _run_cli("semantic", "validate", "--schema", str(first), str(second))
+    assert result.returncode == code, result.stdout + result.stderr
+    assert any(line.startswith(str(first) + ":") and fragment in line for line in result.stdout.splitlines())
+    if mutation == "duplicate":
+        assert any(line.startswith(str(second) + ":") and fragment in line for line in result.stdout.splitlines())
+    if mutation == "nominal":
+        assert "cible non fournie" not in result.stdout
+        assert f"{second}: valid" in result.stdout
+
+
+@pytest.mark.parametrize("arguments", [("--schema",), ("one.yaml",), ("one.yaml", "two.yaml", "three.yaml")])
+def test_semantic_validate_positional_usage_errors(arguments):
+    result = _run_cli("semantic", "validate", *arguments)
+    assert result.returncode == 2
+    assert "usage: skifer semantic validate" in result.stderr
+    assert "skifer semantic validate: error:" in result.stderr

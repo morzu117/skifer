@@ -719,7 +719,7 @@ def main() -> None:
     args = parser.parse_args()
     if (args.command == "semantic" and args.semantic_command == "validate"
             and not args.schema and len(args.paths) != 2):
-        parser.error("semantic validate requires PIPELINE MODEL, or --schema MODEL [MODEL ...]")
+        semantic_validate_parser.error("requires PIPELINE MODEL, or --schema MODEL [MODEL ...]")
 
     if args.command == "validate":
         _run_validate(args)
@@ -2591,28 +2591,63 @@ def run_semantic_schema_validate(model_paths: list[str]) -> int:
     from skifer.semantic.validator import SemanticValidator
 
     schema_validator = jsonschema.Draft7Validator(generate_semantic_json_schema())
-    failed = False
+    failed_paths: set[str] = set()
+    models = []
+    origins: list[tuple[str, int]] = []
+    loaded_paths = []
     for path in model_paths:
         try:
             payload = _load_yaml_file(path)
             errors = sorted(schema_validator.iter_errors(payload), key=lambda error: error.json_path)
             if errors:
-                failed = True
+                failed_paths.add(path)
                 for error in errors:
                     print(f"{path}: {error.json_path}: {error.message}")
                 continue
-            result = SemanticValidator().validate_yaml(payload)
-            if not result.ok:
-                failed = True
-                for error in result.errors:
-                    print(f"{path}: {error}")
-                continue
         except Exception as exc:
-            failed = True
+            failed_paths.add(path)
             print(f"{path}: {type(exc).__name__}: {exc}")
             continue
-        print(f"{path}: valid (JSON Schema + SemanticValidator).")
-    return SEMANTIC_EXIT_ERROR if failed else SEMANTIC_EXIT_OK
+        loaded_paths.append(path)
+        for local_index, model in enumerate(payload["models"]):
+            models.append(model)
+            origins.append((path, local_index))
+
+    if models:
+        # One semantic validation sees every supplied target. Keep origin indices
+        # separately so cross-file diagnostics still point to the declaring file.
+        result = SemanticValidator().validate_yaml({"models": models})
+        for kind, messages in (("error", result.errors), ("warning", result.warnings)):
+            for message in messages:
+                prefix, detail = message.split("] ", 1)
+                index = int(prefix.removeprefix("[model #"))
+                path, local_index = origins[index]
+                if kind == "error":
+                    failed_paths.add(path)
+                print(f"{path}: {kind}: [model #{local_index}] {detail}")
+
+        by_key: dict[str, list[int]] = {}
+        for index, model in enumerate(models):
+            key = model.get("key") or model["name"]
+            by_key.setdefault(key, []).append(index)
+        for key, indices in by_key.items():
+            if len(indices) > 1:
+                for index in indices:
+                    path, local_index = origins[index]
+                    failed_paths.add(path)
+                    print(f"{path}: error: [model #{local_index}] duplicate model key '{key}'")
+        for index, model in enumerate(models):
+            for relationship in model.get("relationships") or []:
+                target = relationship["to_model"]
+                if target not in by_key:
+                    path, local_index = origins[index]
+                    print(f"{path}: warning: [model #{local_index}] relationship "
+                          f"'{relationship['name']}': cible non fournie, non vérifiée: '{target}'")
+
+    for path in loaded_paths:
+        if path not in failed_paths:
+            print(f"{path}: valid (JSON Schema + SemanticValidator).")
+    return SEMANTIC_EXIT_ERROR if failed_paths else SEMANTIC_EXIT_OK
 
 
 def run_semantic_validate(pipeline_path: str, model_path: str) -> int:

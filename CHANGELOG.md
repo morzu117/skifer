@@ -85,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Plan 46.5 — cross-file semantic validation.** Validate supplied models together after
+  per-file schema checks, report duplicate model keys at both origins, and display validator
+  warnings and unprovided relationship targets. A deterministic differential corpus checks
+  every accepted mutation against the schema; negative cases pin error text and JSON paths.
+
 - **Plan 46.5 — semantic string validation.** Reject non-string names, SQL expressions and
   domain identifiers before coercion, with a quoting hint for YAML booleans.
   Null model keys retain the name fallback and null required fields retain their historical

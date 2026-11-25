@@ -1,4 +1,5 @@
 """Atlas's structural contract is necessary, never a replacement for validation."""
+from copy import deepcopy
 import json
 from pathlib import Path
 import subprocess
@@ -48,7 +49,9 @@ def test_semantic_corpus_no_false_rejections_and_exact_negative_labels(case):
     if result.ok:
         assert not errors
     else:
-        assert result.errors  # each negative must actually be rejected by the validator
+        assert any(case["error_fragment"] in error for error in result.errors)
+        if case["schema_catches"]:
+            assert case["schema_path"] in [error.json_path for error in errors]
 
 
 def test_semantic_schema_import_needs_no_spark_or_agentic():
@@ -60,3 +63,63 @@ assert not any(n == 'pyspark' or n.startswith('pyspark.') or n.startswith('skife
 assert 'jsonschema' not in sys.modules
 """], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+
+def semantic_mutations(payload):
+    """Single deterministic edits at every node, including metadata/unknown fields."""
+    def walk(value, path=()):
+        yield path, value
+        if isinstance(value, dict):
+            for key, child in value.items():
+                yield from walk(child, (*path, key))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                yield from walk(child, (*path, index))
+
+    for path, value in walk(payload):
+        replacements = [("null", None)]
+        if path and isinstance(path[-1], str):
+            replacements.append(("omit", None))
+        if isinstance(value, str):
+            # Superset of enums and identifiers, so new fields get coverage too.
+            replacements.extend((label, variant) for label, variant in (
+                ("upper", value.upper()), ("lower", value.lower()),
+                ("swapcase", value.swapcase()), ("leading_space", " " + value),
+                ("trailing_space", value + " "), ("strip", value.strip()),
+                ("trailing_newline", value + "\n"),
+            ) if variant != value)
+        # Probe all scalar/list conversions, including permissive metadata;
+        # validator acceptance selects the supported shorthands, never a skip list.
+        if isinstance(value, list):
+            replacements.extend((f"scalar_{i}", item) for i, item in enumerate(value))
+        elif not isinstance(value, dict):
+            replacements.append(("list", [value]))
+        for label, replacement in replacements:
+            changed = deepcopy(payload)
+            if not path:
+                changed = replacement
+            else:
+                parent = changed
+                for key in path[:-1]:
+                    parent = parent[key]
+                if label == "omit":
+                    del parent[path[-1]]
+                else:
+                    parent[path[-1]] = replacement
+            yield path, label, changed
+
+
+@pytest.mark.parametrize("case", [case for case in CASES if case["valid"]], ids=lambda case: case["file"])
+def test_differential_mutations_have_no_false_rejection(case):
+    payload = yaml.safe_load((CORPUS / case["file"]).read_text(encoding="utf-8"))
+    validator = SemanticValidator()
+    schema = jsonschema.Draft7Validator(generate_semantic_json_schema())
+    generated = accepted = 0
+    for path, mutation, changed in semantic_mutations(payload):
+        generated += 1
+        if validator.validate_yaml(changed).ok:
+            accepted += 1
+            errors = list(schema.iter_errors(changed))
+            assert not errors, (case["file"], path, mutation, [e.message for e in errors])
+    assert generated > 0 and accepted > 0
