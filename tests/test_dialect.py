@@ -165,3 +165,31 @@ def test_snowflake_semantic_expressions(expression, node, column):
     assert tree.find(node).find(sqlglot.exp.Column).name == column
     assert tree.find(sqlglot.exp.Table).name == "Orders"
     assert tree.find(sqlglot.exp.Where) is not None
+
+
+@pytest.mark.parametrize("sql,expected", [
+    (
+        "SELECT amount AS Total FROM orders ORDER BY total",
+        'SELECT "amount" AS "Total" FROM "orders" ORDER BY "total" NULLS FIRST',
+    ),
+    (
+        "SELECT Country, sum(amount) AS s FROM orders GROUP BY country",
+        'SELECT "Country", SUM("amount") AS "s" FROM "orders" GROUP BY "country"',
+    ),
+])
+def test_snowflake_identifier_case_known_limit(sql, expected):
+    # Known limit: identifier case must be consistent throughout YAML targeting
+    # Snowflake; quoting preserves distinct Total/total and Country/country names.
+    assert render(sql, "snowflake") == expected
+
+
+def test_snowflake_current_functions_and_bare_localtimestamp():
+    assert render("SELECT current_date, current_timestamp, localtimestamp", "snowflake") == (
+        'SELECT CURRENT_DATE, CURRENT_TIMESTAMP(), "localtimestamp"'
+    )
+
+
+def test_snowflake_stars_remain_unquoted():
+    assert render("SELECT *, o.*, COUNT(*) FROM orders AS o", "snowflake") == (
+        'SELECT *, "o".*, COUNT(*) FROM "orders" AS "o"'
+    )

@@ -731,6 +731,16 @@ s’appelle `ORDERS` : il faut écrire `ORDERS` dans le YAML. Cette règle est c
 dans le rendu, pour les pipelines comme pour les requêtes sémantiques ; les rendus
 Databricks et DuckDB restent inchangés.
 
+**Casse des identifiants.** Limite connue : Spark est insensible à la casse des
+identifiants, tandis que le rendu Snowflake les cite à casse exacte. Un alias `Total`
+référencé comme `total` ailleurs échoue sur Snowflake (ou lie une autre colonne si
+les deux existent) ; il en va de même pour `Country` projeté et `country` dans le
+`GROUP BY`. La casse doit donc être cohérente dans tout le YAML ciblant Snowflake ;
+aucune normalisation automatique n’est appliquée. `current_date` et
+`current_timestamp` restent des fonctions, mais `localtimestamp` sans parenthèses
+est rendu comme la colonne `"localtimestamp"`. Ces rendus sont épinglés par des tests
+locaux ; ils n’ont pas été exécutés sur un compte Snowflake.
+
 Le langage compile une fois en SQL Spark, puis rend ce SQL pour l'une des trois
 cibles fermées : `databricks`, `duckdb`, `snowflake`. Installer
 `pip install 'skifer[dialects]'` pour les rendus DuckDB et Snowflake ; `sqlglot`

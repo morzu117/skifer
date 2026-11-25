@@ -46,6 +46,16 @@ les pipelines et les modèles sémantiques, expressions comprises. Les guillemet
 aux composants d’un nom sont doublés ; fournir des noms littéraux sans guillemets SQL
 englobants. Un point sépare deux composants, il ne peut pas faire partie d’un composant.
 
+**Casse des identifiants.** Limite connue : Spark est insensible à la casse des
+identifiants, tandis que le rendu Snowflake les cite à casse exacte. Un alias `Total`
+référencé comme `total` ailleurs échoue sur Snowflake (ou lie une autre colonne si
+les deux existent) ; il en va de même pour `Country` projeté et `country` dans le
+`GROUP BY`. La casse doit donc être cohérente dans tout le YAML ciblant Snowflake ;
+aucune normalisation automatique n’est appliquée. `current_date` et
+`current_timestamp` restent des fonctions, mais `localtimestamp` sans parenthèses
+est rendu comme la colonne `"localtimestamp"`. Ces rendus sont épinglés par des tests
+locaux ; ils n’ont pas été exécutés sur un compte Snowflake.
+
 Exemple illustratif, non exécuté contre Snowflake :
 
 ```python
@@ -81,7 +91,7 @@ Un nom à une partie devient `database.schema.name`, à deux parties `database.s
 
 `execute_sql(sql)` exécute le SQL brut fourni tel quel ; sa citation relève de l’appelant.
 `execute_sql_with_metadata` renvoie un `ExecutionResult` dont `dataframe` est le curseur
-exécuté, `statement_id` son `sfqid` (ou un UUID4 si absent), et les métadonnées indiquent
+exécuté, `statement_id` son `sfqid` (`None` si absent), et les métadonnées indiquent
 `snowflake`. L’appelant consomme et ferme ce curseur, via `fetchall()` ou
 `fetch_pandas_all()` si les dépendances pandas du driver sont installées.
 
@@ -90,9 +100,10 @@ exécuté, `statement_id` son `sfqid` (ou un UUID4 si absent), et les métadonn�
 Les publications exigent un seul SELECT, validé par sqlglot avant émission ; les CTE sont
 admises, les statements multiples, DML, SELECT INTO et unions à la racine sont refusés.
 `overwrite` utilise `CREATE OR REPLACE TABLE ... AS ...`, les vues
-`CREATE OR REPLACE VIEW ... AS ...`. Les DDL Snowflake auto-commitent, y compris une
-transaction déjà active : aucun rollback ni garantie transactionnelle supplémentaire
-n’est promis pour ces publications.
+`CREATE OR REPLACE VIEW ... AS ...`. Chaque publication refuse une transaction
+déjà ouverte avant toute lecture du catalogue ou écriture : commiter ou annuler d’abord.
+Les DDL Snowflake auto-commitent : aucun rollback ni garantie transactionnelle
+supplémentaire n’est promis pour ces publications.
 
 `append` exige une table de base existante et les mêmes noms exacts de colonnes, sans doublons,
 manquants ni colonnes supplémentaires. Le SELECT est décrit par `cursor.describe()` sans être
@@ -100,9 +111,11 @@ exécuté ; l’INSERT nomme les colonnes dans l’ordre de la table. **Les type
 comparés** : la correspondance entre les codes de types du driver et `DATA_TYPE` du catalogue
 n’a pas été vérifiée sur un compte. Les conversions restent celles du serveur.
 
-L’append refuse une transaction déjà active (`CURRENT_TRANSACTION()`), puis émet
+Après la garde `CURRENT_TRANSACTION()` et le préflight, l’append émet
 `BEGIN` / `INSERT` / `COMMIT`, ou `ROLLBACK` sur erreur, en conservant l’exception d’origine
-si le rollback échoue. Il ne rejoint pas une transaction de l’appelant comme DuckDB.
+si le rollback échoue. Une erreur réseau au commit laisse l’issue inconnue ; relancer
+peut dupliquer les lignes, l’appelant doit vérifier. Il ne rejoint pas une transaction
+de l’appelant comme DuckDB.
 Utiliser une connexion dédiée avec autocommit activé. Le protocole est vérifié sur faux
 curseur ; ses effets serveur sont encore non vérifiés.
 
@@ -136,7 +149,9 @@ l’acceptation par le serveur ni l’égalité avec les résultats Spark.
 
 Le test d’intégration optionnel est collecté et sauté sans
 `SKIFER_SNOWFLAKE_INTEGRATION=1` et les variables de connexion. Il crée des tables temporaires
-aux noms UUID dans un schéma fourni, rejoue les 20 cas compilables et compare aux lignes
+aux noms UUID dans un schéma jetable créé puis supprimé en `finally`. Il couvre aussi
+le catalogue, la publication, les transactions et les métadonnées, rejoue les 20 cas
+compilables et compare aux lignes
 Spark figées, nombres quantifiés à `1e-9`, dates ISO et lignes comme multi-ensemble.
 **Ce test n’a jamais été exécuté contre un compte réel.** Les variables et hypothèses
 non vérifiées sont documentées dans le
