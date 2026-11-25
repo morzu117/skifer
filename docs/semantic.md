@@ -198,7 +198,10 @@ remains accepted. The command reports each file and the JSON path for schema
 errors; it continues across files and returns `0` only when all pass, `1` on a
 validation or technical failure. Missing jsonschema reports the extra to install.
 The generator ships in the Python package; no repository `schemas/` file is needed.
-The historical `PIPELINE MODEL` command keeps its output and exit codes.
+The historical `PIPELINE MODEL` command keeps its output and exit codes. See the
+[published semantic JSON Schema](https://github.com/morzu117/skifer/blob/main/schemas/skifer-semantic-model.schema.json)
+(draft-07, `$id: https://skifer.io/schemas/semantic-model/v1`) and the
+[Atlas integration recipe](integrations/atlas/README.md).
 
 Exit codes are the CI contract:
 
