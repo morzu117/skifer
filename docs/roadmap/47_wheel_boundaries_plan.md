@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Statut** | Proposé le 26 novembre 2026 — en attente de validation. Aucun code n'est écrit. |
+| **Statut** | Proposé le 26 novembre 2026. Décisions D1 – D8 arbitrées le même jour (recommandations retenues). Aucun code n'est écrit ; le lancement de l'implémentation reste à déclencher par l'utilisateur. |
 | **Branche du plan** | `feat/plan47-wheel-boundaries` (depuis `main` @ `e2e36b7`, release 4.2.0) |
 | **Dépôts touchés** | `skifer` (cœur, 4 wheels), `skifer-duckdb`, `skifer-snowflake` |
 | **Suite de** | [Plan 46](46_multi_platform_plan.md) (46.0 – 46.7 livrés), [ADR 0001](../adr/0001-sql-first-multi-platform.md) |
@@ -77,18 +77,18 @@ connecteur DuckDB.
   `force-include`).
 - Aucun bump de version, aucune release : la version et le moment restent à l'utilisateur.
 
-## 3. Décisions à arbitrer avant de lancer les lots concernés
+## 3. Décisions (arbitrées le 26 novembre 2026)
 
-Le lot A ne dépend d'aucune décision (sauf D4, qui a un repli). Chaque décision a une
-recommandation ; sans réponse, **le point concerné ne démarre pas** — un agent de dev ne
-tranche jamais.
+**Les huit recommandations ci-dessous sont retenues par l'utilisateur.** Elles valent
+décision pour tous les briefs : un agent de dev ne les rouvre pas, et s'arrête s'il rencontre
+une question de conception qu'elles ne couvrent pas.
 
-| Id | Question | Recommandation | Bloque |
+| Id | Question | Décision retenue | Concerne |
 |---|---|---|---|
 | D1 | Les stores `Delta*` changent-ils de wheel ? | **Non.** 4 sur 6 n'appellent que des méthodes du backend : on déclare ce port (47.16) et ils restent dans `skifer`. `DeltaMetadataStore` et `DeltaHistoryStore` (qui font `backend.spark.sql`) restent en place, signalés comme couplés à Spark ; leur passage par le port est un suivi. | 47.16 |
 | D2 | `SkiferEngine` : injection d'un runtime, ou déplacement dans `skifer-engine` ? | **Déplacement par packaging** de `core/{core,patterns,context,sandbox,rule_planner}.py`. Le scan des imports montre qu'aucun module gouverné ne les importe au chargement ; le cycle disparaît sans toucher au code. | 47.18 |
 | D3 | Comment la couche gouvernée lit-elle des lignes hors Spark ? | **Quatrième contrat étroit `RowsContract.fetch_rows(result, limit)`** (lignes bornées, `list[dict]`), avec addendum à l'ADR 0001. Ce n'est pas un DataFrame universel : une seule opération, bornée. Alternative écartée : laisser agents et MCP « Spark seulement » avec une erreur typée. | 47.10, 47.13 |
-| D4 | Le `print` du SQL exécuté dans `SemanticEngine` passe-t-il par `logging` (DEBUG) ? | **Oui.** Repli si refusé : 47.6 ne fait que protéger `stdout` en MCP stdio. | partie de 47.6 |
+| D4 | Le `print` du SQL exécuté dans `SemanticEngine` passe-t-il par `logging` (DEBUG) ? | **Oui.** | partie de 47.6 |
 | D5 | Publier via un connecteur un YAML qui déclare `data_product:` ? | **Refus explicite** (« la publication certifiée passe par `SkiferEngine` »). Idem `sink:` non Delta et `materialization:` autre que `table`. | 47.11 |
 | D6 | Les connecteurs dépendent-ils de `skifer-core[dialects]` (et de `skifer` seulement via un extra `semantic`) ? | **Oui.** Installation minimale = 3 distributions. Rupture : `skifer_duckdb.semantic` exige alors `pip install skifer-duckdb[semantic]`. | 47.14, 47.15 |
 | D7 | `skifer-databricks` devient-il « la plateforme Databricks » (SDK + code UC), le serving passant en extra `skifer-databricks[serving]` ? | **Oui.** `skifer[databricks]` → `skifer-databricks==X` ; `skifer[serving]` → `skifer-databricks[serving]==X`. Nécessaire parce que `databricks-connect` est incompatible avec `pyspark` : la base ne peut pas l'imposer. Rupture : `pip install skifer-databricks` n'apporte plus `mlflow`. | 47.20 |
@@ -120,8 +120,8 @@ tranche jamais.
 - **Comprendre avant de modifier** : `codegraph explore "<symboles>"`, pas de grep en première
   intention. Le rayon d'impact rendu est un plancher (flux pilotés par YAML).
 - **Ne conçois pas.** Si le brief laisse une décision de conception ouverte, arrête-toi et
-  écris-la dans le handoff. Les décisions D1 – D8 sont déjà tranchées par l'utilisateur ou
-  bloquantes : ne les rouvre pas.
+  écris-la dans le handoff. Les décisions D1 – D8 sont tranchées par l'utilisateur :
+  ne les rouvre pas.
 - **Échec pré-existant** : le prouver sur la base sans le diff, le signaler, ne jamais le
   contourner (`skip`, seuil abaissé, assertion retirée).
 - **Handoff** : commit, sortie du gate, lignes supprimées
@@ -272,16 +272,16 @@ moteurs, donc pas une divergence) — consigné en §9.
 ### 47.6 — MCP stdio : `stdout` réservé au protocole (R7, D4)
 
 **Fichiers.** `src/skifer/mcp/runtime.py`, `tests/test_mcp_cli.py` (c'est là que le runtime est testé),
-`CHANGELOG.md` ; si D4 = oui : `src/skifer/semantic/semantic.py` (une ligne) et son test.
+`CHANGELOG.md`, `src/skifer/semantic/semantic.py` (une ligne, D4) et son test.
 
 **Comportement attendu.** Dans `_serve_stdio`, **après** l'entrée dans `stdio_server()` (qui a
 déjà capturé le vrai `stdout`), `server.run(...)` s'exécute sous
-`contextlib.redirect_stdout(sys.stderr)`. Si D4 = oui, le `print` du SQL
+`contextlib.redirect_stdout(sys.stderr)`. Le `print` du SQL
 (`semantic.py`, bloc `if not resolved.policy_filters:`) devient `logger.debug` — **seule ligne
 existante modifiée**, les autres `print` restent.
 
 **Tests.** Faux module `mcp.server.stdio` : un `print` émis pendant `server.run` arrive sur
-`stderr` et jamais sur le flux de protocole ; `stdout` est restauré après. Si D4 : le SQL
+`stderr` et jamais sur le flux de protocole ; `stdout` est restauré après. Le SQL
 n'apparaît plus sur `stdout` et apparaît en DEBUG.
 
 ### 47.7 — Surface publique honnête par wheel (S1)
@@ -630,8 +630,8 @@ mixtes — demande un découpage de fichier, pas un déplacement de packaging) ;
 | Point | Lot | Dépôt | Statut |
 |---|---|---|---|
 | 47.0 – 47.9 | A | `skifer` | À faire |
-| 47.10 – 47.13 | B | `skifer` | À faire (D3, D5) |
-| 47.14 | B | `skifer-duckdb` | À faire (D6) |
-| 47.15 | B | `skifer-snowflake` | À faire (D6) |
-| 47.16 – 47.20 | C | `skifer` | À faire (D1, D2, D7) |
+| 47.10 – 47.13 | B | `skifer` | À faire |
+| 47.14 | B | `skifer-duckdb` | À faire (prérequis : branche 46.4 mergée) |
+| 47.15 | B | `skifer-snowflake` | À faire (prérequis : branche 46.6 mergée) |
+| 47.16 – 47.20 | C | `skifer` | À faire |
 | 47.21 | D | `skifer` | À faire |
