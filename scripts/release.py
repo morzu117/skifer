@@ -10,8 +10,9 @@ Usage:
 The script never pushes. Locally, push with `git push origin main vX.Y.Z`.
 In CI, .github/workflows/release.yml pushes and triggers the PyPI publication.
 
-Files touched (same set as the manual `chore(release)` commits of 3.0.0 to 3.0.2):
-    pyproject.toml, uv.lock (skifer entry), CHANGELOG.md, docs/install_databricks.md
+Files touched:
+    pyproject.toml, uv.lock (skifer entry), CHANGELOG.md, docs/install_databricks.md,
+    and packaging/*/pyproject.toml (the four wheel versions and their cross-pins).
 """
 
 from __future__ import annotations
@@ -29,8 +30,11 @@ UV_LOCK = ROOT / "uv.lock"
 CHANGELOG = ROOT / "CHANGELOG.md"
 INSTALL_DOC = ROOT / "docs" / "install_databricks.md"
 FILES = ["pyproject.toml", "uv.lock", "CHANGELOG.md", "docs/install_databricks.md"]
+PACKAGING = ROOT / "packaging"
 
 SEMVER = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+# Cross-distribution pins inside packaging/*/pyproject.toml (e.g. skifer-core==X.Y.Z).
+SKIFER_PIN = re.compile(r"(skifer(?:-core|-engine|-databricks)?==)\d+\.\d+\.\d+")
 
 
 def git(*args: str) -> str:
@@ -119,6 +123,28 @@ def edit_install_doc(old: str, new: str) -> None:
     INSTALL_DOC.write_text(text)
 
 
+def packaging_pyprojects() -> list[Path]:
+    return sorted(PACKAGING.glob("*/pyproject.toml"))
+
+
+def edit_packaging(new: str) -> list[str]:
+    """Bump the version and the cross-distribution pins in every packaging wheel.
+
+    The four distributions share one version and pin each other by exact version;
+    test_packaging guards that they never drift. Returns the files changed.
+    """
+    changed = []
+    for pyproject in packaging_pyprojects():
+        text = pyproject.read_text()
+        text, n = re.subn(r'(?m)^version = "[^"]+"$', f'version = "{new}"', text, count=1)
+        if n != 1:
+            raise SystemExit(f"Could not rewrite the version in {pyproject.relative_to(ROOT)}.")
+        text = SKIFER_PIN.sub(rf"\g<1>{new}", text)
+        pyproject.write_text(text)
+        changed.append(str(pyproject.relative_to(ROOT)))
+    return changed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("target", help="patch | minor | major | X.Y.Z")
@@ -142,9 +168,10 @@ def main() -> int:
     edit_uv_lock(new)
     edit_changelog(new, dt.date.today().isoformat())
     edit_install_doc(old, new)
+    packaging_files = edit_packaging(new)
 
     if not args.no_git:
-        git("add", *FILES)
+        git("add", *FILES, *packaging_files)
         git("commit", "-m", f"chore(release): {new}")
         git("tag", tag)
         print(f"Committed and tagged {tag}. Push with: git push origin main {tag}")

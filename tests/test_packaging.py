@@ -135,6 +135,11 @@ def test_all_packaging_distributions_share_one_version():
         versions[project["name"]] = project["version"]
     assert len(set(versions.values())) == 1, versions
     shared = next(iter(versions.values()))
+    # The dev root pyproject is the single source of truth release.py bumps from;
+    # the four distributions must track it or a release would ship mismatched wheels.
+    assert shared == _load("pyproject.toml")["project"]["version"], (
+        f"packaging versions {shared} drift from root pyproject"
+    )
     governed = _load("packaging/skifer/pyproject.toml")["project"]
     assert f"skifer-core=={shared}" in governed["dependencies"]
     engine = _load("packaging/skifer-engine/pyproject.toml")["project"]
