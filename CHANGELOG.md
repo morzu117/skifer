@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Plan 47.1 — `cast:` type is a closed grammar in the SQL compiler (R1).** The type of a
+  `cast:` operation was interpolated raw into the compiled SQL, so
+  `cast:int) + (SELECT max(secret) FROM main.vault` compiled with `allow_raw_sql=False` on
+  the three targets (materialized views, connectors, metric candidates). The new
+  `validate_cast_type()` (recursive descent, at most 4 nested levels) accepts exactly a
+  closed list of scalar names (`string, varchar, char, int, integer, bigint, long,
+  smallint, short, tinyint, byte, double, float, real, decimal, numeric, dec, boolean,
+  bool, date, timestamp, timestamp_ntz, datetime, binary`, case-insensitive, with an
+  integer `(p)`/`(p,s)` only on `decimal/numeric/dec/varchar/char`) and
+  `array<T>` / `map<K,V>` / `struct<name:T,...>`; the SQL is rebuilt from the parsed
+  tokens. `datetime → timestamp` is kept. A test walks both SQL dispatch tables with a
+  probe argument and asserts none interpolates it raw. The DataFrame path is unchanged.
+  **Breaking:** a `cast:` type outside the grammar, which used to compile, now raises
+  `SqlCompilationError` naming the received type and the admitted list. Side effect: a
+  type with a comma (`decimal(10,2)`, `map<string,int>`), previously truncated at the
+  comma by the op-argument split, now compiles whole.
+
 ### Added
 - **Plan 47.0 — the wheels are built, installed and imported alone.** New
   `scripts/check_wheels.py` builds the four wheels (`pip wheel --no-deps`), checks from

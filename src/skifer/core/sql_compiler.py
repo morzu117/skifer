@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import Any, Callable
 
 from skifer.core.capability_matrix import Refused, Status, capability
@@ -126,6 +127,148 @@ def _between_sql(c: str, f: Any, negate: bool) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Cast types — closed grammar (Plan 47.1)
+# ---------------------------------------------------------------------------
+
+#: Scalar type names a ``cast:`` may name, matched case-insensitively.
+CAST_SCALAR_TYPES: tuple[str, ...] = (
+    "string", "varchar", "char", "int", "integer", "bigint", "long", "smallint", "short",
+    "tinyint", "byte", "double", "float", "real", "decimal", "numeric", "dec", "boolean",
+    "bool", "date", "timestamp", "timestamp_ntz", "datetime", "binary",
+)
+#: The only scalars that take a ``(p)`` or ``(p,s)`` precision.
+_CAST_PRECISION_TYPES = frozenset({"decimal", "numeric", "dec", "varchar", "char"})
+#: Type levels a cast may nest (``array<array<array<int>>>`` is 4).
+_CAST_MAX_DEPTH = 4
+_CAST_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CAST_PUNCTUATION = frozenset("<>(),:")
+_CAST_ALLOWED = (
+    f"scalar {', '.join(CAST_SCALAR_TYPES)} (case-insensitive; precision (p) or (p,s) only "
+    "on decimal, numeric, dec, varchar, char), or array<T>, map<K,V>, struct<name:T,...> "
+    f"nested at most {_CAST_MAX_DEPTH} levels"
+)
+
+
+class _CastTypeParser:
+    """Recursive descent over the cast grammar; renders from tokens, never from the input."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.tokens = self._tokenize(text)
+        self.pos = 0
+
+    def error(self, detail: str) -> SqlCompilationError:
+        return SqlCompilationError(
+            f"cast: type {self.text!r} is not an allowed cast type ({detail}). "
+            f"Allowed: {_CAST_ALLOWED}."
+        )
+
+    def _tokenize(self, text: str) -> list[str]:
+        tokens: list[str] = []
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch in (" ", "\t"):
+                i += 1
+            elif ch in _CAST_PUNCTUATION:
+                tokens.append(ch)
+                i += 1
+            elif ch.isascii() and (ch.isalnum() or ch == "_"):
+                j = i + 1
+                while j < len(text) and text[j].isascii() and (text[j].isalnum() or text[j] == "_"):
+                    j += 1
+                tokens.append(text[i:j])
+                i = j
+            else:
+                raise self.error(f"unexpected character {ch!r}")
+        return tokens
+
+    def peek(self) -> str | None:
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def take(self, expected: str | None = None) -> str:
+        token = self.peek()
+        if token is None:
+            raise self.error("unexpected end" + (f", expected {expected!r}" if expected else ""))
+        if expected is not None and token != expected:
+            raise self.error(f"expected {expected!r}, got {token!r}")
+        self.pos += 1
+        return token
+
+    def integer(self) -> int:
+        token = self.take()
+        if not token.isdigit():
+            raise self.error(f"precision must be an integer, got {token!r}")
+        return int(token)
+
+    def parse(self) -> str:
+        rendered = self.type_(1)
+        if self.peek() is not None:
+            raise self.error(f"unexpected {self.peek()!r} after the type")
+        return rendered
+
+    def type_(self, depth: int) -> str:
+        if depth > _CAST_MAX_DEPTH:
+            raise self.error(f"nested deeper than {_CAST_MAX_DEPTH} levels")
+        name = self.take()
+        lower = name.lower()
+        if not _CAST_FIELD_NAME_RE.match(name):
+            raise self.error(f"{name!r} is not a type name")
+        if lower == "array":
+            self.take("<")
+            inner = self.type_(depth + 1)
+            self.take(">")
+            return f"{name}<{inner}>"
+        if lower == "map":
+            self.take("<")
+            key = self.type_(depth + 1)
+            self.take(",")
+            value = self.type_(depth + 1)
+            self.take(">")
+            return f"{name}<{key},{value}>"
+        if lower == "struct":
+            self.take("<")
+            fields = []
+            while True:
+                field_name = self.take()
+                if not _CAST_FIELD_NAME_RE.match(field_name):
+                    raise self.error(f"struct field name {field_name!r} is not an identifier")
+                self.take(":")
+                fields.append(f"{field_name}:{self.type_(depth + 1)}")
+                if self.peek() != ",":
+                    break
+                self.take(",")
+            self.take(">")
+            return f"{name}<{','.join(fields)}>"
+        if lower not in CAST_SCALAR_TYPES:
+            raise self.error(f"unknown type name {name!r}")
+        # Twin of the historical mapping: Spark has no ``datetime`` type.
+        rendered = "timestamp" if lower in ("datetime", "timestamp") else name
+        if self.peek() == "(":
+            if lower not in _CAST_PRECISION_TYPES:
+                raise self.error(f"{name!r} takes no precision")
+            self.take("(")
+            precision = [self.integer()]
+            if self.peek() == ",":
+                self.take(",")
+                precision.append(self.integer())
+            self.take(")")
+            rendered += "(" + ",".join(str(p) for p in precision) + ")"
+        return rendered
+
+
+def validate_cast_type(text: Any) -> str:
+    """Return the SQL spelling of a ``cast:`` type, or raise ``SqlCompilationError``.
+
+    Accepts exactly a closed list of scalar names (with an integer precision on the
+    decimal / character family) and ``array<T>`` / ``map<K,V>`` / ``struct<name:T,...>``
+    nested at most four levels. The output is rebuilt from the parsed tokens, so nothing
+    from the input reaches the SQL unless the grammar accepted it.
+    """
+    return _CastTypeParser(str(text)).parse()
+
+
+# ---------------------------------------------------------------------------
 # Dispatch tables — mirrors of the Spark ones
 # ---------------------------------------------------------------------------
 
@@ -153,7 +296,7 @@ _SQL_FILTER_DISPATCH: dict = {
 
 # Op dispatch: (c: str, op: ParsedOp) -> str (value SQL)
 _SQL_OP_DISPATCH: dict = {
-    "cast":      lambda c, op: f"CAST({c} AS {'timestamp' if op.args[0].lower() in ('datetime', 'timestamp') else op.args[0]})",
+    "cast":      lambda c, op: f"CAST({c} AS {validate_cast_type(','.join(map(str, op.args)))})",
     "upper":     lambda c, op: f"UPPER({c})",
     "lower":     lambda c, op: f"LOWER({c})",
     "trim":      lambda c, op: f"TRIM({c})",

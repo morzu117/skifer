@@ -820,3 +820,113 @@ aggregate:
         parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
         with pytest.raises(SqlCompilationError, match="oracle"):
             capability_report(parsed, "oracle")
+
+
+# ==============================================================================
+# Plan 47.1 — closed grammar for the cast type (R1)
+# ==============================================================================
+
+_CAST_DIALECTS = ("databricks", "duckdb", "snowflake")
+
+_CAST_PAYLOADS = (
+    "int) + (SELECT max(secret) FROM main.vault",
+    "int) AS a, (SELECT 1",
+    "int; DROP TABLE x",
+    "int -- x",
+    "varchar2",
+    "array<array<array<array<int>>>>",
+)
+
+
+def _cast_schema(cast_type: str):
+    return parse_to_ir(parse_schema(_single_table(
+        f'select_final:\n  - [amount, out, ["cast:{cast_type}"]]\n'
+    )))
+
+
+class TestCastTypeGrammar:
+    @pytest.mark.parametrize("cast_type, rendered", [
+        ("double", "double"), ("string", "string"), ("date", "date"), ("int", "int"),
+        ("long", "long"), ("timestamp", "timestamp"), ("integer", "integer"),
+        ("decimal", "decimal"), ("datetime", "timestamp"),
+    ])
+    def test_types_used_in_the_repository_compile_unchanged(self, cast_type, rendered):
+        sql = compile_select(_cast_schema(cast_type))
+        assert f"CAST(`amount` AS {rendered}) AS `out`" in sql
+        for dialect in _CAST_DIALECTS:
+            compile_select(_cast_schema(cast_type), dialect=dialect)
+
+    @pytest.mark.parametrize("cast_type", [
+        "decimal(10,2)", "array<string>", "map<string,int>", "struct<a:int,b:array<string>>",
+        "DECIMAL(18, 4)", "varchar(20)", "array<array<array<int>>>",
+    ])
+    def test_parameterised_and_composite_types_compile(self, cast_type):
+        from skifer.core.sql_compiler import validate_cast_type
+
+        sql = compile_select(_cast_schema(cast_type))
+        assert f"CAST(`amount` AS {validate_cast_type(cast_type)}) AS `out`" in sql
+        assert validate_cast_type("decimal(10, 2)") == "decimal(10,2)"
+        assert validate_cast_type("map<string, int>") == "map<string,int>"
+
+    @pytest.mark.parametrize("dialect", _CAST_DIALECTS)
+    @pytest.mark.parametrize("cast_type", _CAST_PAYLOADS)
+    def test_payloads_unknown_types_and_depth_five_are_refused(self, cast_type, dialect):
+        with pytest.raises(SqlCompilationError) as raised:
+            compile_select(_cast_schema(cast_type), dialect=dialect, allow_raw_sql=False)
+        message = str(raised.value)
+        assert repr(cast_type) in message
+        assert "decimal" in message and "struct<" in message  # the admitted list is cited
+
+    @pytest.mark.parametrize("cast_type", [
+        "", "int(10)", "decimal(10,2,3)", "decimal(a)", "struct<>", "struct<1a:int>",
+        "struct<a b:int>", "map<string>", "array<string", "array<string>>", "intx",
+        "int\x00", "double)", "decimal(-1,2)", "struct<a:int,>",
+    ])
+    def test_malformed_types_are_refused(self, cast_type):
+        from skifer.core.sql_compiler import validate_cast_type
+
+        with pytest.raises(SqlCompilationError, match="cast"):
+            validate_cast_type(cast_type)
+
+    def test_scalar_names_are_case_insensitive(self):
+        from skifer.core.sql_compiler import validate_cast_type
+
+        assert validate_cast_type("BIGINT") == "BIGINT"
+        assert validate_cast_type("TIMESTAMP") == "timestamp"
+        assert validate_cast_type("Array<Datetime>") == "Array<timestamp>"
+
+
+_PROBE = "p`'\\) OR (1=1 --"
+
+
+class TestNoDispatchEntryInterpolatesRawArguments:
+    """Every dispatch entry either renders its argument escaped/validated or raises."""
+
+    @pytest.mark.parametrize("operator", sorted(_SQL_FILTER_DISPATCH))
+    def test_filter_dispatch(self, operator):
+        from skifer.core.ir import ParsedFilter
+
+        value = [_PROBE, _PROBE] if operator in ("between", "not_between") else _PROBE
+        try:
+            sql = _SQL_FILTER_DISPATCH[operator](
+                "`c`", ParsedFilter(column="c", operator=operator, value=value)
+            )
+        except (SqlCompilationError, ValueError):
+            return
+        assert _PROBE not in sql
+
+    @pytest.mark.parametrize("name", sorted(_SQL_OP_DISPATCH))
+    def test_op_dispatch(self, name):
+        from skifer.core.ir import ParsedOp
+
+        try:
+            sql = _SQL_OP_DISPATCH[name]("`c`", ParsedOp(name, (_PROBE, _PROBE)))
+        except (SqlCompilationError, ValueError):
+            return
+        assert _PROBE not in sql
+
+    def test_cast_with_the_probe_is_refused_not_escaped(self):
+        from skifer.core.ir import ParsedOp
+
+        with pytest.raises(SqlCompilationError):
+            _SQL_OP_DISPATCH["cast"]("`c`", ParsedOp("cast", (_PROBE,)))
