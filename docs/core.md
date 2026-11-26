@@ -228,6 +228,9 @@ schema = {
 }
 ```
 
+`cross` takes no keys (refused at load) and does not deduplicate same-name columns
+(no `USING`); rename them via `fields:` when needed.
+
 The runnable walkthrough in `examples/07_sources_and_shaping/` reads checked-in
 JSON, applies an OR-of-ANDs filter, joins labels supplied by a registered loader,
 limits the development input, and prints the aggregate built from an added month
@@ -718,6 +721,149 @@ persisted SQL definition.
 > Databricks runtime).
 
 ---
+
+## Portabilité SQL (connecteurs, matrice, dialectes) — Plan 46
+
+Le rendu Snowflake cite **toujours** les identifiants (tables, colonnes et alias),
+y compris ceux présents dans les expressions sémantiques, en préservant exactement
+la casse écrite. Une table créée sans guillemets dans Snowflake sous le nom `orders`
+s’appelle `ORDERS` : il faut écrire `ORDERS` dans le YAML. Cette règle est centralisée
+dans le rendu, pour les pipelines comme pour les requêtes sémantiques ; les rendus
+Databricks et DuckDB restent inchangés.
+
+**Casse des identifiants.** Limite connue : Spark est insensible à la casse des
+identifiants, tandis que le rendu Snowflake les cite à casse exacte. Un alias `Total`
+référencé comme `total` ailleurs échoue sur Snowflake (ou lie une autre colonne si
+les deux existent) ; il en va de même pour `Country` projeté et `country` dans le
+`GROUP BY`. La casse doit donc être cohérente dans tout le YAML ciblant Snowflake ;
+aucune normalisation automatique n’est appliquée. `current_date` et
+`current_timestamp` restent des fonctions, mais `localtimestamp` sans parenthèses
+est rendu comme la colonne `"localtimestamp"`. Ces rendus sont épinglés par des tests
+locaux ; ils n’ont pas été exécutés sur un compte Snowflake.
+
+Le langage compile une fois en SQL Spark, puis rend ce SQL pour l'une des trois
+cibles fermées : `databricks`, `duckdb`, `snowflake`. Installer
+`pip install 'skifer[dialects]'` pour les rendus DuckDB et Snowflake ; `sqlglot`
+est chargé uniquement lors de ces rendus. Databricks conserve le SQL octet pour octet.
+
+Trois `Protocol` étroits et vérifiables à l'exécution vivent dans `core.connector` :
+
+- `ExecutionContract.execute_sql_with_metadata(sql)` retourne un `ExecutionResult`
+  (`dataframe`, `statement_id`, `metadata`), également ré-exporté depuis `semantic.evidence`.
+- `CatalogContract` expose `table_exists`, `columns` (des `ColumnInfo`) et `resolve_fqn`.
+- `PublicationContract` expose `create_or_replace_view` et `write_table` ; l'appelant
+  valide le mode contre `WRITE_MODES` (`overwrite`, `append`) et les écritures déclarées
+  dans `ConnectorCapabilities(dialect, writes)`.
+
+La matrice `core.capability_matrix.MATRIX` utilise des clés préfixées
+`filter:equals`, `op:cast`, `agg:sum`, `join:left` et trois statuts :
+`Supported()` pour la référence Databricks, `Conditional(reason)` pour une capacité
+soumise à une condition ou en attente de parité exécutée, `Refused(reason)` pour
+une capacité indisponible. `capability(target, key)` lève `KeyError` pour toute
+cible ou clé inconnue.
+
+`used_capabilities(parsed)` collecte les opérations du pipeline, conditions
+imbriquées comprises. `capability_report(parsed, dialect)` retourne leurs statuts
+et motifs pour la cible, triés par clé, sans effet de bord. Après les refus
+historiques des constructions non compilables, `compile_select(..., dialect=...)`
+consulte la matrice : les `Refused` lèvent une seule `SqlCompilationError` listant
+toutes les clés refusées et leurs motifs, triées ; un
+`Conditional` laisse compiler sans journalisation et **ne prouve aucune parité**.
+Le rapport est le canal explicite pour consulter ces conditions.
+La comparaison des valeurs entre runtimes est décrite dans la sous-section [Parité exécutée](#parite-executee-plan-463). Sur Snowflake, `first`,
+`last`, `left_semi` et `left_anti` sont refusés.
+Les fragments SQL bruts `expr:` et `filter:sql`, écrits en Spark SQL, sont refusés
+hors Databricks. Le rendu utilise `unsupported_level=ErrorLevel.RAISE` : toute
+traduction non prise en charge lève une erreur, sans approximation silencieuse.
+
+```python
+from skifer.core.ir import parse_to_ir
+from skifer.core.schema_loader import parse_schema
+from skifer.core.sql_compiler import compile_select
+
+parsed = parse_to_ir(parse_schema("""
+tables:
+  - name: orders
+    alias: ord
+select_final:
+  - [amount, amount, [cast:double]]
+"""))
+sql = compile_select(parsed, dialect="duckdb")
+# WITH "ord" AS (SELECT * FROM "orders") SELECT TRY_CAST("amount" AS DOUBLE) AS "amount" FROM "ord"
+```
+
+Le SQL rendu tient sur une seule ligne (sans `pretty`) ; sqlglot rend ici le cast
+Spark en `TRY_CAST` pour DuckDB.
+
+`QueryResolver` partage ce rendu. `SemanticEngine.from_backend` accepte un
+`ExecutionContract` ou le chemin historique `execute_sql`, sans avertissement de
+dépréciation. Ces contrats ne fournissent pas encore les connecteurs de runtime.
+Voir l'[ADR 0001 — architecture SQL-first](adr/0001-sql-first-multi-platform.md).
+L'exemple `examples/26_portable_sql/` compile pour Databricks et DuckDB, affiche les capacités
+et exécute le SQL DuckDB sur un Parquet local sans Spark.
+
+### Parité exécutée (Plan 46.3)
+
+Le harnais `tests/parity/` exécute le même YAML sur trois voies :
+
+- **A — Spark DataFrame** : `engine.process_schema`, avec le `SparkBackend` local.
+- **B — Spark SQL** : `spark.sql(compile_select(parsed))`.
+- **C — DuckDB SQL** : `duckdb.execute(compile_select(parsed, dialect="duckdb"))`.
+
+Le jeu canonique contient 30 commandes, 12 clients et 6 pays. Les mêmes lignes Python
+(`Decimal`, `date`, chaînes, nombres et `None`) alimentent des vues temporaires Spark
+et des tables DuckDB en mémoire ; chaque colonne déclare côte à côte ses deux types.
+Il comprend des valeurs nulles, négatives, décimales, des cas d'arrondi, du texte Unicode,
+des clés sans correspondance et des clients sans commande. Les 23 cas couvrent les filtres,
+les opérations de colonnes (y compris les conditions imbriquées), les agrégats et les sept
+jointures. Trois tests supplémentaires épinglent les divergences d'arrondi et d'échec de cast,
+ainsi que de type d'AVG.
+
+La comparaison porte sur les **valeurs, pas les types SQL** : elle ne dit rien du type SQL
+rendu. Les colonnes sont projetées dans l'ordre de leurs noms triés. `None`, les booléens
+et les chaînes sont conservés ; les nombres deviennent `Decimal(str(v))`, quantifiés à
+`1e-9` ; dates et dates-heures deviennent `isoformat()`. Tout autre type est refusé par
+une assertion nommant le type. Les lignes normalisées sont triées par
+`tuple((v is None, str(v)) for v in row)`. Un échec indique la voie divergente, les deux SQL
+et les premières lignes différentes. Un résultat vide est refusé : il ne prouve aucune parité.
+
+La promotion de la matrice DuckDB est mécanique :
+
+- Une clé est `Supported` si et seulement si au moins un cas de parité vert l'exerce
+  sans la déclarer dans ses conditions ; aucun cas ne peut lui attribuer une condition.
+- Une clé `Conditional` porte mot pour mot la condition prouvée par un cas. Chaque cas
+  qui l'exerce doit déclarer cette même condition.
+- Une clé `Refused` possède un YAML dont la compilation DuckDB lève `SqlCompilationError`
+  en citant la clé. `filter:sql` et `op:expr` restent refusés.
+
+`test_duckdb_matrix_is_backed_by_executed_parity` vérifie sans démarrer Spark que les 57 clés
+relèvent exactement d'une de ces catégories. Les clés exercées sont dérivées par
+`used_capabilities(parse_to_ir(parse_schema(yaml)))`, jamais déclarées à la main.
+Le bilan est **48 `Supported`, 7 `Conditional`, 2 `Refused`**. Les promotions sont
+énumérées dans `_DUCKDB_PROVEN` ; toute autre clé DuckDB est conditionnelle par défaut. Snowflake attend la parité
+exécutée de 46.6 ; un rendu SQL valide ne suffit pas à promouvoir une capacité.
+
+| Capacité | Divergence ou limite | Condition prouvée |
+|---|---|---|
+| `op:cast` | `2.7 → int` donne 2 sur Spark et 3 sur DuckDB ; un texte non convertible lève sur Spark ANSI mais donne NULL via `TRY_CAST` sur DuckDB. | TRY_CAST on DuckDB: a double->int cast truncates on Spark but rounds on DuckDB, and an unconvertible value raises on Spark (ANSI) but yields NULL on DuckDB; parity proven for casts only (numeric text->double, integer->string, decimal->double) |
+| `agg:avg` | `AVG(DECIMAL(12,2))` retourne un `Decimal` à 6 décimales sur Spark, un `float` sur DuckDB ; la précision peut différer. | Entrées DOUBLE uniquement. |
+| `agg:first`, `agg:last` | L'ordre n'est pas garanti sans `ORDER BY`. | Chaque groupe possède une seule valeur distincte non nulle (`country_name` par `country`). |
+| `agg:approx_count_distinct` | Les algorithmes d'approximation diffèrent selon le moteur. | approximate algorithms differ by engine; parity proven exact on the canonical dataset (at most 2 distinct values per group on the canonical dataset) |
+| `op:split` | Spark et DuckDB utilisent des regex (Java et RE2) ; sqlglot décale l'index de base 0. | Séparateur littéral `-`, indices 0 et 1. |
+| `op:to_date` | sqlglot traduit les tokens Java en formats strptime. | Formats `yyyy-MM-dd` et `dd/MM/yyyy` uniquement. |
+
+Le harnais a aussi révélé un défaut Skifer : `type: cross` appliquait les clés dans la voie
+DataFrame (24 lignes au lieu de 360). Le chargement refuse maintenant les clés sur `cross`
+pour les deux voies ; sans clé, les colonnes droites sont conservées et les trois voies
+rendent le même produit cartésien de 360 lignes. Les dictionnaires passés directement à
+`process_schema` conservent l'avertissement si des clés sont ignorées.
+
+Pour ajouter une capacité, ajouter d'abord un cas exécuté et sa condition éventuelle,
+passer le gate de parité, puis mettre à jour la matrice avec la preuve obtenue et repasser
+le gate complet. Une divergence DataFrame/Spark SQL est un bug Skifer ; une divergence
+Spark/DuckDB doit devenir une condition explicite ou un refus, jamais un `skip` ou un `xfail`.
+L'exemple `examples/26_portable_sql/` compile un même pipeline pour les deux cibles et exécute
+le SQL DuckDB sur un Parquet local, sans démarrer Spark.
 
 ## Filter operators
 

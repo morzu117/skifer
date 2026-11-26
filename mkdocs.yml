@@ -62,11 +62,16 @@ nav:
       - Read-only MCP: mcp.md
       - Supervised Adaptive Gold: adaptive.md
       - Governed Capabilities: capabilities.md
+  - Integrations:
+      - DuckDB: integrations/duckdb.md
+      - Snowflake: integrations/snowflake.md
+      - Atlas: integrations/atlas/README.md
   - Reference:
       - YAML Model Reference: yaml_spec.md
       - API Reference: api_reference.md
   - Contributing:
       - Workflow Bootstrap: contributing/init.md
+      - ADR 0001 — SQL-first multi-platform: adr/0001-sql-first-multi-platform.md
 
 # Working artifacts stay in the repository but off the published site: implementation
 # plans, point-in-time reviews, and past workflow handoffs. Excluding them from the

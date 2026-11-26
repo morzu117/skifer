@@ -21,6 +21,7 @@ from skifer.core.sandbox import SandboxResolver
 from skifer.core.rule_analyzer import RuleAnalyzer
 from skifer.core.rule_planner import RulePlanner
 from skifer.core.rule_executor import RuleExecutor
+from skifer.core import loaders  # noqa: F401 — registers built-in loaders where they are consumed
 
 if TYPE_CHECKING:
     from skifer.core.context import ExecutionContext
@@ -521,7 +522,11 @@ class SchemaInterpreter:
                 logger.info("    -> [Join] %s JOIN %s(%s) -> %s(%s)", join_type.upper(), alias_l, on_l, alias_r, on_r)
                 df_to = dfs[alias_r]
 
-                if on_l == on_r:
+                if join_type == "cross":
+                    if key_l is not None or key_r is not None:
+                        logger.warning("    -> [Join] cross join: declared keys %s/%s are ignored", on_l, on_r)
+                    df_main = b.join(df_main, df_to, on=None, how="cross")
+                elif on_l == on_r:
                     df_main = b.join(df_main, df_to, on=on_l, how=join_type)
                 else:
                     cond = reduce(lambda x, y: x & y, [df_main[lk] == df_to[rk] for lk, rk in zip(on_l, on_r)])

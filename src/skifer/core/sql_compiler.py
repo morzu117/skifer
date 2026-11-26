@@ -20,6 +20,8 @@ import json
 import logging
 from typing import Any, Callable
 
+from skifer.core.capability_matrix import Refused, Status, capability
+from skifer.core.dialect import TARGETS, DialectError, render
 from skifer.core.ir import ParsedColumnSpec, ParsedOp, ParsedSchema, _parse_op
 from skifer.core.op_catalog import AGGREGATE_FUNCTIONS, resolve_filter_operator
 
@@ -413,10 +415,72 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
     return sql
 
 
+def used_capabilities(parsed: ParsedSchema) -> set[str]:
+    """Return canonical operation keys used by a pipeline, including nested ops."""
+    keys: set[str] = set()
+
+    def filters(items):
+        for item in items:
+            keys.add(f"filter:{resolve_filter_operator(item.operator) or item.operator}")
+
+    def operation(op):
+        keys.add(f"op:{op.name}")
+        raw_arg = ",".join(str(arg) for arg in op.args)
+        if op.name == "when":
+            inner = raw_arg.split(":", 1)[0] if op.args else "is_not_null"
+            keys.add(f"filter:{resolve_filter_operator(inner) or inner}")
+        elif op.name in ("then", "else"):
+            operation(_parse_op(raw_arg) if op.args else ParsedOp("col", ()))
+
+    def columns(items):
+        for spec in items:
+            if spec.is_conditional:
+                for clause in spec.when_chain:
+                    operation(clause.condition)
+                    keys.add("op:then")
+                    operation(clause.then)
+                if spec.otherwise:
+                    keys.add("op:else")
+                    operation(spec.otherwise)
+            else:
+                for op in spec.ops:
+                    operation(op)
+
+    for table in parsed.tables:
+        filters(table.filters)
+        for group in table.filter_groups:
+            filters(group)
+        if table.drop_nulls_in:
+            keys.add("filter:is_not_null")
+        columns(table.fields)
+    filters(parsed.where)
+    for group in parsed.where_groups:
+        filters(group)
+    columns(parsed.select_final)
+    columns(parsed.add_columns)
+    if parsed.aggregate:
+        filters(parsed.aggregate.having)
+        keys.update(f"agg:{measure.func}" for measure in parsed.aggregate.measures)
+    keys.update(f"join:{join.join_type}" for join in parsed.joins)
+    return keys
+
+
+def capability_report(parsed: ParsedSchema, dialect: str) -> dict[str, Status]:
+    """Return target statuses for used capabilities, ordered by canonical key."""
+    if dialect not in TARGETS:
+        raise SqlCompilationError(f"Unknown SQL dialect {dialect!r}; expected one of {TARGETS}.")
+    try:
+        return {key: capability(dialect, key) for key in sorted(used_capabilities(parsed))}
+    except KeyError as exc:
+        raise SqlCompilationError(str(exc)) from exc
+
+
 def compile_select(
     parsed: ParsedSchema,
     resolve_table: Callable[[str], str] | None = None,
     allow_raw_sql: bool = True,
+    *,
+    dialect: str = "databricks",
 ) -> str:
     """
     Compile a parsed schema into a single SELECT statement.
@@ -426,6 +490,8 @@ def compile_select(
         resolve_table: Maps a declared table name to its actual FQN (sandbox
                        resolution). Defaults to identity.
         allow_raw_sql: When False, ``expr:`` and the ``sql`` filter operator raise.
+        dialect:       Target SQL dialect; refused capabilities raise, conditional
+                       capabilities render without implying executed parity.
 
     Returns:
         A ``WITH … SELECT …`` statement, without trailing semicolon.
@@ -434,8 +500,15 @@ def compile_select(
         SqlCompilationError: when the schema uses a construct with no faithful
                              SQL equivalent (Python rules, loaders, file sources…).
     """
-    resolve = resolve_table or (lambda name: name)
     _reject_uncompilable(parsed)
+    report = capability_report(parsed, dialect)
+    refused = [
+        f"{key!r}: {status.reason}" for key, status in report.items()
+        if isinstance(status, Refused)
+    ]
+    if refused:
+        raise SqlCompilationError(f"Capabilities refused for {dialect!r}: " + "; ".join(refused))
+    resolve = resolve_table or (lambda name: name)
 
     ctes = ",\n".join(
         f"{quote_ident(t.alias)} AS (\n  {_compile_table_cte(t, resolve, allow_raw_sql)}\n)"
@@ -465,7 +538,10 @@ def compile_select(
         projection = ", ".join(["*"] + add_columns)
         body = f"SELECT {projection}\nFROM {join_tree}{where_clause}"
 
-    return f"WITH {ctes}\n{body}"
+    try:
+        return render(f"WITH {ctes}\n{body}", dialect)
+    except DialectError as exc:
+        raise SqlCompilationError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "skifer-core"
+version = "4.1.0"
+description = "Skifer language core: SQL-first pipeline language, contracts, capability matrix and dialect rendering (no Spark)."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Julien Houbart", email = "houbartjulien80@gmail.com" }
+]
+keywords = [
+    "data-engineering", "declarative", "yaml", "sql", "semantic-layer", "lakehouse",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Topic :: Database",
+]
+
+[project.optional-dependencies]
+# SQL dialect rendering (skifer.core.dialect / sql_compiler) — lazy optional import.
+dialects = ["sqlglot>=25"]
+# JSON Schema validation of the published pipeline contract.
+schema = ["jsonschema>=4.0"]
+
+[project.urls]
+Homepage = "https://github.com/morzu117/skifer"
+Repository = "https://github.com/morzu117/skifer"
+
+# One shared src/ tree, two distributions. skifer-core ships only the language
+# core: the lazy package roots plus the 11 Spark-free modules named by the
+# import-linter "Language core stays free of ..." contract.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../src/skifer/__init__.py" = "skifer/__init__.py"
+"../../src/skifer/core/__init__.py" = "skifer/core/__init__.py"
+"../../src/skifer/core/op_catalog.py" = "skifer/core/op_catalog.py"
+"../../src/skifer/core/constants.py" = "skifer/core/constants.py"
+"../../src/skifer/core/ir.py" = "skifer/core/ir.py"
+"../../src/skifer/core/schema_loader.py" = "skifer/core/schema_loader.py"
+"../../src/skifer/core/sql_compiler.py" = "skifer/core/sql_compiler.py"
+"../../src/skifer/core/json_schema.py" = "skifer/core/json_schema.py"
+"../../src/skifer/core/registry.py" = "skifer/core/registry.py"
+"../../src/skifer/core/rule_analyzer.py" = "skifer/core/rule_analyzer.py"
+"../../src/skifer/core/connector.py" = "skifer/core/connector.py"
+"../../src/skifer/core/capability_matrix.py" = "skifer/core/capability_matrix.py"
+"../../src/skifer/core/dialect.py" = "skifer/core/dialect.py"

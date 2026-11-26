@@ -583,6 +583,31 @@ def test_normalize_join_compact_both():
     assert result["on_to"] == "id"
 
 
+@pytest.mark.parametrize("join_fields", [
+    "table_from: [ord, customer_id]\n    table_to: [cust, id]",
+    "table_from: ord\n    table_to: cust\n    on_from: customer_id\n    on_to: id",
+])
+def test_parse_schema_refuses_cross_join_keys(join_fields):
+    with pytest.raises(ValueError) as exc_info:
+        parse_schema(
+            "tables:\n  - {name: orders, alias: ord}\n  - {name: customers, alias: cust}\n"
+            f"join:\n  - {join_fields}\n    type: cross\n"
+        )
+    assert (
+        "  [join] 'type: cross' takes no keys — remove 'on_from'/'on_to' "
+        "(use the plain alias form 'table_from: ord') ; "
+        "a Cartesian product has no equality condition."
+    ) in str(exc_info.value)
+
+
+def test_parse_schema_accepts_cross_join_without_keys():
+    schema = parse_schema(
+        "tables:\n  - {name: orders, alias: ord}\n  - {name: customers, alias: cust}\n"
+        "join:\n  - {table_from: ord, table_to: cust, type: cross}\n"
+    )
+    assert schema["join"] == [{"table_from": "ord", "table_to": "cust", "type": "cross"}]
+
+
 def test_normalize_join_already_expanded():
     """Normal dict join is not modified."""
     join = {"table_from": "orders", "on_from": "id", "table_to": "customers", "on_to": "id"}

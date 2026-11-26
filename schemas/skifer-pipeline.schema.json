@@ -765,7 +765,9 @@
             "right",
             "outer",
             "cross",
-            "full"
+            "full",
+            "left_anti",
+            "left_semi"
           ],
           "default": "left"
         }

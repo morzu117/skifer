@@ -163,6 +163,20 @@ class TestGenerateJsonSchema:
         for fmt in ("csv", "parquet", "json", "delta"):
             assert fmt in source_type
 
+    def test_join_type_enum_covers_canonical_join_types(self):
+        """The JoinDef type enum must stay a superset of ir.VALID_JOIN_TYPES.
+
+        left_anti / left_semi are IR-valid and documented join types, but were
+        absent from this enum — a `type: left_anti` pipeline failed JSON Schema
+        validation even though the engine supports it.
+        """
+        from skifer.core.ir import VALID_JOIN_TYPES
+
+        join_type = generate_json_schema()["$defs"]["JoinDef"]["properties"]["type"]["enum"]
+        assert VALID_JOIN_TYPES <= set(join_type)
+        assert "left_anti" in join_type
+        assert "left_semi" in join_type
+
     def test_deterministic_output(self):
         """generate_json_schema() returns the same result on repeated calls."""
         s1 = generate_json_schema()

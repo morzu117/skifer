@@ -8,6 +8,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Pipeline JSON Schema — `left_anti` / `left_semi` join types.** The `JoinDef.type`
+  enum in `generate_json_schema()` (and the committed `schemas/skifer-pipeline.schema.json`)
+  omitted `left_anti` and `left_semi`, so a pipeline declaring either failed JSON Schema
+  validation even though `ir.VALID_JOIN_TYPES` accepts them and they are documented. The
+  enum now covers every canonical join type; a regression test pins it as a superset of
+  `ir.VALID_JOIN_TYPES`.
+- **Semantic resolver — ISO dates accepted in equality filters.** `QueryResolver`'s literal
+  safety check rejected any value containing a hyphen (its `[;'"\-\-]` class matched a single
+  `-` instead of the `--` comment sequence), so a dated `eq` filter such as `2026-02-01` was
+  refused even though the `date_from`/`date_to` bounds path accepted it. The check now blocks
+  a quote, a semicolon or the `--` sequence while allowing a lone hyphen; injection vectors
+  stay refused.
+
+### Added
+- **Plan 46.6 — Snowflake integration.** Document the separate injected DB-API connector,
+  exact-case quoted identifiers, fake-cursor protocol tests and 20 compiled / 3 refused
+  golden SQL cases. No real account run or executed parity: Snowflake remains entirely
+  Conditional/Refused; its default reason now states the missing real-account parity.
+  Document and pin the known exact-case identifier limit and bare `localtimestamp` rendering.
+- **Plan 46.5 — reconstructed Atlas contract fixture.** Preserve the source KPI with
+  checkout provenance and test three reconstructed semantic models, a bridge projection,
+  and named SQL views on raw DuckDB. Assert revenue, relation traversal and semi-additive
+  restrictions; no Atlas generator or publication is implied by this fixture.
+- **Plan 46.5 — standalone semantic validation.** `skifer semantic validate --schema MODEL
+  [MODEL ...]` runs the generated JSON Schema then the complete semantic validator,
+  without Spark or a pipeline. Optional `skifer[schema]` installs jsonschema; errors
+  identify the file and schema path. Legacy pipeline/model validation is unchanged.
+- **Plan 46.5 — semantic JSON Schema.** Publish the draft-07 semantic document contract,
+  derived from validator/domain constants, with a non-drift guard and a labeled corpus
+  distinguishing structural refusals from validator-only cross-checks. Warning-only
+  metadata remains accepted; the validator supplies the complete verdict.
+- **Plan 46.4 — DuckDB integration.** Document the separate `skifer-duckdb` connector,
+  pipeline and semantic usage, transactional publication, frozen Spark reference replay,
+  and the exact seven conditional and two refused capability reasons from the core matrix.
+- **Plan 46.3 — executed three-way parity and portable SQL example.** A canonical dataset
+  (30 orders, 12 customers, 6 countries) runs through Spark DataFrame, compiled Spark SQL
+  and compiled DuckDB SQL in 23 parity cases, plus three divergence pins. Value normalization
+  and derived capability coverage back all 57 DuckDB entries: 48 explicitly promoted supported, 7 conditional,
+  2 refused. Conditions explicitly bound casts, date parsing, splitting, decimal averages,
+  order-dependent aggregates and approximate distinct counts. The harness refuses empty results,
+  compares normalized values exactly, asserts Spark ANSI mode and cleans up its temporary views.
+  The ANSI failure pin isolates its PySpark error logger to preserve later tests' log capture.
+  Snowflake parity remains pending Plan 46.6. Example `examples/26_portable_sql/` renders
+  both dialects, reports capabilities, executes DuckDB over temporary Parquet and shows an
+  explicit raw-expression refusal, without Spark.
+- **Plan 46.2 — SQL connector contracts and portability.** Three narrow runtime-checkable
+  execution, catalog and publication protocols live in the language core, with frozen
+  column/capability descriptions and `ExecutionResult` re-exported from semantic evidence.
+  A complete 57-operation matrix declares supported, conditional and refused capabilities
+  per target in a read-only matrix; `used_capabilities()` includes nested conditions and
+  `capability_report()` exposes sorted target statuses and reasons. The compiler reports
+  all refused operations together, after historical compilation guardrails; raw SQL
+  (`filter:sql`, `op:expr`) is refused outside Databricks. Shared lazy sqlglot rendering
+  uses `unsupported_level=RAISE`, preserves literal boundaries and wraps parse/unsupported
+  errors for DuckDB and Snowflake while preserving default Databricks SQL byte for byte.
+  Connector write modes are validated and frozen, with a `WriteMode` literal contract.
+  The new `[dialects]`
+  extra installs sqlglot; semantic queries use the same renderer and `from_backend` accepts
+  `ExecutionContract` while retaining Board's warning-free `execute_sql` path. DuckDB tests
+  execute every operation family and the materialized-view example; value parity remains
+  for Plan 46.3. Import contracts and fresh-interpreter tests cover all 11 language modules.
+- **Plan 46.0 — multi-platform foundations.** ADR 0001 (`docs/adr/0001-sql-first-multi-platform.md`)
+  records the SQL-first, thin-connector decision and its five prohibitions; `.github/CODEOWNERS`
+  protects the language core, the semantic layer, `schemas/`, CI and packaging; a first
+  `import-linter` contract (`lint-imports`, run in CI) forbids `skifer.core.op_catalog`,
+  `constants` and `ir` from importing the governed layer or Spark. Development plan:
+  `docs/roadmap/46_multi_platform_plan.md`.
+
+### Changed
+
+- **Plan 46.5 — explicit SQL strings.** Numeric SQL is refused: `sql: 1` doit s'écrire `sql: "1"`; diagnostics explain quoting for numeric and boolean YAML values.
+
+- **Plan 46.1 — import boundaries.** Package exports in `skifer`, `core`, `semantic` and
+  `agentic` resolve lazily; loaders are registered when `skifer.core.core` or
+  `skifer.core.interpreter` is imported, i.e. on every path that can consume them;
+  `RuleRegistry.get_loader()` / `list_loaders()` register the built-in loaders on first call,
+  so a bare `import skifer` stays free of the engine without changing what the registry answers.
+  The deterministic query resolver moves to `skifer.semantic.resolver`,
+  with a deprecated compatibility shim at `skifer.agentic.resolver`. Three `import-linter`
+  contracts protect the language core, the semantic-to-agentic dependency boundary and lazy
+  package roots. Subprocess boundary tests cover language imports, public exports and loader
+  registration. `import skifer.core.op_catalog` now loads **3 Skifer modules instead of 87**;
+  `sql_compiler` and `schema_loader` each load 6, all within the language core.
+  Re-exports remain visible to static tooling through `TYPE_CHECKING` imports. Import-linter
+  excludes these imports to guard the runtime package structure; as a tradeoff, cross-layer
+  typing dependencies are no longer checked by `lint-imports`. Fresh-interpreter tests in
+  `tests/test_import_boundaries.py` verify the modules actually loaded.
+
+### Deprecated
+
+- `skifer.agentic.resolver` is a module alias of `skifer.semantic.resolver` and emits a
+  `DeprecationWarning` on import; it will be removed in the next major version.
+
+### Fixed
+- **Plan 46.6 — Snowflake identifier rendering.** Always quote table, column and alias
+  identifiers in the shared Snowflake renderer, preserving authored case for pipeline
+  and semantic SQL, including domain joins, filters, calendars and expressions.
+  Databricks and DuckDB rendering remains unchanged.
+
+- **Plan 46.5 — Atlas referential fixture.** Separate the unique entity lookup from two
+  months of semi-additive headcount snapshots, preserving revenue through joins. Tie the
+  parsed KPI output to DuckDB view columns, bridge projection and semantic members; pin a
+  negative remote-entity mutation. Clarify the frozen copy, unpublished install path and
+  schema versioning in the integration recipe.
+
+- **Plan 46.5 — cross-file semantic validation.** Validate supplied models together after
+  per-file schema checks, report duplicate model keys at both origins, and display validator
+  warnings and unprovided relationship targets. A deterministic differential corpus checks
+  every accepted mutation against the schema; negative cases pin error text and JSON paths.
+
+- **Plan 46.5 — semantic string validation.** Reject non-string names, SQL expressions and
+  domain identifiers before coercion, with a quoting hint for YAML booleans.
+  Null model keys retain the name fallback and null required fields retain their historical
+  diagnostics. Malformed structures return named errors instead of exceptions; safe SQL
+  identifiers use full matches, including the generated schema. Unknown dimension types remain warnings.
+
+- **Plan 46.3 — cross joins reject declared keys at load.** Shared schema validation
+  refuses keys on `type: cross` for both DataFrame and compiled SQL paths, including
+  compact join declarations. Keyless cross joins return the Cartesian product without
+  dropping right-side columns. Direct dictionaries bypassing the loader retain the
+  DataFrame warning when keys are ignored. The analyzer mapper emits the keyless form
+  for CROSS JOIN, so generated drafts satisfy the same load-time validation.
+
 ## [4.1.0] - 2026-11-03
 
 ### Added

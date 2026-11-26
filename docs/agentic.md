@@ -159,7 +159,7 @@ The LLM detects the appropriate output format from the question phrasing:
 It translates a `SemanticQuery` (containing only names from the YAML) into full SQL.
 
 ```python
-from skifer.agentic.resolver import QueryResolver, SemanticQuery
+from skifer.semantic.resolver import QueryResolver, SemanticQuery
 
 resolver = QueryResolver()
 

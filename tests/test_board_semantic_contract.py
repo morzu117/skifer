@@ -6,7 +6,7 @@ import duckdb
 import pytest
 import yaml
 
-from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.resolver import SemanticQuery
 from skifer.semantic.access_policy import (
     CertificationDecision,
     ConsumerContext,

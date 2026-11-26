@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from skifer.agentic.hub import AgenticHub
-from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.resolver import SemanticQuery
 from skifer.core.config import TracingConfig, parse_tracing_config
 from skifer.core.context import ExecutionContext
 from skifer.core.core import SkiferEngine

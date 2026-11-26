@@ -1,0 +1,33 @@
+models:
+- key: revenu_net
+  file: revenu_net.yaml
+  dimensions:
+  - mois_fiscal
+  - entite
+  metrics:
+  - revenu_net
+  entities:
+  - observation
+  - entite
+  related_models:
+  - entites
+- key: entites
+  file: entites.yaml
+  dimensions:
+  - entite
+  - segment
+  metrics:
+  - nombre_entites
+  entities:
+  - entite
+  related_models: []
+- key: effectifs
+  file: effectifs.yaml
+  dimensions:
+  - entite
+  - mois_snapshot
+  metrics:
+  - effectif
+  entities:
+  - observation
+  related_models: []

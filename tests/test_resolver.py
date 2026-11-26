@@ -9,7 +9,7 @@ import textwrap
 import pytest
 import duckdb
 
-from skifer.agentic.resolver import (
+from skifer.semantic.resolver import (
     QueryResolver,
     SemanticQuery,
     SemanticQueryError,
@@ -147,6 +147,24 @@ def test_validate_valid_query_passes(resolver, model):
     )
     # Ne doit pas lever d'exception
     resolver._validate(sq, model)
+
+
+def test_render_literal_is_type_honest():
+    # Numbers render unquoted, strings render quoted. The resolver cannot know a
+    # column's declared type, so a numeric comparison must pass a number (1), not
+    # the string "1" — which renders as '1' by design. Documented contract.
+    assert QueryResolver._render_literal(1, "amount") == "1"
+    assert QueryResolver._render_literal(2.5, "amount") == "2.5"
+    assert QueryResolver._render_literal("1", "code") == "'1'"
+
+
+def test_render_literal_accepts_iso_date_and_refuses_injection():
+    # A lone hyphen (ISO date like 2026-02-01) is safe and must render as a
+    # quoted literal; a quote, a semicolon or the -- comment sequence stay refused.
+    assert QueryResolver._render_literal("2026-02-01", "order_date") == "'2026-02-01'"
+    for bad in ("paid' OR 1=1 --", "x; DROP", "a--b", 'a"b'):
+        with pytest.raises(SemanticQueryError, match="unsafe characters"):
+            QueryResolver._render_literal(bad, "order_date")
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +523,7 @@ def test_row_policy_literal_escapes_quote_and_refuses_backslash():
 def test_multi_model_aliases_are_stable_across_hash_seeds():
     script = textwrap.dedent(
         """
-        from skifer.agentic.resolver import QueryResolver, SemanticQuery
+        from skifer.semantic.resolver import QueryResolver, SemanticQuery
         from skifer.semantic.planner import SemanticPlanner
 
         class Semantic:
@@ -621,3 +639,62 @@ def test_wellformed_filter_values_keep_their_previous_rendering(
     resolved = QueryResolver().resolve(query, model, "`main`")
 
     assert resolved.where_clauses == [expected]
+
+
+def test_legacy_resolver_import_warns_and_preserves_identity():
+    import skifer.semantic.resolver
+
+    sys.modules.pop("skifer.agentic.resolver", None)
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"skifer\.agentic\.resolver moved to skifer\.semantic\.resolver",
+    ):
+        import skifer.agentic.resolver as old
+    assert old is skifer.semantic.resolver
+    from tests.test_import_boundaries import _run_python
+
+    _run_python(
+        """
+        import sys
+        import warnings
+
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            from skifer.agentic.resolver import QueryResolver
+            assert len(recorded) == 1, recorded
+            assert recorded[0].category is DeprecationWarning
+            assert str(recorded[0].message) == (
+                "skifer.agentic.resolver moved to skifer.semantic.resolver"
+            )
+            import skifer.semantic.resolver
+            assert QueryResolver is skifer.semantic.resolver.QueryResolver
+            from skifer.agentic import resolver
+            assert resolver is sys.modules["skifer.semantic.resolver"]
+            import skifer.agentic.resolver
+            assert len(recorded) == 1, recorded
+        """
+    )
+
+
+def test_snowflake_dialect_is_accepted(model):
+    resolver = QueryResolver(dialect="snowflake")
+    result = resolver.resolve(
+        SemanticQuery(model_name="kpi_orders.erp", metrics=["gross_revenue"]), model, None,
+    )
+    assert result.dialect == "snowflake"
+    assert '`' not in result.full_sql
+
+
+def test_oracle_dialect_is_refused():
+    with pytest.raises(SemanticQueryError, match="oracle"):
+        QueryResolver(dialect="oracle")
+
+
+def test_missing_sqlglot_reports_shared_rendering_dependency(monkeypatch, model):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "sqlglot", None)
+    with pytest.raises(SemanticQueryError, match="sqlglot"):
+        QueryResolver(dialect="duckdb").resolve(
+            SemanticQuery(model_name="kpi_orders.erp", metrics=["gross_revenue"]), model, None,
+        )

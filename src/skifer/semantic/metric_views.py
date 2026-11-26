@@ -23,7 +23,7 @@ import re
 
 import yaml
 
-from ..agentic.resolver import QueryResolver, SemanticQueryError
+from skifer.semantic.resolver import QueryResolver, SemanticQueryError
 
 # Même contrainte que SemanticValidator._SAFE_IDENTIFIER : un nom de dimension, de
 # mesure ou de vue devient un identifiant SQL dans le DDL généré ici.

@@ -21,6 +21,9 @@ from uuid import uuid4
 
 import yaml
 
+from skifer.core.connector import ExecutionContract
+from skifer.core.dialect import TARGETS
+
 from ..observability.tracing import (
     TRACE_FORMAT_VERSION,
     NoOpTracer,
@@ -68,7 +71,7 @@ class SemanticEngine:
         engine.get_model_summary("kpi_orders.erp")
 
     Exécution :
-        from skifer.agentic.resolver import SemanticQuery
+        from skifer.semantic.resolver import SemanticQuery
         sq = SemanticQuery(model_name="kpi_orders.erp", metrics=["gross_revenue"],
                            group_by=["region"])
         df = engine.query(sq)                    # → DataFrame
@@ -93,7 +96,7 @@ class SemanticEngine:
             certification_store: Store optionnel de certification sémantique.
         """
         self.core = core_engine
-        if dialect not in {"databricks", "duckdb"}:
+        if dialect not in TARGETS:
             raise ValueError(f"Unsupported semantic SQL dialect: {dialect!r}.")
         self.dialect = dialect
         # Note: self.spark supprimé — toutes les requêtes SQL passent par self.core._get_backend().execute_sql()
@@ -127,13 +130,13 @@ class SemanticEngine:
     ) -> "SemanticEngine":
         """Build a semantic runtime around an injected SQL backend, without Spark.
 
-        ``backend`` must expose ``execute_sql(sql)`` or
-        ``execute_sql_with_metadata(sql) -> ExecutionResult``. The caller owns
+        ``backend`` must satisfy ``ExecutionContract`` or expose the historical
+        ``execute_sql(sql)`` method (supported without deprecation). The caller owns
         connectivity and result limits. Certification remains enforced here.
         """
         if backend is None or not (
-            callable(getattr(backend, "execute_sql", None))
-            or callable(getattr(backend, "execute_sql_with_metadata", None))
+            isinstance(backend, ExecutionContract)
+            or callable(getattr(backend, "execute_sql", None))
         ):
             raise TypeError("A SQL backend with an execution method is required.")
         if catalog is not None and not isinstance(catalog, str):
@@ -419,7 +422,7 @@ class SemanticEngine:
         compiled_at: datetime.datetime | None = None,
     ) -> SemanticResult:
         """Business flow for :meth:`query_with_evidence`, shared by all tracers."""
-        from ..agentic.resolver import QueryResolver
+        from skifer.semantic.resolver import QueryResolver
         from .planner import SemanticPlanner
 
         model = self._get_model(semantic_query.model_name)
@@ -765,7 +768,7 @@ class SemanticEngine:
         Returns:
             FQN complet de la vue créée (ex: "`catalog`.`semantic_views_dev`.`v_ca_region`").
         """
-        from ..agentic.resolver import QueryResolver
+        from skifer.semantic.resolver import QueryResolver
         from .planner import SemanticPlanner
 
         name = view_name or semantic_query.view_name

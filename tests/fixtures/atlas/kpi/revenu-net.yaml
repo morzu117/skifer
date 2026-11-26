@@ -1,0 +1,59 @@
+schema_version: 1
+kind: kpi
+data_product:
+  id: revenu-net
+  version: 4
+  owner: claire.m
+  domain: finance
+  description: Chiffre d'affaires facturé, taxes déduites, net des avoirs, sur le calendrier fiscal de l'entité.
+label: Revenu net
+synonyms: [CA net, net revenue]
+semantics:
+  calendar: {key: fiscal-nordis, version: '2026.1'}
+  timezone: Europe/Paris
+  currency: EUR
+variation_points: [n03, n04]
+graph:
+  nodes:
+    - id: n01
+      type: source
+      label: Factures
+      platform: databricks
+      table: gold.finance.fact_facturation
+      owner: claire.m
+      columns:
+        - {name: facture_id, type: string}
+        - {name: entite, type: string}
+        - {name: statut, type: string}
+        - {name: date_facture, type: date, timezone: Europe/Paris, format: yyyy-MM-dd}
+        - {name: montant_ttc, type: decimal}
+        - {name: montant_taxes, type: decimal}
+        - {name: avoirs, type: decimal}
+    - id: n02
+      type: filter
+      label: Factures validées
+      inputs: [n01]
+      condition: statut:equals:validée
+      nulls: drop
+    - id: n03
+      type: compute
+      label: déduction des taxes
+      note: Chaque pays remplace ce calcul par sa propre formule, sans table de paramètres.
+      inputs: [n02]
+      column: montant_ht
+      expr: montant_ttc - montant_taxes - avoirs
+      column_type: decimal
+    - id: n04
+      type: temporal
+      label: Mois fiscal
+      inputs: [n03]
+      operation: period
+      column: date_facture
+      target: mois_fiscal
+      grain: month
+    - id: n05
+      type: aggregate
+      inputs: [n04]
+      group_by: [mois_fiscal, entite]
+      measures: [[montant_ht, revenu_net, sum]]
+  output: n05

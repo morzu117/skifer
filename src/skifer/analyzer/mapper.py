@@ -473,12 +473,11 @@ def _map_from_and_joins(body, residues: list[Residue]):
             nullable_aliases.add(right_alias)
 
         if join_type == "cross":
-            # table_from/table_to are structurally required by the grammar but
-            # functionally ignored by compile_select for a cross join — no key
-            # to extract from the AST since a CROSS JOIN carries no condition.
+            # A CROSS JOIN carries no equality condition: use plain aliases,
+            # since the loader refuses declared keys on a Cartesian product.
             joins.append({
-                "table_from": [base_alias, "_cross"],
-                "table_to": [right_alias, "_cross"],
+                "table_from": base_alias,
+                "table_to": right_alias,
                 "type": "cross",
             })
             continue

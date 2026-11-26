@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from skifer.agentic.resolver import (
+from skifer.semantic.resolver import (
     QueryResolver,
     SemanticQuery,
     SemanticQueryError,
@@ -462,3 +462,26 @@ def test_single_model_sql_remains_byte_for_byte_legacy_compatible(domain):
         f"FROM `spark_catalog`.`{SCHEMA}`.`orders`\n"
         "GROUP BY status"
     )
+
+
+def test_snowflake_domain_join_filter_and_calendar_are_quoted(domain):
+    import sqlglot
+
+    engine, _, _ = domain
+    query = SemanticQuery(
+        "orders", metrics=["revenue"], group_by=["customers.segment"],
+        filters=[{"column": "customers.segment", "operator": "eq", "value": "VIP"}],
+        period="FY2024_Q3",
+    )
+    resolved = QueryResolver(SemanticPlanner(engine), dialect="snowflake").resolve(
+        query, engine._get_model("orders"), "MyCatalog",
+    )
+    tree = sqlglot.parse_one(resolved.full_sql, read="snowflake")
+    identifiers = list(tree.find_all(sqlglot.exp.Identifier))
+    assert identifiers and all(item.args.get("quoted") for item in identifiers)
+    assert tree.find(sqlglot.exp.Join) is not None
+    assert tree.find(sqlglot.exp.Where) is not None
+    assert {literal.this for literal in tree.find_all(sqlglot.exp.Literal)} >= {
+        "VIP", "2024-10-01", "2024-12-31",
+    }
+    assert tree.find(sqlglot.exp.Table).catalog == "MyCatalog"

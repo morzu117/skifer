@@ -2,7 +2,7 @@
 
 import pytest
 
-from skifer.agentic.resolver import SemanticQuery, SemanticQueryError
+from skifer.semantic.resolver import SemanticQuery, SemanticQueryError
 from skifer.semantic.calendar import parse_calendar
 from skifer.semantic.planner import SemanticPlanner
 

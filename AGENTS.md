@@ -7,13 +7,18 @@ Declarative YAML schemas ("what") are strictly decoupled from Python business ru
 ```
 src/skifer/
   core/         # SkiferEngine, ConfigurationManager, RuleRegistry, SandboxResolver, schema_loader
+    connector.py       # Narrow execution/catalog/publication protocols + ExecutionResult (Plan 46.2)
+    dialect.py         # Lazy SQL rendering: databricks / duckdb / snowflake (Plan 46.2)
+    capability_matrix.py # Explicit supported / conditional / refused operations per target (Plan 46.2)
   semantic/     # SemanticEngine (catalog-first, lazy), SemanticBuilder (LLM), SemanticValidator
+                # json_schema.py — generated semantic document JSON Schema, necessary not sufficient (Plan 46.5)
                 # metric_views.py — pure translation to Unity Catalog metric views, for Genie (Plan 42)
                 # llm_provider.py — LLMProvider ABC + DatabricksProvider / OpenAI / Anthropic / Google
                 # access_policy.py (pure cert policy), dependencies.py, output_projection.py — Plan 29
                 # draft_builder.py (managed drafts), sync.py (three-way merge),
                 # persistence.py (shared atomic YAML write + catalog entry) — Plan 29
-  agentic/      # GenBIAgent, QueryResolver (deterministic SQL — no LLM SQL gen), SessionHistory
+                # resolver.py — QueryResolver (moved from agentic/ in Plan 46.1; shim with DeprecationWarning)
+  agentic/      # GenBIAgent, SessionHistory
                 # candidate_agent.py — MetricCandidateAgent, governed fallback outside the semantic layer (Plan 44)
   candidates/   # Metric candidates (Plan 44): models (closed states), store (append-only runs/history),
                 # redaction, validator (coherence/frequency/stability), promotion (level 1 views, level 2
@@ -103,6 +108,13 @@ Canonical join types: `left`, `right`, `inner`, `full`, `cross`, `left_anti`, `l
 Accepted aliases include `full outer`/`full_outer`/`outer` → `full`, `anti`/`left anti` → `left_anti`,
 and `semi`/`left semi` → `left_semi`. `left_anti` and `left_semi` are Spark DataFrame-only.
 
+```yaml
+join:
+  - table_from: ord
+    table_to: cust
+    type: cross  # cross : no keys (refused at load); no USING deduplication, rename via fields:
+```
+
 ### Post-join filters (Plan 43)
 A top-level `where:` / `where_groups:` block filters the DataFrame **after** every join and
 **before** `business_rules` — it is never pushed down into a table's `filter:`, because on an
@@ -182,7 +194,12 @@ auto-applied.
 CLI exit codes are the CI contract — `0` current/valid/promoted, `1` technical or validation
 failure, `2` drift, `3` conflict:
 `skifer semantic sync PIPELINE --check|--write-draft|--promote` and
-`skifer semantic validate PIPELINE MODEL`. `--check` never writes. `--promote` no-ops when the
+`skifer semantic validate PIPELINE MODEL`.
+`skifer semantic validate --schema MODEL [MODEL ...]` runs JSON Schema per file then the full validator over all supplied models
+(cross-file targets checked, duplicate keys refused, all warnings displayed; absent targets warn).
+Do not supply `semantic_catalog.yaml`. Runs without a pipeline, Spark, LLM or network; install `[schema]`, exit `0` all valid / `1` otherwise.
+
+`--check` never writes. `--promote` no-ops when the
 curated model is current and refuses rather than writing when it would drop human-authored content.
 
 `SemanticBuilder.build_from_projection()` treats LLM output as **untrusted input**: only
@@ -462,8 +479,9 @@ D7: `knowledge_search_mode: null` → `hybrid` when `knowledge_embedding_model` 
 otherwise. See `docs/metric_candidates.md`.
 
 ### Tests
+- `tests/parity/` executes 23 cases through Spark DataFrame, Spark SQL and DuckDB SQL, plus 3 divergence pins; every DuckDB promotion requires a passing case, with any condition matching the matrix reason verbatim.
 - LLM calls are always mocked; no live cluster, API key or network is needed.
-- Spark is **not** mocked everywhere: 182 tests run a real local Delta session (the `spark`
+- Spark is **not** mocked everywhere: 246 tests run a real local Delta session (the `spark`
   fixture in `tests/conftest.py`, plus the examples), the rest use doubles. A test that
   builds a `F.col(...)` needs the fixture even when it only asserts a raised error.
 - One test file per module: `tests/test_<module>.py`.
@@ -618,6 +636,7 @@ import the engine. CLI surfaces: `skifer api serve|openapi`, incident management
 | [Semantic layer as metric views for Genie (Plan 42)](docs/roadmap/42_metric_views_plan.md) | `feat/plan42-metric-views` | Implemented (42.0–42.5); 42.6 (demo_sts switching over) is out of this repo, and `publish_metric_views` itself is not yet verified live on a workspace |
 | [Project analyzer: from existing SQL to Skifer pipelines (Plan 43)](docs/roadmap/43_project_analyzer_plan.md) | `feat/plan43-project-analyzer` | **Implemented — 43.0 through 43.8 are all done.** Synthetic corpus + parser + inventory (43.0), post-join `where:`/`where_groups:` (43.1), deterministic SQL → schema_dict mapper + round-trip oracle via `compile_select` + report + `skifer analyze --dry-run` (43.2), dependency DAG + CTE/subquery splitting into partials/intermediate tables/inline + `skifer analyze --dry-run --split` (43.3), structural fingerprints + recurring-pattern detection (shared rules, never-arbitrated divergences, never-silent below-threshold) + validated draft/stub emission + `skifer analyze --emit [--out] [--min-occurrences] [--min-scripts] [--strict]` (43.4), data-level parity run `ParityRunner`/`compare_tables` (a disposable table, never the draft's real target or the legacy table) + `skifer analyze parity <draft.yaml> --against <fqn> --target-layer <layer> [--key col,…]` (43.5 — `--target-layer` added beyond the plan's own sketch, required by `run_process_to_table`): 7/8 corpus statements resolve (05 and 07 fixed by splitting), the 8th (`LAG()`) stays honestly blocked; on the same corpus `--emit` promotes `country` to a shared rule, finds the `net_margin` divergence, and writes 7 drafts + 1 stub. 43.5's two Spark-fixture tests, initially verified by inspection only (no local JRE), have since actually run (local JRE installed): inspection had missed a misplaced `filter:` in a test fixture (fixed — no defect in `ParityRunner`/`compare_tables` itself), full suite now green with Spark. Optional constrained LLM enrichment (43.6): `--enrich` on `--emit` proposes rule names/docstrings, draft descriptions and fingerprint groupings via closed JSON (per-call key allowlist, a proposed rule name purely advisory, never used to rename anything) — additive to the JSON report only, a silent no-op without a configured provider; a curated-rule-body proposal for a `needs_curation` fragment is a stated scope cut (no safely isolable fragment without mapper-level work). Notebook front-ends (43.7, first sub-point): `skifer analyze` also reads a Databricks `.py` export (`# MAGIC %sql` cells plus a literal `spark.sql(...)` call scanned via `ast`) and a `.ipynb` (`%%sql` plus `spark.sql(...)`), each statement keeping its file/cell/line origin (`::cell:N` for an ipynb, the same suffix convention 43.3 uses); an f-string or non-literal argument is a named `ExtractionResidue`, never interpolated. Query-history front-end (43.7, second sub-point): `skifer analyze history --warehouse-id ID --days N` reads `system.query.history` via the Databricks SDK's Statement Execution API, never selects an author/result column, dedupes by content fingerprint. Docs (43.8): `docs/project_analyzer.md` (a full guided walkthrough against example 24), an `mkdocs.yml` nav entry, and the `analyzer/` package tree plus a prose section in `CLAUDE.md`/`AGENTS.md`. **Plan closed.** |
 | [Metric candidates: answer outside the semantic layer, then certify (Plan 44)](docs/roadmap/44_metric_candidates_plan.md) | merged via PR #55 (plan), then #33, #35, #36, #39, #41, #43, #44, #45, #46, #47, #53 (S00–S10) — `b4b3fe0` | **Implemented** (S00–S10). R1 lifted live; D7 decided on 29 October 2026 (hybrid e5-small when a model is configured, BM25 otherwise). Example `examples/25_metric_candidates/`, page `docs/metric_candidates.md`. |
+| [Skifer multi-platform: SQL-first core, connectors, split (Plan 46)](docs/roadmap/46_multi_platform_plan.md) | `feat/plan46-multi-platform` (plan), `feat/plan46-46.0-foundations` | **In progress.** Plan validated on 23 November 2026 (ADR 0001: SQL-first, thin connectors, KPI divergence arbitrated in Atlas, Python rules never off-Spark). 46.0 through 46.5 delivered: ADR, CODEOWNERS, import-linter contracts (3), lazy exports, resolver under `semantic/`, connector contracts, capability matrix and dialect rendering; three-way parity harness and portable example 26 (DuckDB: 48 `Supported`, 7 `Conditional`, 2 `Refused`). `skifer-duckdb`: three contracts, 23 cases against a frozen Spark reference, semantic helper and integration page. 46.5: string-only names/SQL (null model keys retain name fallback), semantic JSON Schema, `--schema` CLI, 44-document corpus and reconstructed Atlas fixture executed on DuckDB. **M1 reached on the core side**; the Atlas generator is still to be built. 46.6 delivered on a fake cursor in `skifer-snowflake`: always-quoted Snowflake rendering, 20 frozen SQL cases and 3 refusals; no `Supported` capability, real run awaiting an account. Next: 46.7 wheel split (M2); the real-integration criterion of 46.6 remains unmet. |
 
 ## Key files
 | File | Purpose |
@@ -982,7 +1001,7 @@ lint   ruff check src/
 
 - Charge des extraits ciblés, jamais des fichiers entiers. C'est un levier de coût, et sur une machine à mémoire contrainte c'est aussi ce qui décide si la session tient ou se fait tuer.
 - Framework déclaratif Spark/Databricks (Bronze → Silver → Gold). YAML = le What ; règles Python du RuleRegistry = le How.
-- ~2200 tests sans Spark (~27 s) + 182 sur une session Delta locale réelle (fixture `spark`). LLM toujours mocké. examples/ est exécuté par la suite.
+- ~2200 tests sans Spark (~27 s) + 246 sur une session Delta locale réelle (fixture `spark`). LLM toujours mocké. examples/ est exécuté par la suite.
 - Toute modif de src/ = test + entrée CHANGELOG [Unreleased]. Un point de plan = un commit. Jamais de bump de version.
 - Flux de données piloté par YAML : le rayon d'impact de l'index est un plancher, pas un périmètre.
 

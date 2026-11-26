@@ -2,7 +2,7 @@
 
 import pytest
 
-from skifer.agentic.resolver import QueryResolver
+from skifer.semantic.resolver import QueryResolver
 from skifer.semantic.metric_views import (
     MetricViewTranslationError,
     metric_view_ddl,

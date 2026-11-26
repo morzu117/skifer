@@ -26,7 +26,10 @@ from skifer.core.sql_compiler import (
 
 
 def _compile(yaml_schema: str, **kwargs) -> str:
-    return compile_select(parse_to_ir(parse_schema(yaml_schema)), **kwargs)
+    parsed = parse_to_ir(parse_schema(yaml_schema))
+    result = compile_select(parsed, **kwargs)
+    assert result == compile_select(parsed, dialect="databricks", **kwargs)
+    return result
 
 
 def _single_table(body: str) -> str:
@@ -243,8 +246,8 @@ keep_all_columns: true
         assert keyword in sql
 
     def test_cross_join_has_no_on_clause(self):
-        sql = _compile(self._two_tables("  - table_from: [ord, customer_id]\n"
-                                        "    table_to: [cust, id]\n"
+        sql = _compile(self._two_tables("  - table_from: ord\n"
+                                        "    table_to: cust\n"
                                         "    type: cross\n"))
         assert "CROSS JOIN `cust`" in sql
         assert " ON " not in sql
@@ -425,6 +428,7 @@ class TestParity:
 
         df_path = engine.process_schema(schema)
         sql_text = compile_select(parse_to_ir(schema))
+        assert sql_text == compile_select(parse_to_ir(schema), dialect="databricks")
         df_sql = spark.sql(sql_text)
 
         assert sorted(df_sql.columns) == sorted(df_path.columns), (
@@ -599,3 +603,220 @@ tables:
       - "status:equals:DONE"
 keep_all_columns: true
 """)
+
+
+class TestDialectRendering:
+    """Default identity is also checked by _compile and _assert_parity above,
+    so every pre-existing YAML case exercises explicit Databricks rendering.
+    """
+
+    def test_default_is_databricks(self):
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        assert compile_select(parsed) == compile_select(parsed, dialect="databricks")
+
+    def test_used_capabilities_includes_nested_ops(self):
+        from skifer.core.sql_compiler import used_capabilities
+
+        parsed = parse_to_ir(parse_schema('''
+tables:
+  - name: orders
+    alias: ord
+    filter: ["status:eq:DONE"]
+    filter_groups: [["amount:between:1,10"]]
+    fields:
+      - [country, country, [upper]]
+      - [amount, amount, [cast:double]]
+      - [id, id]
+  - name: customers
+    alias: cust
+    filter: ["id:is_not_null"]
+join:
+  - table_from: [ord, id]
+    table_to: [cust, id]
+    type: left outer
+where: ["amount:greater_than:0"]
+where_groups: [["country:not_equals:US"]]
+add_columns:
+  - [amount, rounded, ["when:less_than:5", "then:round:1", "else:nvl:0"]]
+  - source: country
+    target: label
+    ops:
+      - when: "in:FR,DE"
+        then: "lower"
+      - else: "lit:other"
+aggregate:
+  group_by: [country]
+  measures: [[rounded, total, sum]]
+  having: ["total:greater_than_equal:1"]
+'''))
+        assert used_capabilities(parsed) == {
+            "filter:equals", "filter:between", "filter:is_not_null",
+            "filter:greater_than", "filter:not_equals", "filter:less_than",
+            "filter:in", "filter:greater_than_equal", "op:upper", "op:cast",
+            "op:when", "op:then", "op:else", "op:round", "op:nvl",
+            "op:lower", "op:lit", "agg:sum", "join:left",
+        }
+
+    def test_select_final_raw_and_nested_capabilities(self):
+        from skifer.core.sql_compiler import used_capabilities
+
+        parsed = parse_to_ir(parse_schema(_single_table('''    filter: ["amount:sql:amount > 0"]
+select_final:
+  - [amount, out, ["when:is_null", "then:expr:1 + 2", "else:cast:double"]]
+''')))
+        assert used_capabilities(parsed) == {
+            "filter:sql", "filter:is_null", "op:when", "op:then", "op:else",
+            "op:expr", "op:cast",
+        }
+
+    def test_generated_null_filter_is_collected(self):
+        from skifer.core.sql_compiler import used_capabilities
+
+        parsed = parse_to_ir(parse_schema(_single_table('''    quality_checks:
+      drop_nulls_in: [amount]
+keep_all_columns: true
+''')))
+        assert used_capabilities(parsed) == {"filter:is_not_null"}
+
+    def test_snowflake_refuses_first_but_duckdb_renders(self):
+        parsed = parse_to_ir(parse_schema(_single_table('''aggregate:
+  group_by: [country]
+  measures: [[amount, first_amount, first]]
+''')))
+        with pytest.raises(
+            SqlCompilationError,
+            match="agg:first.*non-deterministic without ORDER BY; no portable equivalent",
+        ):
+            compile_select(parsed, dialect="snowflake")
+        assert 'FIRST(' in compile_select(parsed, dialect="duckdb")
+
+    def test_unknown_dialect(self):
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        with pytest.raises(SqlCompilationError, match="oracle"):
+            compile_select(parsed, dialect="oracle")
+
+    def test_dialect_error_is_chained(self, monkeypatch):
+        import sys
+        from skifer.core.dialect import DialectError
+
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        monkeypatch.setitem(sys.modules, "sqlglot", None)
+        with pytest.raises(SqlCompilationError, match="sqlglot") as raised:
+            compile_select(parsed, dialect="duckdb")
+        assert isinstance(raised.value.__cause__, DialectError)
+
+    @pytest.mark.parametrize("declared,canonical", [("anti", "left_anti"), ("full outer", "full")])
+    def test_used_capabilities_canonicalizes_join_and_aggregate_aliases(self, declared, canonical):
+        from skifer.core.sql_compiler import used_capabilities
+
+        parsed = parse_to_ir(parse_schema(f"""
+tables:
+  - name: orders
+    alias: ord
+  - name: customers
+    alias: cust
+join:
+  - table_from: [ord, customer_id]
+    table_to: [cust, id]
+    type: {declared}
+aggregate:
+  group_by: [country]
+  measures: [[amount, m, mean]]
+"""))
+        assert used_capabilities(parsed) == {f"join:{canonical}", "agg:avg"}
+
+    def test_report_and_error_include_all_refused_capabilities(self):
+        from skifer.core.capability_matrix import Refused, Supported, capability
+        from skifer.core.sql_compiler import capability_report
+
+        parsed = parse_to_ir(parse_schema("""
+tables:
+  - name: orders
+    alias: ord
+  - name: customers
+    alias: cust
+join:
+  - table_from: [ord, customer_id]
+    table_to: [cust, id]
+    type: left_anti
+aggregate:
+  group_by: [country]
+  measures: [[amount, m, first]]
+"""))
+        report = capability_report(parsed, "snowflake")
+        assert list(report) == ["agg:first", "join:left_anti"]
+        assert report == {key: capability("snowflake", key) for key in report}
+        assert all(isinstance(status, Refused) for status in report.values())
+        assert all(isinstance(status, Supported) for status in capability_report(parsed, "databricks").values())
+        with pytest.raises(SqlCompilationError) as raised:
+            compile_select(parsed, dialect="snowflake")
+        assert str(raised.value) == (
+            "Capabilities refused for 'snowflake': "
+            "'agg:first': non-deterministic without ORDER BY; no portable equivalent; "
+            "'join:left_anti': no SEMI/ANTI JOIN syntax on this target"
+        )
+
+    @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+    def test_report_exposes_conditionals_without_logging_or_mutation(self, target, caplog):
+        from copy import deepcopy
+        from skifer.core.capability_matrix import Conditional, Supported, capability
+        from skifer.core.sql_compiler import capability_report
+
+        parsed = parse_to_ir(parse_schema(_single_table('''select_final:
+  - [amount, out, [cast:double, round:2]]
+''')))
+        before = deepcopy(parsed)
+        report = capability_report(parsed, target)
+        assert list(report) == ["op:cast", "op:round"]
+        assert report == {key: capability(target, key) for key in report}
+        if target == "snowflake":
+            assert all(isinstance(status, Conditional) for status in report.values())
+        else:
+            assert report == {"op:cast": capability("duckdb", "op:cast"), "op:round": Supported()}
+            assert isinstance(report["op:cast"], Conditional)
+        compile_select(parsed, dialect=target)
+        assert parsed == before
+        assert not caplog.records
+
+    @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+    @pytest.mark.parametrize("body,key", [
+        ('    filter: ["amount:sql:amount > 0"]\nkeep_all_columns: true\n', "filter:sql"),
+        ('select_final:\n  - [amount, out, ["expr:amount * 2"]]\n', "op:expr"),
+    ])
+    def test_raw_sql_is_refused_before_rendering(self, monkeypatch, target, body, key):
+        import skifer.core.sql_compiler as compiler
+
+        def unexpected_render(*args, **kwargs):
+            pytest.fail("Refused raw SQL must not reach rendering")
+
+        parsed = parse_to_ir(parse_schema(_single_table(body)))
+        monkeypatch.setattr(compiler, "render", unexpected_render)
+        with pytest.raises(SqlCompilationError, match=f"{key}.*raw SQL fragments"):
+            compile_select(parsed, dialect=target)
+
+    def test_historical_rejections_precede_capability_preflight(self, monkeypatch):
+        import skifer.core.sql_compiler as compiler
+
+        parsed = parse_to_ir(parse_schema(_single_table('''business_rules: [flag_high_value]
+aggregate:
+  group_by: [country]
+  measures: [[amount, m, first]]
+''')))
+
+        def unexpected_report(*args, **kwargs):
+            pytest.fail("Uncompilable schemas must be rejected before capability preflight")
+
+        monkeypatch.setattr(compiler, "capability_report", unexpected_report)
+        with pytest.raises(SqlCompilationError) as raised:
+            compile_select(parsed, dialect="snowflake")
+        assert str(raised.value) == (
+            "Python business_rules ['flag_high_value'] cannot be compiled to SQL. "
+            "Materialize them upstream in a silver table, then join/aggregate that table here."
+        )
+
+    def test_report_rejects_unknown_target_even_without_operations(self):
+        from skifer.core.sql_compiler import capability_report
+
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        with pytest.raises(SqlCompilationError, match="oracle"):
+            capability_report(parsed, "oracle")

@@ -1,0 +1,23 @@
+# Provenance: Reconstructed for Plan 46.5 review
+models:
+- name: revenue
+  key: revenue
+  table: main.revenue
+  dimensions:
+  - name: month
+    sql: month
+    type: date
+  - name: entity
+    sql: entity
+    type: string
+  metrics:
+  - name: revenue
+    sql: amount
+    type: sum
+  synonyms:
+  - sales
+  - turnover
+  description: Revenue model
+  row_policy:
+    column: tenant-id
+    attribute: tenant

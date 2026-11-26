@@ -345,14 +345,12 @@ def main() -> None:
         help="Validate one semantic model YAML against one pipeline projection.",
     )
     semantic_validate_parser.add_argument(
-        "pipeline",
-        metavar="PIPELINE",
-        help="Pipeline YAML file path.",
+        "--schema", action="store_true",
+        help="Validate MODEL [MODEL ...] with JSON Schema and semantic rules, without a pipeline.",
     )
     semantic_validate_parser.add_argument(
-        "model",
-        metavar="MODEL",
-        help="Semantic model YAML file path.",
+        "paths", nargs="+", metavar="PATH",
+        help="PIPELINE MODEL, or MODEL [MODEL ...] with --schema.",
     )
 
     semantic_metric_views_parser = semantic_subparsers.add_parser(
@@ -719,6 +717,9 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if (args.command == "semantic" and args.semantic_command == "validate"
+            and not args.schema and len(args.paths) != 2):
+        semantic_validate_parser.error("requires PIPELINE MODEL, or --schema MODEL [MODEL ...]")
 
     if args.command == "validate":
         _run_validate(args)
@@ -2316,7 +2317,9 @@ def _run_semantic(args: argparse.Namespace) -> None:
     if args.semantic_command == "sync":
         sys.exit(run_semantic_sync(args.pipeline, mode=_semantic_sync_mode(args)))
     if args.semantic_command == "validate":
-        sys.exit(run_semantic_validate(args.pipeline, args.model))
+        if args.schema:
+            sys.exit(run_semantic_schema_validate(args.paths))
+        sys.exit(run_semantic_validate(*args.paths))
     if args.semantic_command == "metric-views":
         sys.exit(
             run_semantic_metric_views(
@@ -2573,6 +2576,78 @@ def _record_candidate_certified(candidate_id: str, model_key: str, models_dir: s
                 store.close()
             except Exception:
                 pass
+
+
+def run_semantic_schema_validate(model_paths: list[str]) -> int:
+    """Validate complete model documents locally: JSON Schema, then semantic rules."""
+    try:
+        import jsonschema
+    except ImportError:
+        for path in model_paths:
+            print(f"{path}: JSON Schema validation requires jsonschema. Install: pip install 'skifer[schema]'.")
+        return SEMANTIC_EXIT_ERROR
+
+    from skifer.semantic.json_schema import generate_semantic_json_schema
+    from skifer.semantic.validator import SemanticValidator
+
+    schema_validator = jsonschema.Draft7Validator(generate_semantic_json_schema())
+    failed_paths: set[str] = set()
+    models = []
+    origins: list[tuple[str, int]] = []
+    loaded_paths = []
+    for path in model_paths:
+        try:
+            payload = _load_yaml_file(path)
+            errors = sorted(schema_validator.iter_errors(payload), key=lambda error: error.json_path)
+            if errors:
+                failed_paths.add(path)
+                for error in errors:
+                    print(f"{path}: {error.json_path}: {error.message}")
+                continue
+        except Exception as exc:
+            failed_paths.add(path)
+            print(f"{path}: {type(exc).__name__}: {exc}")
+            continue
+        loaded_paths.append(path)
+        for local_index, model in enumerate(payload["models"]):
+            models.append(model)
+            origins.append((path, local_index))
+
+    if models:
+        # One semantic validation sees every supplied target. Keep origin indices
+        # separately so cross-file diagnostics still point to the declaring file.
+        result = SemanticValidator().validate_yaml({"models": models})
+        for kind, messages in (("error", result.errors), ("warning", result.warnings)):
+            for message in messages:
+                prefix, detail = message.split("] ", 1)
+                index = int(prefix.removeprefix("[model #"))
+                path, local_index = origins[index]
+                if kind == "error":
+                    failed_paths.add(path)
+                print(f"{path}: {kind}: [model #{local_index}] {detail}")
+
+        by_key: dict[str, list[int]] = {}
+        for index, model in enumerate(models):
+            key = model.get("key") or model["name"]
+            by_key.setdefault(key, []).append(index)
+        for key, indices in by_key.items():
+            if len(indices) > 1:
+                for index in indices:
+                    path, local_index = origins[index]
+                    failed_paths.add(path)
+                    print(f"{path}: error: [model #{local_index}] duplicate model key '{key}'")
+        for index, model in enumerate(models):
+            for relationship in model.get("relationships") or []:
+                target = relationship["to_model"]
+                if target not in by_key:
+                    path, local_index = origins[index]
+                    print(f"{path}: warning: [model #{local_index}] relationship "
+                          f"'{relationship['name']}': cible non fournie, non vérifiée: '{target}'")
+
+    for path in loaded_paths:
+        if path not in failed_paths:
+            print(f"{path}: valid (JSON Schema + SemanticValidator).")
+    return SEMANTIC_EXIT_ERROR if failed_paths else SEMANTIC_EXIT_OK
 
 
 def run_semantic_validate(pipeline_path: str, model_path: str) -> int:

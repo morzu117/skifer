@@ -1,0 +1,22 @@
+models:
+- name: entites
+  key: entites
+  table: main.atlas_entites
+  description: Référentiel illustratif pur, une ligne par entité, sans snapshot.
+  grain:
+  - entite
+  entities:
+  - name: entite
+    type: primary
+    key: entite
+  dimensions:
+  - name: entite
+    sql: entite
+    type: string
+  - name: segment
+    sql: segment
+    type: string
+  metrics:
+  - name: nombre_entites
+    sql: entite
+    type: count

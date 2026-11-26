@@ -12,7 +12,7 @@ from skifer.agentic.data_service import (
     ScopeDenied,
     ServiceLimits,
 )
-from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.resolver import SemanticQuery
 from skifer.mcp.resources import MCPResources
 from skifer.mcp.tools import MCPTools
 from skifer.observability.tracing import TraceContext

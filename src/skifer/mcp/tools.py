@@ -27,7 +27,7 @@ from skifer.services import (
     ScopeDenied,
     SerializationError,
 )
-from skifer.agentic.resolver import SemanticQuery, SemanticQueryError
+from skifer.semantic.resolver import SemanticQuery, SemanticQueryError
 from skifer.mcp.resources import (
     INVALID_PARAMS,
     MCPResourceError,

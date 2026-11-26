@@ -9,7 +9,7 @@ import yaml
 from unittest.mock import MagicMock
 
 from skifer.agentic.agent import GenBIAgent
-from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.resolver import SemanticQuery
 from skifer.agentic.models import ResponseFormat
 from skifer.observability.certification_store import Certification
 from skifer.semantic.access_policy import CertificationDecision
@@ -287,7 +287,7 @@ def test_agent_query_mode_denies_before_resolve_for_uncertified_dependency(
     tmp_path,
     monkeypatch,
 ):
-    from skifer.agentic import resolver as resolver_module
+    from skifer.semantic import resolver as resolver_module
 
     resolve_calls = 0
     original_resolve = resolver_module.QueryResolver.resolve

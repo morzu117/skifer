@@ -18,7 +18,7 @@ from skifer.agentic.data_service import (
     ScopeDenied,
     ServiceLimits,
 )
-from skifer.agentic.resolver import SemanticQuery
+from skifer.semantic.resolver import SemanticQuery
 from skifer.lineage.tracker import LineageEdge, LineageGraph
 from skifer.observability.certification import ContractDefinition
 from skifer.observability.certification_store import Certification

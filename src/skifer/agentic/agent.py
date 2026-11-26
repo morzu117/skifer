@@ -40,7 +40,7 @@ from ..observability.tracing import (
 )
 from .history import HistoryEntry, SessionHistory
 from .models import AgentResponse, FormattedResult, ResponseFormat
-from .resolver import QueryResolver, SemanticQuery, SemanticQueryError
+from skifer.semantic.resolver import QueryResolver, SemanticQuery, SemanticQueryError
 
 try:
     import matplotlib

@@ -7,7 +7,7 @@ import difflib
 import re
 from typing import Any, Literal
 
-from ..agentic.resolver import SemanticQueryError
+from skifer.semantic.resolver import SemanticQueryError
 from .access_policy import CertificationDecision, SemanticAccessDenied
 from .calendar import parse_iso_date, resolve_period
 from .domain import (

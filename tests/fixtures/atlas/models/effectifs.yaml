@@ -1,0 +1,27 @@
+models:
+- name: effectifs
+  key: effectifs
+  table: main.atlas_effectifs
+  description: Effectifs illustratifs par entité et mois de snapshot.
+  grain:
+  - observation
+  entities:
+  - name: observation
+    type: primary
+    key:
+    - entite
+    - mois_snapshot
+  dimensions:
+  - name: entite
+    sql: entite
+    type: string
+  - name: mois_snapshot
+    sql: mois_snapshot
+    type: date
+  metrics:
+  - name: effectif
+    sql: effectif
+    type: sum
+    additivity: semi_additive
+    non_additive_dimensions:
+    - mois_snapshot

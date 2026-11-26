@@ -20,6 +20,9 @@ src/skifer/
     rule_planner.py    # RulePlanner — groups rules into stages, topological sort, cycle detection
     rule_executor.py   # RuleExecutor — fuses projection/aggregation stages (single select/groupBy)
     sql_compiler.py    # compile_select / compile_materialized_view_ddl — YAML → SQL (pure Python)
+    connector.py       # Narrow execution/catalog/publication protocols + ExecutionResult (Plan 46.2)
+    dialect.py         # Lazy SQL rendering: databricks / duckdb / snowflake (Plan 46.2)
+    capability_matrix.py # Explicit supported / conditional / refused operations per target (Plan 46.2)
     sandbox.py         # SandboxResolver — transparent sandbox schema/table resolution
     catalog_inspector.py # CatalogInspector — catalog/schema/table introspection + suggestions
     loaders.py         # Built-in Delta table loaders
@@ -51,10 +54,12 @@ src/skifer/
     renderer.py        # LineageRenderer — Mermaid/JSON export
     classification.py  # public→pii classification propagation over lineage (Plan 31)
   semantic/
+    resolver.py        # QueryResolver — deterministic SQL builder, zero LLM, no hallucinated SQL (moved from agentic/ in Plan 46.1; shim with DeprecationWarning)
     builder.py         # SemanticBuilder — LLM-based YAML model generation
     semantic.py        # SemanticEngine — catalog-first, lazy-load, query/create_view/publish_metric_views
     metric_views.py    # Pure translation: semantic model -> Unity Catalog metric view, for Genie (Plan 42)
     validator.py       # SemanticValidator — validates YAML model structure
+    json_schema.py     # Generated semantic document JSON Schema, necessary but not sufficient (Plan 46.5)
     access_policy.py   # Pure certification policy: evaluate(), ConsumerContext, overrides (Plan 29)
     dependencies.py    # resolve_dependencies() — datasets a semantic model reads (Plan 29)
     output_projection.py # OutputProjector — predicts final schema without Spark (Plan 29)
@@ -67,7 +72,6 @@ src/skifer/
   agentic/
     agent.py           # GenBIAgent — 2-step LLM pipeline (model selection → SemanticQuery)
     candidate_agent.py # MetricCandidateAgent — governed fallback outside the semantic layer (Plan 44)
-    resolver.py        # QueryResolver — deterministic SQL builder, zero LLM, no hallucinated SQL
     orchestrator.py    # Multi-agent orchestration + OrchestratorExporter
     hub.py             # AgenticHub — entry point for the `skifer hub` CLI
     builder_agent.py   # BuilderAgent — generates pipeline YAML schemas
@@ -282,6 +286,7 @@ join:
                                           # aliases acceptes : full outer/full_outer/outer -> full,
                                           # anti/left anti -> left_anti, semi/left semi -> left_semi
                                           # left_anti et left_semi : Spark DataFrame only for now
+                                          # cross : no keys (refused at load); no USING deduplication, rename via fields:
 
 where:                                   # optional (Plan 43) — post-join filter, applied AFTER
   - "ord_status:equals:ACTIVE"           # every join and BEFORE business_rules. Never pushed down
@@ -396,6 +401,9 @@ skifer semantic sync PIPELINE --check         # 0 à jour | 2 dérive | 3 confli
 skifer semantic sync PIPELINE --write-draft   # applique si le rapport est propre
 skifer semantic sync PIPELINE --promote       # draft → modèle curé + catalogue
 skifer semantic validate PIPELINE MODEL       # cross-validation modèle ↔ projection
+skifer semantic validate --schema MODEL [MODEL ...]  # JSON Schema + validateur, extra [schema]
+# Schéma par fichier, validation commune : cibles inter-fichiers, doublons, warnings.
+# Ne pas fournir semantic_catalog.yaml ; une cible non fournie produit un warning.
 ```
 
 `0` à jour/valide/promu · `1` erreur technique ou de validation · `2` dérive · `3` conflit.
@@ -886,8 +894,9 @@ connaissance : BM25 sans dépendance, dense/hybride via `[knowledge-embeddings]`
 Voir `docs/metric_candidates.md`.
 
 ### Tests
+- `tests/parity/` exécute 23 cas sur Spark DataFrame, Spark SQL et DuckDB SQL, plus 3 pins de divergence ; toute promotion DuckDB exige un cas vert, avec une condition identique au motif de la matrice si nécessaire.
 - LLM calls are always mocked; no live cluster, API key or network is needed.
-- Spark, however, is **not** mocked everywhere: 182 tests run a real local Delta session
+- Spark, however, is **not** mocked everywhere: 246 tests run a real local Delta session
   (the `spark` fixture in `tests/conftest.py`, plus the examples), the other ~2200 use
   doubles. A test that builds a `F.col(...)` needs the fixture even when it only asserts
   a raised error — omitting it makes the test pass only next to its neighbours.
@@ -945,6 +954,7 @@ The plan must include: context, phased steps with files to create/modify, risk a
 | [Couche sémantique en metric views pour Genie (Plan 42)](docs/roadmap/42_metric_views_plan.md) | `feat/plan42-metric-views` | Implémenté (42.0–42.5) — `metric_views.py`, `SemanticEngine.publish_metric_views`, `skifer semantic metric-views`, page `docs/genie_metric_views.md`. Reste 42.6 (demo_sts bascule sur Skifer, hors dépôt) et la vérification live de `publish_metric_views` lui-même sur le workspace (42.0 n'a vérifié que le DDL brut). |
 | [Project analyzer : du SQL existant aux pipelines Skifer (Plan 43)](docs/roadmap/43_project_analyzer_plan.md) | `feat/plan43-project-analyzer` | **Implémenté — 43.0 à 43.8 sont tous faits.** Corpus synthétique + parser + inventaire (43.0), `where:`/`where_groups:` post-jointure (43.1), mapper déterministe SQL → schema_dict + oracle de round-trip par `compile_select` + rapport + `skifer analyze --dry-run` (43.2), DAG de dépendances + découpage CTE/sous-requêtes en partials/tables intermédiaires/inline + `skifer analyze --dry-run --split` (43.3), fingerprints structurels + détection de motifs récurrents (règles partagées, divergences jamais arbitrées, sous-seuil jamais silencieux) + émission validée de drafts/stubs + `skifer analyze --emit [--out] [--min-occurrences] [--min-scripts] [--strict]` (43.4), run de parité données `ParityRunner`/`compare_tables` (table jetable, jamais la cible réelle ni la legacy) + `skifer analyze parity <draft.yaml> --against <fqn> --target-layer <layer> [--key col,…]` (43.5, `--target-layer` ajouté au-delà de l'esquisse du plan — requis par `run_process_to_table`) : 7/8 statements du corpus vérifient (05 et 07 résolus par le découpage), le 8e (`LAG()`) reste honnêtement bloqué ; sur le même corpus, `--emit` promeut `country` en règle partagée, trouve la divergence `net_margin`, et écrit 7 drafts + 1 stub. Les deux tests Spark de 43.5, initialement vérifiés par relecture seulement (pas de JRE local), ont depuis été réellement exécutés (JRE local installé) : la relecture avait raté un `filter:` mal placé dans un fixture de test (corrigé — aucun défaut côté `ParityRunner`/`compare_tables`), suite complète désormais verte avec Spark. Enrichissement LLM contraint optionnel (43.6) : `--enrich` sur `--emit` propose noms/docstrings de règles, descriptions de drafts et regroupements de fingerprints via JSON fermé (allowlist par clé, nom de règle proposé purement consultatif, jamais utilisé pour renommer) — additif au rapport JSON uniquement, no-op silencieux sans provider ; le corps de règle pour un fragment `needs_curation` reste un scope cut assumé (pas de fragment sûr isolable sans travail côté mapper). Front-ends notebooks (43.7, premier sous-point) : `skifer analyze` lit aussi un export Databricks `.py` (cellules `# MAGIC %sql` + appels `spark.sql(...)` littéraux scannés par `ast`) et un `.ipynb` (`%%sql` + `spark.sql(...)`), chaque statement gardant son origine fichier/cellule/ligne (`::cell:N` pour un ipynb, même convention de suffixe que 43.3) ; une f-string ou un argument non littéral est un `ExtractionResidue` nommé, jamais interpolé. Historique de requêtes (43.7, second sous-point) : `skifer analyze history --warehouse-id ID --days N` lit `system.query.history` via l'API Statement Execution du SDK Databricks, ne sélectionne jamais de colonne auteur/résultat, dédoublonne par fingerprint de contenu. Doc (43.8) : `docs/project_analyzer.md` (parcours guidé complet sur l'exemple 24), entrée `mkdocs.yml`, arborescence `analyzer/` et section prose dans `CLAUDE.md`/`AGENTS.md`. **Plan clos.** |
 | [Metric candidates : répondre hors du semantic layer, puis certifier (Plan 44)](docs/roadmap/44_metric_candidates_plan.md) | mergé via PR #55 (plan) puis #33, #35, #36, #39, #41, #43, #44, #45, #46, #47, #53 (S00–S10) — `b4b3fe0` | **Implémenté** (S00–S10). R1 levé en live ; D7 tranché le 29 octobre 2026 (hybride e5-small si un modèle est configuré, BM25 sinon). Exemple `examples/25_metric_candidates/`, page `docs/metric_candidates.md`. |
+| [Skifer multi-plateforme : cœur SQL-first, connecteurs, découpe (Plan 46)](docs/roadmap/46_multi_platform_plan.md) | `feat/plan46-multi-platform` (plan), `feat/plan46-46.0-foundations` | **En cours.** Plan validé le 23 novembre 2026 (ADR 0001 : SQL-first, connecteurs minces, divergence KPI arbitrée dans Atlas, règles Python jamais hors Spark). 46.0 à 46.5 livrés : ADR, CODEOWNERS, contrats import-linter (3), exports paresseux, résolveur sous `semantic/`, contrats de connecteur, matrice de capacités et rendu de dialecte ; harnais de parité à trois voies et exemple portable 26 (DuckDB : 48 `Supported`, 7 `Conditional`, 2 `Refused`). Connecteur `skifer-duckdb` : trois contrats, 23 cas contre référence Spark figée, helper sémantique et page d’intégration. 46.5 : noms/SQL textuels (clé de modèle nulle = repli sur le nom), JSON Schema sémantique, CLI `--schema`, corpus de 44 documents et fixture Atlas reconstruite exécutée sur DuckDB. **M1 atteint côté cœur** ; générateur Atlas encore à réaliser. 46.6 livré sur faux curseur dans `skifer-snowflake` : rendu Snowflake toujours cité, 20 SQL figés et 3 refus ; aucune capacité `Supported`, run réel en attente d’un compte. Suite : 46.7 découpe des wheels (M2), critère d’intégration réelle de 46.6 encore non satisfait. |
 
 ## Key files
 
@@ -1349,7 +1359,7 @@ lint   ruff check src/
 
 - Charge des extraits ciblés, jamais des fichiers entiers. C'est un levier de coût, et sur une machine à mémoire contrainte c'est aussi ce qui décide si la session tient ou se fait tuer.
 - Framework déclaratif Spark/Databricks (Bronze → Silver → Gold). YAML = le What ; règles Python du RuleRegistry = le How.
-- ~2200 tests sans Spark (~27 s) + 182 sur une session Delta locale réelle (fixture `spark`). LLM toujours mocké. examples/ est exécuté par la suite.
+- ~2200 tests sans Spark (~27 s) + 246 sur une session Delta locale réelle (fixture `spark`). LLM toujours mocké. examples/ est exécuté par la suite.
 - Toute modif de src/ = test + entrée CHANGELOG [Unreleased]. Un point de plan = un commit. Jamais de bump de version.
 - Flux de données piloté par YAML : le rayon d'impact de l'index est un plancher, pas un périmètre.
 

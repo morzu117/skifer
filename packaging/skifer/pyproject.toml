@@ -1,0 +1,125 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "skifer"
+version = "4.1.0"
+description = "Declarative data engineering framework for Spark and Databricks Lakehouse."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Julien Houbart", email = "houbartjulien80@gmail.com" }
+]
+keywords = [
+    "databricks", "spark", "pyspark", "delta-lake", "data-engineering", "lakehouse",
+    "declarative", "yaml", "etl", "pipeline", "bronze-silver-gold",
+    "semantic-layer"
+]
+requires-python = ">=3.10"
+dependencies = [
+    "skifer-core==4.1.0",
+    "python-dotenv>=1.0.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+[project.urls]
+Homepage = "https://github.com/morzu117/skifer"
+Documentation = "https://morzu117.github.io/skifer"
+Repository = "https://github.com/morzu117/skifer"
+Changelog = "https://github.com/morzu117/skifer/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/morzu117/skifer/issues"
+
+[project.optional-dependencies]
+schema = ["jsonschema>=4.0"]
+# Spark execution now lives in the skifer-engine distribution (it brings pyspark
+# and delta). `pip install skifer` stays Spark-free; `pip install skifer[spark]`
+# opts into the runtime.
+spark = ["skifer-engine==4.1.0"]
+llm-openai = ["openai>=1.0.0"]
+llm-anthropic = ["anthropic>=0.30.0"]
+llm-google = ["google-generativeai>=0.5.0"]
+semantic-pdf = ["fpdf2>=2.7.0", "matplotlib>=3.7.0"]
+databricks = ["databricks-sdk>=0.20.0"]
+# The MLflow serving layer now lives in the skifer-databricks distribution.
+serving = ["skifer-databricks==4.1.0"]
+tracing = [
+    "opentelemetry-sdk>=1.24.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.24.0",
+    "mlflow>=3.0,<4",
+]
+mcp = ["mcp>=2.1,<3"]
+dialects = ["sqlglot>=25"]
+analyzer = ["sqlglot>=25"]
+knowledge-embeddings = ["sentence-transformers>=3"]
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
+semantic-full = [
+    "openai>=1.0.0",
+    "anthropic>=0.30.0",
+    "fpdf2>=2.7.0",
+    "matplotlib>=3.7.0",
+]
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.24",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1.0",
+    "pytest-mock>=3.10.0",
+    "jsonschema>=4.0",
+    "httpx>=0.27",
+    "duckdb>=1,<2",
+    "import-linter>=2.0",
+]
+
+[project.scripts]
+skifer = "skifer.cli:main"
+
+# One shared src/ tree, two distributions. skifer ships the governed layer and
+# the Spark runtime; the lazy package roots (skifer/__init__.py,
+# skifer/core/__init__.py) and the 11 language-core modules come from skifer-core.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+exclude = ["**/__pycache__", "**/*.pyc"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../src/skifer/adaptive" = "skifer/adaptive"
+"../../src/skifer/agentic" = "skifer/agentic"
+"../../src/skifer/analyzer" = "skifer/analyzer"
+"../../src/skifer/api" = "skifer/api"
+"../../src/skifer/candidates" = "skifer/candidates"
+"../../src/skifer/capabilities" = "skifer/capabilities"
+"../../src/skifer/knowledge" = "skifer/knowledge"
+"../../src/skifer/lineage" = "skifer/lineage"
+"../../src/skifer/mcp" = "skifer/mcp"
+"../../src/skifer/observability" = "skifer/observability"
+"../../src/skifer/semantic" = "skifer/semantic"
+"../../src/skifer/services" = "skifer/services"
+"../../src/skifer/sinks" = "skifer/sinks"
+"../../src/skifer/cli.py" = "skifer/cli.py"
+"../../src/skifer/registry.py" = "skifer/registry.py"
+"../../src/skifer/utils.py" = "skifer/utils.py"
+"../../src/skifer/core/core.py" = "skifer/core/core.py"
+"../../src/skifer/core/config.py" = "skifer/core/config.py"
+"../../src/skifer/core/context.py" = "skifer/core/context.py"
+"../../src/skifer/core/catalog_inspector.py" = "skifer/core/catalog_inspector.py"
+"../../src/skifer/core/environment.py" = "skifer/core/environment.py"
+"../../src/skifer/core/patterns.py" = "skifer/core/patterns.py"
+"../../src/skifer/core/rule_planner.py" = "skifer/core/rule_planner.py"
+"../../src/skifer/core/sandbox.py" = "skifer/core/sandbox.py"

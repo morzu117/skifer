@@ -4,6 +4,7 @@ Registry module to manage dynamic registration of Business Rules and Data Loader
 
 from __future__ import annotations
 
+import importlib
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
@@ -144,6 +145,7 @@ class RuleRegistry:
         Raises:
             ValueError: If the loader is not found in the registry.
         """
+        importlib.import_module("skifer.core.loaders")
         if name not in cls._loaders:
             raise ValueError(f"Data Loader '{name}' not found.")
         return cls._loaders[name]
@@ -166,6 +168,7 @@ class RuleRegistry:
         Returns:
             list[str]: A list of names of all currently registered data loaders.
         """
+        importlib.import_module("skifer.core.loaders")
         return list(cls._loaders.keys())
 
     @classmethod

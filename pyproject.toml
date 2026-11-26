@@ -44,6 +44,7 @@ Changelog = "https://github.com/morzu117/skifer/blob/main/CHANGELOG.md"
 "Bug Tracker" = "https://github.com/morzu117/skifer/issues"
 
 [project.optional-dependencies]
+schema = ["jsonschema>=4.0"]
 # --- Runtime Spark / Databricks ---
 spark = [
     "pyspark>=3.3.0",
@@ -95,6 +96,9 @@ mcp = [
     "mcp>=2.1,<3",
 ]
 
+# --- SQL dialect rendering (lazy optional dependency) ---
+dialects = ["sqlglot>=25"]
+
 # --- Project analyzer : SQL existant -> pipelines Skifer (import strictement paresseux) ---
 analyzer = [
     "sqlglot>=25",
@@ -140,6 +144,8 @@ dev = [
     # Required by FastAPI's TestClient (starlette) to exercise the [api] routes.
     "httpx>=0.27",
     "duckdb>=1,<2",
+    # Plan 46 / ADR 0001: import contracts run in CI (`lint-imports`).
+    "import-linter>=2.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -152,4 +158,72 @@ skifer = "skifer.cli:main"
 pythonpath = ["src"]
 markers = [
     "streaming: real Structured Streaming tests on the local Delta session (slower)",
+]
+
+# Plan 46 / ADR 0001 — import contracts. The governed layer must never enter the
+# language core; 46.1 adds the `layers` and `independence` contracts.
+[tool.importlinter]
+root_package = "skifer"
+include_external_packages = true
+# Contracts guard runtime structure: TYPE_CHECKING imports never execute or load modules.
+# tests/test_import_boundaries.py verifies actual loads in fresh interpreters.
+exclude_type_checking_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Language core (11 modules) stays free of the governed layer, the engine and Spark"
+type = "forbidden"
+source_modules = [
+    "skifer.core.op_catalog",
+    "skifer.core.constants",
+    "skifer.core.ir",
+    "skifer.core.schema_loader",
+    "skifer.core.sql_compiler",
+    "skifer.core.json_schema",
+    "skifer.core.registry",
+    "skifer.core.rule_analyzer",
+    "skifer.core.connector",
+    "skifer.core.capability_matrix",
+    "skifer.core.dialect",
+]
+forbidden_modules = [
+    "skifer.semantic",
+    "skifer.agentic",
+    "skifer.observability",
+    "skifer.services",
+    "skifer.api",
+    "skifer.mcp",
+    "pyspark",
+    "delta",
+    "skifer.core.core",
+    "skifer.core.spark_backend",
+    "skifer.core.patterns",
+    "skifer.core.interpreter",
+    "skifer.core.writer",
+    "skifer.core.loaders",
+    "skifer.lineage",
+    "skifer.candidates",
+    "skifer.knowledge",
+    "skifer.adaptive",
+    "skifer.capabilities",
+    "skifer.serving",
+    "skifer.analyzer",
+]
+
+[[tool.importlinter.contracts]]
+name = "Semantic layer never imports the agentic layer"
+type = "layers"
+layers = ["skifer.agentic", "skifer.semantic"]
+
+[[tool.importlinter.contracts]]
+name = "Package roots stay lazy"
+type = "forbidden"
+# Check the __init__ modules themselves, not their descendant modules.
+as_packages = false
+source_modules = ["skifer", "skifer.core", "skifer.semantic", "skifer.agentic"]
+forbidden_modules = [
+    "pyspark",
+    "delta",
+    "skifer.core.core",
+    "skifer.agentic.builder_agent",
+    "skifer.lineage",
 ]

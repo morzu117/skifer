@@ -1,0 +1,17 @@
+tables:
+  - name: silver.orders
+    alias: ord
+    filter:
+      - "status:equals:DONE"
+    quality_checks:
+      drop_nulls_in: [amount]
+add_columns:
+  - [country, country_code, [upper]]
+aggregate:
+  group_by: [country_code]
+  measures:
+    - [amount, total_amount, sum]
+    - [order_id, nb_orders, count]
+    - [customer_id, nb_customers, count_distinct]
+  having:
+    - "nb_orders:greater_than:1"
