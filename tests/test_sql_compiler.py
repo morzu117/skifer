@@ -992,3 +992,49 @@ class TestQuoteFqn:
         parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
         with pytest.raises(SqlCompilationError, match="table name"):
             compile_select(parsed, resolve_table=lambda name: _R2_PAYLOAD, dialect=dialect)
+
+
+# ==============================================================================
+# Plan 47.3 — a table declared but never joined (R6)
+# ==============================================================================
+
+class TestUnjoinedTable:
+    def test_second_table_without_any_join_is_refused(self):
+        with pytest.raises(SqlCompilationError, match="'cust'") as raised:
+            _compile("""
+tables:
+  - {name: silver.orders, alias: ord}
+  - {name: silver.customers, alias: cust}
+keep_all_columns: true
+""")
+        assert "join" in str(raised.value) and "remove" in str(raised.value)
+
+    def test_third_table_left_out_of_the_joins_is_refused(self):
+        with pytest.raises(SqlCompilationError, match="'ctry'"):
+            _compile("""
+tables:
+  - {name: silver.orders, alias: ord}
+  - {name: silver.customers, alias: cust}
+  - {name: silver.countries, alias: ctry}
+join:
+  - {table_from: [ord, customer_id], table_to: [cust, customer_id]}
+select_final:
+  - [order_id, order_id]
+""")
+
+    def test_every_table_joined_compiles(self):
+        sql = _compile("""
+tables:
+  - {name: silver.orders, alias: ord}
+  - {name: silver.customers, alias: cust}
+  - {name: silver.countries, alias: ctry}
+join:
+  - {table_from: [ord, customer_id], table_to: [cust, customer_id]}
+  - {table_from: [cust, country], table_to: [ctry, country]}
+select_final:
+  - [order_id, order_id]
+""")
+        assert "JOIN `cust`" in sql and "JOIN `ctry`" in sql
+
+    def test_single_table_is_unaffected(self):
+        assert "FROM `ord`" in _compile(_single_table("keep_all_columns: true\n"))

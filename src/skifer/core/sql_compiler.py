@@ -546,6 +546,16 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
     if base_alias not in aliases:
         base_alias = aliases[0]
 
+    # Plan 47.3: a declared table no join references would be silently ignored.
+    joined = {j.alias_left for j in parsed.joins} | {j.alias_right for j in parsed.joins}
+    unjoined = [a for a in aliases if a != base_alias and a not in joined]
+    if len(aliases) > 1 and unjoined:
+        raise SqlCompilationError(
+            f"Table(s) {', '.join(repr(a) for a in unjoined)} declared in 'tables:' but never "
+            "joined — the compiled SQL would silently ignore them. Join each one in 'join:' "
+            "(table_from / table_to) or remove it from 'tables:'."
+        )
+
     sql = quote_ident(base_alias)
     for j in parsed.joins:
         keyword = _SQL_JOIN_TYPES.get(j.join_type)

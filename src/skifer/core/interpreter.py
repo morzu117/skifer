@@ -498,6 +498,24 @@ class SchemaInterpreter:
         if base_alias not in dfs:
             base_alias = list(dfs.keys())[0]
 
+        # Plan 47.3: a declared table no join references is ignored. The SQL path
+        # refuses it; here the historical behaviour is kept, with a warning.
+        declared = schema_dict.get("tables", [])
+        if len(declared) > 1:
+            joined = {
+                ref[0] if isinstance(ref, list) else ref
+                for j in schema_dict.get("join", [])
+                for ref in (j.get("table_from"), j.get("table_to"))
+            }
+            for t in declared:
+                alias = t.get("alias", t["name"])
+                if base_alias not in (alias, t["name"]) and alias not in joined:
+                    logger.warning(
+                        "    -> [Join] table '%s' is declared in 'tables:' but never joined — "
+                        "it is ignored. Join it in 'join:' or remove it from 'tables:'.",
+                        alias,
+                    )
+
         df_main = dfs[base_alias]
 
         if "join" in schema_dict:

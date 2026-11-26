@@ -36,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this injection "refuted" is corrected. **Breaking:** a partially or badly back-quoted
   table name, which used to compile, now raises `SqlCompilationError`.
 
+### Fixed
+- **Plan 47.3 — a table declared but never joined is no longer ignored in silence (R6).**
+  With more than one table in `tables:`, every alias other than the join base must appear
+  as `table_from` or `table_to` of a join. On the SQL path (`compile_select`: materialized
+  views, connectors, metric candidates) the schema is refused with a `SqlCompilationError`
+  naming the alias and suggesting to join it or remove it. On the DataFrame path the
+  historical behaviour is kept, with a `logger.warning` naming the alias.
+  **Breaking (SQL path only):** a schema with an unjoined table, which used to compile
+  (the extra table silently dropped), is now refused.
+
 ### Added
 - **Plan 47.0 — the wheels are built, installed and imported alone.** New
   `scripts/check_wheels.py` builds the four wheels (`pip wheel --no-deps`), checks from
