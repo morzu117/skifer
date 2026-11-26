@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime
 import copy
 from dataclasses import is_dataclass, replace
+import logging
 import os
 from pathlib import Path
 import time
@@ -55,6 +56,8 @@ from .evidence import (
     hash_definition,
     hash_sql,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SemanticEngine:
@@ -550,7 +553,7 @@ class SemanticEngine:
             executed_at=None,
         )
         if not resolved.policy_filters:
-            print(f"🔎 [SemanticEngine] SQL :\n{resolved.full_sql}")
+            logger.debug("🔎 [SemanticEngine] SQL :\n%s", resolved.full_sql)
         backend = self.core._get_backend()
         started = self._monotonic()
         try:

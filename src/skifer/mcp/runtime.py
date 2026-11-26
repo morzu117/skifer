@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import json
 import logging
+import sys
 from typing import Any, Callable
 
 from skifer.services import AgentReadyDataService
@@ -211,11 +213,14 @@ async def _serve_stdio(server: Any) -> None:
         stdio_module = importlib.import_module("mcp.server.stdio")
         async with stdio_module.stdio_server() as streams:
             read_stream, write_stream = streams
-            await server.run(
-                read_stream,
-                write_stream,
-                _initialization_options(server),
-            )
+            # stdio_server() has already captured the real stdout: from here on it
+            # is the protocol channel, so any stray print() goes to stderr (47.6).
+            with contextlib.redirect_stdout(sys.stderr):
+                await server.run(
+                    read_stream,
+                    write_stream,
+                    _initialization_options(server),
+                )
     except MCPDependencyError:
         raise
     except Exception as exc:

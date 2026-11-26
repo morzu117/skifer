@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   historical behaviour is kept, with a `logger.warning` naming the alias.
   **Breaking (SQL path only):** a schema with an unjoined table, which used to compile
   (the extra table silently dropped), is now refused.
+- **Plan 47.6 — nothing but the protocol is written to stdout on the MCP stdio transport
+  (R7).** On stdio, stdout is the JSON-RPC channel: a stray `print()` corrupted the stream.
+  `skifer mcp serve --transport stdio` now runs the server under
+  `contextlib.redirect_stdout(sys.stderr)`, entered after `stdio_server()` has captured the
+  real stdout, and restored on exit. The SQL that `SemanticEngine` printed before each
+  query is now logged at `DEBUG` on the `skifer.semantic.semantic` logger instead (D4);
+  the other prints are unchanged.
 
 ### Added
 - **Plan 47.0 — the wheels are built, installed and imported alone.** New

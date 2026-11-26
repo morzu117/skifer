@@ -486,3 +486,44 @@ def test_official_sdk_smoke_list_read_and_query():
             tasks.cancel_scope.cancel()
 
     anyio.run(smoke)
+
+
+# --- Plan 47.6: on stdio, stdout is the protocol channel --------------------------------
+
+def test_stdio_prints_during_server_run_go_to_stderr_never_to_the_protocol(
+    monkeypatch, capsys
+):
+    import contextlib
+    import types
+
+    from skifer.mcp.runtime import _serve_stdio
+
+    seen = {}
+
+    @contextlib.asynccontextmanager
+    async def stdio_server():
+        # The real SDK captures the process stdout when the context is entered.
+        seen["protocol"] = sys.stdout
+        yield ("read-stream", "write-stream")
+
+    class Server:
+        def create_initialization_options(self):
+            return "options"
+
+        async def run(self, read_stream, write_stream, options):
+            seen["args"] = (read_stream, write_stream, options)
+            print("stray print from business code")
+            seen["protocol"].write('{"jsonrpc":"2.0"}\n')
+
+    fake = types.ModuleType("mcp.server.stdio")
+    fake.stdio_server = stdio_server
+    monkeypatch.setitem(sys.modules, "mcp.server.stdio", fake)
+    stdout_before = sys.stdout
+
+    asyncio.run(_serve_stdio(Server()))
+
+    captured = capsys.readouterr()
+    assert seen["args"] == ("read-stream", "write-stream", "options")
+    assert captured.out == '{"jsonrpc":"2.0"}\n'
+    assert "stray print from business code" in captured.err
+    assert sys.stdout is stdout_before
