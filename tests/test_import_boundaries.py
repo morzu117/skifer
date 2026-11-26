@@ -265,3 +265,35 @@ def test_registry_gets_builtin_loader_without_engine():
         assert RuleRegistry.list_loaders() == []
         """
     )
+
+
+# --- Plan 47.7: the registry without skifer-engine ---------------------------------------
+
+def test_registry_lists_registered_loaders_without_the_engine_distribution(monkeypatch):
+    from skifer.core.registry import RuleRegistry
+
+    def mine():
+        return None
+
+    monkeypatch.setattr(RuleRegistry, "_loaders", {"mine": mine})
+    monkeypatch.setitem(sys.modules, "skifer.core.loaders", None)
+    assert RuleRegistry.list_loaders() == ["mine"]
+    assert RuleRegistry.get_loader("mine") is mine
+    with pytest.raises(ValueError, match="`skifer-engine` distribution"):
+        RuleRegistry.get_loader("load_and_union_tables")
+
+
+def test_registry_lets_a_missing_third_party_dependency_propagate(monkeypatch):
+    import types
+
+    from skifer.core import registry
+
+    error = ModuleNotFoundError("No module named 'pyspark'", name="pyspark")
+
+    def import_module(_name):
+        raise error
+
+    monkeypatch.setattr(registry, "importlib", types.SimpleNamespace(import_module=import_module))
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        registry.RuleRegistry.list_loaders()
+    assert excinfo.value is error

@@ -52,6 +52,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   real stdout, and restored on exit. The SQL that `SemanticEngine` printed before each
   query is now logged at `DEBUG` on the `skifer.semantic.semantic` logger instead (D4);
   the other prints are unchanged.
+- **Plan 47.7 — each wheel's public surface says what to install (S1).** With
+  `skifer-core` alone, 17 of the 22 names in `skifer.__all__` (and 2 of the 3 in
+  `skifer.core.__all__`) raised a bare `ModuleNotFoundError`. The lazy `__getattr__` of
+  both roots now re-raises it (same type, same `name`) with a message naming the
+  distribution that ships the missing `skifer.*` module and its install command, e.g.
+  ``` `SparkBackend` ships in the `skifer-engine` distribution: `pip install 'skifer[spark]'` ```.
+  A missing third-party dependency propagates unchanged. The module → distribution table
+  (`skifer._DISTRIBUTIONS`) is checked against `packaging/*/pyproject.toml` by
+  `tests/test_packaging.py`. `RuleRegistry.list_loaders()` without `skifer-engine` now returns
+  the registered loaders instead of raising, and `get_loader()` for an absent name cites
+  `skifer-engine`. `scripts/check_wheels.py` gains the probe "core alone: exports name
+  their distribution".
 
 ### Added
 - **Plan 47.0 — the wheels are built, installed and imported alone.** New

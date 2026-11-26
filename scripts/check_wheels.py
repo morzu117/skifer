@@ -262,6 +262,60 @@ print(json.dumps({"results": results, "forbidden_loaded": loaded}))
 '''
 
 
+EXPORTS_PROBE = r'''
+import importlib, importlib.util, json
+results = {}
+for package_name in ("skifer", "skifer.core"):
+    package = importlib.import_module(package_name)
+    for name in package.__all__:
+        if name == "__version__":
+            continue
+        carrier = importlib.util.resolve_name("." + package._EXPORTS[name], package_name)
+        key = f"{package_name}.{name}"
+        try:
+            getattr(package, name)
+            results[key] = {"carrier": carrier, "error": None}
+        except Exception as exc:
+            results[key] = {"carrier": carrier, "error": {
+                "type": type(exc).__name__, "message": str(exc)[:300]}}
+loaders_error = None
+try:
+    from skifer.core.registry import RuleRegistry
+    RuleRegistry.list_loaders()
+except Exception as exc:
+    loaders_error = f"{type(exc).__name__}: {exc}"[:300]
+print(json.dumps({"results": results, "list_loaders": loaders_error}))
+'''
+
+
+def check_exports_alone(python: pathlib.Path) -> list[str]:
+    """Plan 47.7 — with skifer-core alone, each export is the object or names its wheel."""
+    out = _run_probe(python, EXPORTS_PROBE)
+    if "crashed" in out:
+        return [f"exports probe | skifer-core | crashed: {out['crashed']}"]
+    owners, _ = ownership()
+    owner_of = {_module_name(path): wheels[0] for path, wheels in owners.items()}
+    problems = []
+    for export, result in sorted(out["results"].items()):
+        owner = owner_of.get(result["carrier"], "?")
+        error = result["error"]
+        if owner == "skifer-core":
+            if error is not None:
+                problems.append(f"{export} | skifer-core | {error['type']}: {error['message']}")
+        elif error is None:
+            problems.append(f"{export} | {owner} | resolved without its distribution")
+        elif error["type"] != "ModuleNotFoundError" or f"`{owner}` distribution" not in (
+            error["message"]
+        ):
+            problems.append(
+                f"{export} | {owner} | does not name its distribution: "
+                f"{error['type']}: {error['message']}"
+            )
+    if out["list_loaders"] is not None:
+        problems.append(f"RuleRegistry.list_loaders | skifer-core | {out['list_loaders']}")
+    return problems
+
+
 def _requirement_name(requirement: str) -> str:
     return re.split(r"[\s\[<>=!~;]", requirement.strip(), maxsplit=1)[0].lower()
 
@@ -351,7 +405,9 @@ def main(argv: list[str] | None = None) -> int:
         work.mkdir(parents=True, exist_ok=True)
         built = build_wheels(work / "dist")
         report["records"] = check_records(built)
-        report["core alone"] = check_core_alone(_make_venv(work / "venv-core"), built)
+        core_venv = _make_venv(work / "venv-core")
+        report["core alone"] = check_core_alone(core_venv, built)
+        report["core alone: exports name their distribution"] = check_exports_alone(core_venv)
         report["governed without engine"] = check_governed_without_engine(
             _make_venv(work / "venv-governed"), built
         )

@@ -17,7 +17,15 @@ def __getattr__(name):
     module = _EXPORTS.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    obj = getattr(importlib.import_module(f"{__name__}.{module}"), name)
+    try:
+        carrier = importlib.import_module(f"{__name__}.{module}")
+    except ModuleNotFoundError as exc:
+        # Plan 47.7: name the distribution to install; a third-party one propagates.
+        from skifer import _raise_if_distribution_missing
+
+        _raise_if_distribution_missing(name, exc)
+        raise
+    obj = getattr(carrier, name)
     globals()[name] = obj
     return obj
 

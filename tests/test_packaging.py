@@ -221,3 +221,128 @@ def test_optional_import_names_cover_declared_third_party_extras_only():
     names = _check_wheels_module().optional_import_names("skifer-core", "skifer")
     assert {"sqlglot", "mcp", "fastapi", "jsonschema"} <= names
     assert not {"skifer_engine", "skifer_databricks", "pyspark", "delta"} & names
+
+
+# --- Plan 47.7: an honest public surface per wheel --------------------------------------
+
+def _module_owners() -> dict[str, str]:
+    """Dotted skifer module name -> the one distribution that ships it."""
+    check_wheels = _check_wheels_module()
+    owners, _ = check_wheels.ownership()
+    return {check_wheels._module_name(path): wheels[0] for path, wheels in owners.items()}
+
+
+def _carrier(package, name: str) -> str:
+    import importlib.util
+
+    target = package._EXPORTS[name]
+    return importlib.util.resolve_name("." + target, package.__name__)
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_distribution_table_matches_the_packaging_manifests():
+    import skifer
+
+    owners = _module_owners()
+    lies = {
+        module: (skifer._distribution_of(module), owner)
+        for module, owner in owners.items()
+        if owner != "skifer-core" and skifer._distribution_of(module) != owner
+    }
+    assert not lies, f"module: (table says, packaging says) {lies}"
+    core_keys = {key for key in skifer._DISTRIBUTIONS if owners.get(key) == "skifer-core"}
+    assert not core_keys, f"skifer-core modules are never the missing ones: {core_keys}"
+    assert set(skifer._INSTALL_HINTS) == set(owners.values()) - {"skifer-core"}
+
+
+def _export_cases():
+    import skifer
+    import skifer.core
+
+    return [
+        (package, name)
+        for package in (skifer, skifer.core)
+        for name in package.__all__
+        if name != "__version__"
+    ]
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+@pytest.mark.parametrize(
+    ("package", "name"), _export_cases(), ids=lambda v: getattr(v, "__name__", v)
+)
+def test_each_export_gives_the_object_or_names_its_distribution(monkeypatch, package, name):
+    import skifer
+
+    carrier = _carrier(package, name)
+    owner = _module_owners()[carrier]
+    monkeypatch.delattr(package, name, raising=False)
+    if owner == "skifer-core":
+        assert getattr(package, name) is getattr(sys.modules[carrier], name)
+        return
+    monkeypatch.setitem(sys.modules, carrier, None)
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        getattr(package, name)
+    message = str(excinfo.value)
+    assert f"`{name}` ships in the `{owner}` distribution" in message
+    assert skifer._INSTALL_HINTS[owner] in message
+    assert excinfo.value.name == carrier
+
+
+def _failing_importlib(error):
+    import types
+
+    def import_module(_name):
+        raise error
+
+    return types.SimpleNamespace(import_module=import_module)
+
+
+def test_a_skifer_module_the_carrier_imports_names_its_own_distribution(monkeypatch):
+    import skifer
+
+    monkeypatch.delattr(skifer, "SkiferEngine", raising=False)
+    monkeypatch.setattr(skifer, "importlib", _failing_importlib(
+        ModuleNotFoundError("No module named 'skifer.core.spark_backend'",
+                            name="skifer.core.spark_backend")
+    ))
+    with pytest.raises(ModuleNotFoundError, match="`skifer-engine` distribution") as excinfo:
+        skifer.SkiferEngine
+    assert "pip install 'skifer[spark]'" in str(excinfo.value)
+    assert excinfo.value.name == "skifer.core.spark_backend"
+
+
+@pytest.mark.parametrize("package_name", ["skifer", "skifer.core"])
+def test_a_missing_third_party_dependency_propagates_unchanged(monkeypatch, package_name):
+    import importlib
+
+    package = importlib.import_module(package_name)
+    error = ModuleNotFoundError("No module named 'pyspark'", name="pyspark")
+    name = next(iter(package._EXPORTS))
+    monkeypatch.delattr(package, name, raising=False)
+    monkeypatch.setattr(package, "importlib", _failing_importlib(error))
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        getattr(package, name)
+    assert excinfo.value is error
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_exports_probe_verdict_flags_a_silent_or_unnamed_export(monkeypatch):
+    check_wheels = _check_wheels_module()
+    probe = {
+        "results": {
+            "skifer.load_schema": {"carrier": "skifer.core.schema_loader", "error": None},
+            "skifer.SparkBackend": {"carrier": "skifer.core.spark_backend", "error": {
+                "type": "ModuleNotFoundError",
+                "message": "`SparkBackend` ships in the `skifer-engine` distribution: ..."}},
+            "skifer.SkiferEngine": {"carrier": "skifer.core.core", "error": {
+                "type": "ModuleNotFoundError", "message": "No module named 'skifer.core.core'"}},
+            "skifer.LineageGraph": {"carrier": "skifer.lineage", "error": None},
+        },
+        "list_loaders": "ModuleNotFoundError: No module named 'skifer.core.loaders'",
+    }
+    monkeypatch.setattr(check_wheels, "_run_probe", lambda python, code: probe)
+    problems = check_wheels.check_exports_alone(pathlib.Path("python"))
+    assert [p.split(" | ")[0] for p in problems] == [
+        "skifer.LineageGraph", "skifer.SkiferEngine", "RuleRegistry.list_loaders",
+    ]

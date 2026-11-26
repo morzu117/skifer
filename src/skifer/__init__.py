@@ -57,11 +57,59 @@ _EXPORTS = {
 }
 
 
+# Plan 47.7 — which distribution ships a module outside skifer-core (the wheel that
+# ships this file, so its own modules are never the missing ones). Every other
+# skifer.* module ships in `skifer`. tests/test_packaging.py derives this table from
+# packaging/*/pyproject.toml and fails if it lies.
+_DISTRIBUTIONS = {
+    "skifer.spark_factory": "skifer-engine",
+    "skifer.core.spark_backend": "skifer-engine",
+    "skifer.core.writer": "skifer-engine",
+    "skifer.core.loaders": "skifer-engine",
+    "skifer.core.interpreter": "skifer-engine",
+    "skifer.core.rule_executor": "skifer-engine",
+    "skifer.serving": "skifer-databricks",
+}
+_INSTALL_HINTS = {
+    "skifer": "pip install skifer",
+    "skifer-engine": "pip install 'skifer[spark]'",
+    "skifer-databricks": "pip install 'skifer[serving]'",
+}
+
+
+def _distribution_of(module):
+    for prefix, distribution in _DISTRIBUTIONS.items():
+        if module == prefix or module.startswith(prefix + "."):
+            return distribution
+    return "skifer"
+
+
+def _raise_if_distribution_missing(name, exc):
+    """Name the distribution to install when a lazy export's skifer module is absent.
+
+    A missing third-party dependency is left alone: the caller re-raises it unchanged.
+    """
+    missing = exc.name or ""
+    if not missing.startswith("skifer."):
+        return
+    distribution = _distribution_of(missing)
+    raise ModuleNotFoundError(
+        f"`{name}` ships in the `{distribution}` distribution: "
+        f"`{_INSTALL_HINTS[distribution]}` (module `{missing}` is not installed).",
+        name=missing,
+    ) from exc
+
+
 def __getattr__(name):
     module = _EXPORTS.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    obj = getattr(importlib.import_module(f"{__name__}.{module}"), name)
+    try:
+        carrier = importlib.import_module(f"{__name__}.{module}")
+    except ModuleNotFoundError as exc:
+        _raise_if_distribution_missing(name, exc)
+        raise
+    obj = getattr(carrier, name)
     globals()[name] = obj
     return obj
 
