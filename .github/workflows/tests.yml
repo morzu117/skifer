@@ -77,3 +77,21 @@ jobs:
         env:
           MLFLOW_DISABLE_AGENT_HINT: "1"
         run: pytest -q --no-header tests/test_serving_mlflow_roundtrip.py tests/test_serving_agent_core.py tests/test_tracing_mlflow_real.py
+
+  # Plan 47.0: the wheel boundaries are only claims until the four wheels are built,
+  # their RECORDs compared, and each installed alone in a throw-away venv. No Java and
+  # no pyspark/mlflow here on purpose — "core alone" and "governed without the engine"
+  # are exactly the installs that must work without them.
+  wheels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build, install and import each wheel alone
+        run: python scripts/check_wheels.py

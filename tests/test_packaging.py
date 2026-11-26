@@ -146,3 +146,78 @@ def test_all_packaging_distributions_share_one_version():
     assert f"skifer=={shared}" in engine["dependencies"]
     databricks = _load("packaging/skifer-databricks/pyproject.toml")["project"]
     assert f"skifer=={shared}" in databricks["dependencies"]
+
+
+# ---------------------------------------------------------------------------
+# Plan 47.0 — every source file ships in exactly one wheel
+# ---------------------------------------------------------------------------
+# The prediction lives once, in scripts/check_wheels.py, which also compares it
+# to the RECORD of the wheels it really builds (that part needs the network and
+# runs in the CI `wheels` job). Here only the prediction is checked: no build.
+
+def _check_wheels_module(root: pathlib.Path = ROOT):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_skifer_check_wheels", root / "scripts" / "check_wheels.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_every_source_file_ships_in_exactly_one_wheel():
+    check_wheels = _check_wheels_module()
+    owners, orphans = check_wheels.ownership()
+    duplicates = {path: wheels for path, wheels in owners.items() if len(wheels) > 1}
+    assert not orphans, (
+        "src/skifer files shipped by no wheel — add a force-include line to the "
+        f"packaging/<wheel>/pyproject.toml that should own them: {orphans}"
+    )
+    assert not duplicates, f"src/skifer files shipped by several wheels: {duplicates}"
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_a_source_file_without_a_force_include_line_is_reported_as_an_orphan(
+    tmp_path, monkeypatch
+):
+    # Same manifests, same src/ tree, plus one stray module under skifer/core/ —
+    # which no wheel ships, because skifer/core/ is listed file by file.
+    import shutil
+
+    shutil.copytree(ROOT / "packaging", tmp_path / "packaging")
+    shutil.copytree(
+        ROOT / "src" / "skifer", tmp_path / "src" / "skifer",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    (tmp_path / "src" / "skifer" / "core" / "stray_module.py").write_text("X = 1\n")
+    check_wheels = _check_wheels_module()
+    monkeypatch.setattr(check_wheels, "ROOT", tmp_path)
+    monkeypatch.setattr(check_wheels, "SRC", tmp_path / "src")
+
+    owners, orphans = check_wheels.ownership()
+
+    assert orphans == ["skifer/core/stray_module.py"]
+    assert all(len(wheels) == 1 for path, wheels in owners.items() if path not in orphans)
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_exclude_globs_drop_bytecode_from_directory_force_includes():
+    check_wheels = _check_wheels_module()
+    patterns = ["**/__pycache__", "**/*.pyc"]
+    assert check_wheels._excluded("skifer/semantic/__pycache__/x.cpython-312.pyc", patterns)
+    assert check_wheels._excluded("skifer/semantic/x.pyc", patterns)
+    assert not check_wheels._excluded("skifer/semantic/semantic.py", patterns)
+    shipped = check_wheels.predicted_files("skifer")
+    assert "skifer/semantic/semantic.py" in shipped
+    assert not any("__pycache__" in path or path.endswith(".pyc") for path in shipped)
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_optional_import_names_cover_declared_third_party_extras_only():
+    # The governed-without-engine probe tolerates a ModuleNotFoundError only for these
+    # names; a sibling Skifer wheel (skifer-engine, skifer-databricks) is never one.
+    names = _check_wheels_module().optional_import_names("skifer-core", "skifer")
+    assert {"sqlglot", "mcp", "fastapi", "jsonschema"} <= names
+    assert not {"skifer_engine", "skifer_databricks", "pyspark", "delta"} & names

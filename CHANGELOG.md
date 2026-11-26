@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Plan 47.0 — the wheels are built, installed and imported alone.** New
+  `scripts/check_wheels.py` builds the four wheels (`pip wheel --no-deps`), checks from
+  their `RECORD`s that the file lists are disjoint and equal to what the `force-include`
+  tables predict, then installs them into throw-away venvs: `skifer-core[dialects]` alone
+  imports, parses and runs `compile_select` on the three dialects; `skifer` + `skifer-core`
+  without the engine imports every module (or fails only on a declared optional
+  third-party dependency) and loads none of `pyspark`, `delta`, `mlflow`, `databricks`.
+  Exit code 0/1 with a module / wheel / cause report; run by the new CI job `wheels`
+  (Python 3.12, no Java). `tests/test_packaging.py` checks without building that every
+  `src/skifer/**/*.py` ships in exactly one wheel, naming the orphans otherwise.
+
 ## [4.2.0] - 2026-11-26
 
 ### Fixed
