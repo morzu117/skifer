@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "skifer"
-version = "4.1.0"
+version = "4.2.0"
 description = "Declarative data engineering framework for Spark and Databricks Lakehouse."
 readme = "README.md"
 license = "MIT"
@@ -19,7 +19,7 @@ keywords = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "skifer-core==4.1.0",
+    "skifer-core==4.2.0",
     "python-dotenv>=1.0.0",
 ]
 classifiers = [
@@ -48,14 +48,14 @@ schema = ["jsonschema>=4.0"]
 # Spark execution now lives in the skifer-engine distribution (it brings pyspark
 # and delta). `pip install skifer` stays Spark-free; `pip install skifer[spark]`
 # opts into the runtime.
-spark = ["skifer-engine==4.1.0"]
+spark = ["skifer-engine==4.2.0"]
 llm-openai = ["openai>=1.0.0"]
 llm-anthropic = ["anthropic>=0.30.0"]
 llm-google = ["google-generativeai>=0.5.0"]
 semantic-pdf = ["fpdf2>=2.7.0", "matplotlib>=3.7.0"]
 databricks = ["databricks-sdk>=0.20.0"]
 # The MLflow serving layer now lives in the skifer-databricks distribution.
-serving = ["skifer-databricks==4.1.0"]
+serving = ["skifer-databricks==4.2.0"]
 tracing = [
     "opentelemetry-sdk>=1.24.0",
     "opentelemetry-exporter-otlp-proto-http>=1.24.0",

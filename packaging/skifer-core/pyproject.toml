@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "skifer-core"
-version = "4.1.0"
+version = "4.2.0"
 description = "Skifer language core: SQL-first pipeline language, contracts, capability matrix and dialect rendering (no Spark)."
 readme = "README.md"
 license = "MIT"

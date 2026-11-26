@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-11-26
+
 ### Fixed
 - **Pipeline JSON Schema — `left_anti` / `left_semi` join types.** The `JoinDef.type`
   enum in `generate_json_schema()` (and the committed `schemas/skifer-pipeline.schema.json`)

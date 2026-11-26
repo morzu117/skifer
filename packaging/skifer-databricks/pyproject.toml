@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "skifer-databricks"
-version = "4.1.0"
+version = "4.2.0"
 description = "Skifer on Databricks: the MLflow ResponsesAgent serving layer (Genie supervisor, Model Serving) over the governed semantic layer."
 readme = "README.md"
 license = "MIT"
@@ -18,7 +18,7 @@ requires-python = ">=3.10"
 # databricks-connect brings its own pyspark, so this is installed WITHOUT [spark]:
 # a serving container has no cluster; Spark comes from Connect serverless.
 dependencies = [
-    "skifer==4.1.0",
+    "skifer==4.2.0",
     "mlflow>=3.0,<4",
     "openai>=1.0.0",
     "databricks-connect>=16.1",
