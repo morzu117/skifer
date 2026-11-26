@@ -930,3 +930,65 @@ class TestNoDispatchEntryInterpolatesRawArguments:
 
         with pytest.raises(SqlCompilationError):
             _SQL_OP_DISPATCH["cast"]("`c`", ParsedOp("cast", (_PROBE,)))
+
+
+# ==============================================================================
+# Plan 47.2 — quote_fqn lets nothing through raw (R2)
+# ==============================================================================
+
+_R2_PAYLOAD = "`ORDERS` WHERE 1=0 UNION ALL SELECT * FROM `SALARIES`"
+
+
+class TestQuoteFqn:
+    @pytest.mark.parametrize("name, quoted", [
+        ("orders", "`orders`"),
+        ("silver.orders", "`silver`.`orders`"),
+        ("cat.silver.orders", "`cat`.`silver`.`orders`"),
+        ("`orders`", "`orders`"),
+        ("`silver`.`orders`", "`silver`.`orders`"),
+        ("`cat`.`silver`.`orders`", "`cat`.`silver`.`orders`"),
+        ("`my cat`.`sil-ver`.`or.ders`", "`my cat`.`sil-ver`.`or.ders`"),
+    ])
+    def test_one_to_three_parts_quoted_or_not(self, name, quoted):
+        from skifer.core.sql_compiler import quote_fqn
+
+        assert quote_fqn(name) == quoted
+
+    @pytest.mark.parametrize("catalog", [None, "dev_catalog"])
+    def test_sandbox_output_is_accepted_unchanged(self, catalog):
+        # Same shapes as core/sandbox.py's resolve(): fully back-quoted, 2 or 3 parts.
+        from skifer.core.sql_compiler import quote_fqn
+
+        sandboxed = "`silver_jdoe`.`orders`" if catalog is None else (
+            f"`{catalog}`.`silver_jdoe`.`orders`"
+        )
+        assert quote_fqn(sandboxed) == sandboxed
+
+    @pytest.mark.parametrize("name", [
+        _R2_PAYLOAD,
+        "`orders",
+        "orders`",
+        "`a`b`",
+        "cat.`silver`.orders",
+        "`a`.`b`.`c`.`d`",
+        "``",
+        "`a`.``",
+        "`a`..`b`",
+        "`a\x00b`",
+        "`a`.`b\x00`",
+        "a..b",
+        ".orders",
+        "orders.",
+        "",
+    ])
+    def test_malformed_names_are_refused(self, name):
+        from skifer.core.sql_compiler import quote_fqn
+
+        with pytest.raises(SqlCompilationError, match="table name"):
+            quote_fqn(name)
+
+    @pytest.mark.parametrize("dialect", _CAST_DIALECTS)
+    def test_compile_select_refuses_a_forged_resolved_name(self, dialect):
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        with pytest.raises(SqlCompilationError, match="table name"):
+            compile_select(parsed, resolve_table=lambda name: _R2_PAYLOAD, dialect=dialect)

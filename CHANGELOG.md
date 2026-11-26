@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SqlCompilationError` naming the received type and the admitted list. Side effect: a
   type with a comma (`decimal(10,2)`, `map<string,int>`), previously truncated at the
   comma by the op-argument split, now compiles whole.
+- **Plan 47.2 — `quote_fqn` lets nothing through raw (R2).** A table name containing a
+  backtick was returned unchanged, so a forged name such as
+  `` `ORDERS` WHERE 1=0 UNION ALL SELECT * FROM `SALARIES` `` (from `resolve_table`, or a
+  connector whose part check allows quotes) reached the compiled SQL verbatim. Such a name
+  is now accepted only when it is entirely well formed — one to three `` `part` ``s
+  separated by dots, no backtick or NUL inside a part, which is what the sandbox resolver
+  emits; a name without backticks is quoted as before, but an empty part (`a..b`,
+  `orders.`) is refused. The existing callers are unchanged. The Plan 46 note that called
+  this injection "refuted" is corrected. **Breaking:** a partially or badly back-quoted
+  table name, which used to compile, now raises `SqlCompilationError`.
 
 ### Added
 - **Plan 47.0 — the wheels are built, installed and imported alone.** New

@@ -63,10 +63,22 @@ def quote_ident(name: str) -> str:
     return "`" + str(name).replace("`", "``") + "`"
 
 
+#: An already-quoted name is accepted only whole (Plan 47.2): one to three back-quoted
+#: parts separated by dots, no backtick or NUL inside a part — what core/sandbox.py emits.
+_QUOTED_FQN_RE = re.compile(r"`[^`\x00]+`(?:\.`[^`\x00]+`){0,2}")
+
+
 def quote_fqn(fqn: str) -> str:
     """Quote a possibly dotted table name, leaving already-quoted names alone."""
     if "`" in fqn:
+        if _QUOTED_FQN_RE.fullmatch(fqn) is None:
+            raise SqlCompilationError(
+                f"Malformed table name {fqn!r}: a back-quoted name must be one to three "
+                "`part`s separated by dots, with no backtick or NUL inside a part."
+            )
         return fqn
+    if "" in fqn.split("."):
+        raise SqlCompilationError(f"Malformed table name {fqn!r}: empty name part.")
     return ".".join(quote_ident(part) for part in fqn.split("."))
 
 
