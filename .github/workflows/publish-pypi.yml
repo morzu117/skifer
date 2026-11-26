@@ -23,13 +23,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install build tools
-        run: pip install build
+      # One shared src/, four distributions built from packaging/ (hatchling
+      # force-include). uv build is what we validate locally; it builds each wheel
+      # directly without a copy that would break the ../../src references.
+      - name: Build the four wheels
+        run: |
+          pip install uv
+          rm -rf dist && mkdir -p dist
+          for pkg in skifer-core skifer skifer-engine skifer-databricks; do
+            uv build --wheel "packaging/$pkg" --out-dir dist
+          done
+          ls -l dist
 
-      - name: Build package
-        run: python -m build
-
-      - name: Check distribution
+      - name: Check distributions
         run: pip install twine && twine check dist/*
 
       - name: Publish to PyPI
