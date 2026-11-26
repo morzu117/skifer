@@ -98,7 +98,8 @@ une question de conception qu'elles ne couvrent pas.
 
 À recopier en tête de chaque brief confié à un agent de dev.
 
-- **Dépôt cœur** : `skifer`, branche de lot créée depuis `main` à jour (`git fetch` d'abord) :
+- **Dépôt cœur** : `skifer`, branche de lot créée depuis `main` à jour (`git fetch` d'abord) —
+  ou depuis `feat/plan47-wheel-boundaries` tant que ce plan n'est pas mergé dans `main` :
   `feat/plan47-a-hardening`, `feat/plan47-b-connector-contract`, `feat/plan47-c-wheel-boundaries`.
   Un lot = une PR ; un lot ne démarre que lorsque le précédent est mergé.
 - **Un point = un commit**, message `feat(plan47-47.N): …` (`fix(...)` pour 47.1 – 47.6,
