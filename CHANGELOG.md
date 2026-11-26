@@ -76,6 +76,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Exit code 0/1 with a module / wheel / cause report; run by the new CI job `wheels`
   (Python 3.12, no Java). `tests/test_packaging.py` checks without building that every
   `src/skifer/**/*.py` ships in exactly one wheel, naming the orphans otherwise.
+- **Plan 47.9 — platform imports are confined to the engine and serving modules.** New
+  import-linter `forbidden` contract (the 4th): outside `skifer.serving`,
+  `skifer.spark_factory` and `skifer.core.{spark_backend, writer, loaders, interpreter,
+  rule_executor}`, no module imports `pyspark`, `delta`, `mlflow` or `databricks` directly.
+  The 8 existing lazy imports are an explicit `ignore_imports` inventory in
+  `pyproject.toml`, one per line with where and why — the list plans 47.19 / 47.20 shrink.
+  `tests/test_import_boundaries.py` imports every module of the `skifer` wheel in a fresh
+  interpreter and checks none of the four packages is loaded; an import of one of them
+  that fails only because it is not installed counts as a violation, not as an optional
+  dependency.
 
 ### Changed
 - **Plan 47.8 — wheel metadata tells the truth (S2, D8).** `sqlglot` is now declared

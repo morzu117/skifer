@@ -227,3 +227,78 @@ forbidden_modules = [
     "skifer.agentic.builder_agent",
     "skifer.lineage",
 ]
+
+[[tool.importlinter.contracts]]
+# Plan 47.9 — platform imports stay confined to the engine and serving modules:
+# skifer.serving, skifer.spark_factory and skifer.core.{spark_backend, writer, loaders,
+# interpreter, rule_executor} are the only modules not listed below. A module added
+# outside these packages is caught by tests/test_import_boundaries.py, which imports
+# every module of the skifer wheel in a fresh interpreter.
+name = "Platform imports stay in the engine and serving modules"
+type = "forbidden"
+as_packages = false
+source_modules = [
+    "skifer",
+    "skifer.cli",
+    "skifer.registry",
+    "skifer.utils",
+    "skifer.adaptive", "skifer.adaptive.**",
+    "skifer.agentic", "skifer.agentic.**",
+    "skifer.analyzer", "skifer.analyzer.**",
+    "skifer.api", "skifer.api.**",
+    "skifer.candidates", "skifer.candidates.**",
+    "skifer.capabilities", "skifer.capabilities.**",
+    "skifer.knowledge", "skifer.knowledge.**",
+    "skifer.lineage", "skifer.lineage.**",
+    "skifer.mcp", "skifer.mcp.**",
+    "skifer.observability", "skifer.observability.**",
+    "skifer.semantic", "skifer.semantic.**",
+    "skifer.services", "skifer.services.**",
+    "skifer.sinks", "skifer.sinks.**",
+    "skifer.core",
+    "skifer.core.capability_matrix",
+    "skifer.core.catalog_inspector",
+    "skifer.core.config",
+    "skifer.core.connector",
+    "skifer.core.constants",
+    "skifer.core.context",
+    "skifer.core.core",
+    "skifer.core.dialect",
+    "skifer.core.environment",
+    "skifer.core.ir",
+    "skifer.core.json_schema",
+    "skifer.core.op_catalog",
+    "skifer.core.patterns",
+    "skifer.core.registry",
+    "skifer.core.rule_analyzer",
+    "skifer.core.rule_planner",
+    "skifer.core.sandbox",
+    "skifer.core.schema_loader",
+    "skifer.core.sql_compiler",
+]
+forbidden_modules = ["pyspark", "delta", "mlflow", "databricks"]
+# Direct imports only: a chain through an exempt engine module (core.core -> loaders ->
+# pyspark) is the engine boundary itself, and what actually loads is tested at runtime.
+allow_indirect_imports = true
+# Inventory of the existing lazy platform imports outside the engine and serving modules
+# (module -> import, then where and why). Each one runs inside a function, never at module
+# load. Plans 47.19 / 47.20 shrink this list; never add to it without a reason here.
+ignore_imports = [
+    # analyzer/history.py build_workspace_client(): `skifer analyze history`, extra [databricks]
+    "skifer.analyzer.history -> databricks",
+    # analyzer/parity.py compare_tables(): `skifer analyze parity` runs on a live Spark session
+    "skifer.analyzer.parity -> pyspark",
+    # cli.py _import_mlflow(): `skifer candidates evaluate --mlflow` only
+    "skifer.cli -> mlflow",
+    # core/core.py SkiferEngine.__init__(): DBUtils in a Databricks notebook (moves to
+    # skifer-engine with core.core in 47.18)
+    "skifer.core.core -> pyspark",
+    # core/environment.py is_databricks_sdk_available() / get_workspace_client(): extra [databricks]
+    "skifer.core.environment -> databricks",
+    # core/environment.py patch_connect_debugging(spark): called with a live Connect session
+    "skifer.core.environment -> pyspark",
+    # observability/history.py DeltaHistoryStore.store(): the Delta store needs Spark
+    "skifer.observability.history -> pyspark",
+    # semantic/llm_provider.py DatabricksProvider via _sdk_authenticated_openai(): SDK auth
+    "skifer.semantic.llm_provider -> databricks",
+]
