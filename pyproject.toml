@@ -97,11 +97,11 @@ mcp = [
 ]
 
 # --- SQL dialect rendering (lazy optional dependency) ---
-dialects = ["sqlglot>=25"]
+dialects = ["sqlglot>=25,<31"]
 
 # --- Project analyzer : SQL existant -> pipelines Skifer (import strictement paresseux) ---
 analyzer = [
-    "sqlglot>=25",
+    "sqlglot>=25,<31",
 ]
 
 # --- Embeddings denses du knowledge index (Plan 44, S08 ; import strictement paresseux) ---

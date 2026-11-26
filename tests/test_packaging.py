@@ -346,3 +346,54 @@ def test_exports_probe_verdict_flags_a_silent_or_unnamed_export(monkeypatch):
     assert [p.split(" | ")[0] for p in problems] == [
         "skifer.LineageGraph", "skifer.SkiferEngine", "RuleRegistry.list_loaders",
     ]
+
+
+# --- Plan 47.8: wheel metadata ------------------------------------------------------------
+
+# The root pyproject is the dev manifest: `spark` and `serving` install the third-party
+# runtime directly there, the sibling distributions in packaging/skifer; `engine` exists
+# only on the published wheel. Any other difference is drift.
+EXTRAS_ALLOWED_TO_DIFFER = {"spark", "serving", "engine"}
+
+
+def _extras(rel_path: str) -> dict:
+    return _load(rel_path)["project"].get("optional-dependencies", {})
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_root_and_skifer_wheel_extras_only_differ_where_intended():
+    root, wheel = _extras("pyproject.toml"), _extras("packaging/skifer/pyproject.toml")
+    assert set(root) ^ set(wheel) <= EXTRAS_ALLOWED_TO_DIFFER, sorted(set(root) ^ set(wheel))
+    drift = {
+        name: (root[name], wheel[name])
+        for name in sorted(set(root) & set(wheel) - EXTRAS_ALLOWED_TO_DIFFER)
+        if root[name] != wheel[name]
+    }
+    assert not drift, drift
+    assert wheel["engine"] == wheel["spark"], "`engine` is an alias of `spark`"
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_every_sqlglot_requirement_has_the_d8_upper_bound():
+    manifests = ["pyproject.toml"] + [
+        str(path.relative_to(ROOT)) for path in sorted((ROOT / "packaging").glob("*/pyproject.toml"))
+    ]
+    found = {}
+    for manifest in manifests:
+        project = _load(manifest)["project"]
+        requirements = list(project.get("dependencies", []))
+        for extra in project.get("optional-dependencies", {}).values():
+            requirements += extra
+        for requirement in requirements:
+            if requirement.split("[")[0].split(">")[0].split("=")[0].strip() == "sqlglot":
+                found.setdefault(manifest, []).append(requirement)
+    assert found, "no sqlglot requirement found"
+    wrong = {m: reqs for m, reqs in found.items() if set(reqs) != {"sqlglot>=25,<31"}}
+    assert not wrong, wrong
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+def test_skifer_wheel_describes_the_governed_layer_not_the_spark_runtime():
+    project = _load("packaging/skifer/pyproject.toml")["project"]
+    assert "for Spark and Databricks" not in project["description"]
+    assert not {"pyspark", "delta-lake"} & set(project["keywords"])

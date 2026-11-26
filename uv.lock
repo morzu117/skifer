@@ -5793,6 +5793,9 @@ llm-openai = [
 mcp = [
     { name = "mcp" },
 ]
+schema = [
+    { name = "jsonschema" },
+]
 semantic-full = [
     { name = "anthropic" },
     { name = "fpdf2" },
@@ -5836,6 +5839,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "jsonschema", marker = "extra == 'schema'", specifier = ">=4.0" },
     { name = "matplotlib", marker = "extra == 'semantic-full'", specifier = ">=3.7.0" },
     { name = "matplotlib", marker = "extra == 'semantic-pdf'", specifier = ">=3.7.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.1,<3" },
@@ -5857,11 +5861,11 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "sentence-transformers", marker = "extra == 'knowledge-embeddings'", specifier = ">=3" },
-    { name = "sqlglot", marker = "extra == 'analyzer'", specifier = ">=25" },
-    { name = "sqlglot", marker = "extra == 'dialects'", specifier = ">=25" },
+    { name = "sqlglot", marker = "extra == 'analyzer'", specifier = ">=25,<31" },
+    { name = "sqlglot", marker = "extra == 'dialects'", specifier = ">=25,<31" },
     { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.29" },
 ]
-provides-extras = ["spark", "llm-openai", "llm-anthropic", "llm-google", "semantic-pdf", "databricks", "serving", "tracing", "mcp", "dialects", "analyzer", "knowledge-embeddings", "api", "semantic-full", "docs", "dev"]
+provides-extras = ["schema", "spark", "llm-openai", "llm-anthropic", "llm-google", "semantic-pdf", "databricks", "serving", "tracing", "mcp", "dialects", "analyzer", "knowledge-embeddings", "api", "semantic-full", "docs", "dev"]
 
 [[package]]
 name = "skops"

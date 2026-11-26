@@ -77,6 +77,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Python 3.12, no Java). `tests/test_packaging.py` checks without building that every
   `src/skifer/**/*.py` ships in exactly one wheel, naming the orphans otherwise.
 
+### Changed
+- **Plan 47.8 — wheel metadata tells the truth (S2, D8).** `sqlglot` is now declared
+  `sqlglot>=25,<31` everywhere (`dialects` and `analyzer` extras of the root manifest,
+  `skifer-core` and `skifer`): versions 30.33 – 30.35 were seen side by side, and raising
+  the bound means replaying the frozen SQL and the parity suite. The `skifer` wheel is
+  described as the governed layer (semantic layer, agents, observability, MCP server, local
+  API) instead of "for Spark and Databricks", and drops the `pyspark` / `delta-lake`
+  keywords, which describe `skifer-engine`. New extra `skifer[engine]`, an alias of
+  `skifer[spark]` (which stays), installing `skifer-engine`. `tests/test_packaging.py`
+  checks that the root and `skifer` manifests declare the same extras, with `spark`,
+  `serving` and `engine` as the only intended differences. `uv.lock` regenerated.
+  **Breaking:** an environment pinned to `sqlglot>=31` no longer resolves with the
+  `dialects` / `analyzer` extras.
+
 ## [4.2.0] - 2026-11-26
 
 ### Fixed
