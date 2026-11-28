@@ -45,6 +45,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   historical behaviour is kept, with a `logger.warning` naming the alias.
   **Breaking (SQL path only):** a schema with an unjoined table, which used to compile
   (the extra table silently dropped), is now refused.
+- **Plan 47.5 — value-conditioned capabilities, pinned by parity (R5).** Two divergences
+  hid behind keys declared `Supported` for DuckDB. Two new keys, in an explicit `literal:`
+  space of the capability matrix (they come from a filter value, not from `op_catalog`):
+  `literal:decimal_text` — a comparison filter (`equals` … `not_in`) with a text value
+  shaped `-?\d+\.\d+` — is `Conditional` on DuckDB and Snowflake ("compared to an integer
+  column, Spark (ANSI) raises and the target rounds"); `literal:like_backslash` — a
+  `like` / `contains` / `starts_with` / `ends_with` family filter whose value contains `\`
+  — is `Refused` there ("`\` is a LIKE escape on Spark and a literal character on the
+  target"). Both are `Supported` on Databricks. `used_capabilities` emits them from every
+  filter location (tables, groups, `where`, `having`, `when`). Three parity pins (real
+  Spark + DuckDB) reproduce the measured divergences; `_DUCKDB_PROVEN` is unchanged.
+  **Breaking (DuckDB / Snowflake only):** a LIKE-family filter whose value contains a
+  backslash, which used to compile, is now refused by `compile_select(dialect=...)`.
 - **Plan 47.6 — nothing but the protocol is written to stdout on the MCP stdio transport
   (R7).** On stdio, stdout is the JSON-RPC channel: a stray `print()` corrupted the stream.
   `skifer mcp serve --transport stdio` now runs the server under

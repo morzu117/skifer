@@ -75,3 +75,88 @@ def test_cast_failure_semantics_diverge(parity_spark, duck, monkeypatch):
     duck_rows = duck.execute(sql_duckdb).fetchall()
     assert duck_rows
     assert all(row == (None,) for row in duck_rows)
+
+
+# --- Plan 47.5: value-conditioned divergences (R5) -------------------------------------
+
+def _isolated_spark_loggers(monkeypatch):
+    """PySpark's error loggers reformat pytest's handlers; restore them at teardown."""
+    from pyspark.logger import PySparkLogger
+
+    for name in ("SQLQueryContextLogger", "DataFrameQueryContextLogger"):
+        monkeypatch.setitem(logging.Logger.manager.loggerDict, name, PySparkLogger(name))
+
+
+@pytest.fixture
+def labels(parity_spark, duck):
+    """A text column holding the LIKE metacharacters the canonical dataset lacks."""
+    rows = [(1, "100%"), (2, "100x"), (3, "a\\b"), (4, "ab")]
+    parity_spark.createDataFrame(rows, "label_id INT, label STRING").createOrReplaceTempView(
+        "labels"
+    )
+    duck.execute('CREATE TABLE "labels" ("label_id" INTEGER, "label" VARCHAR)')
+    duck.executemany('INSERT INTO "labels" VALUES (?, ?)', rows)
+    try:
+        yield
+    finally:
+        parity_spark.catalog.dropTempView("labels")
+        duck.execute('DROP TABLE "labels"')
+
+
+def _label_filter(flt):
+    return parse_to_ir(parse_schema(f'''
+ tables:
+   - name: labels
+     alias: lbl
+     filter: ['{flt}']
+ select_final:
+   - [label_id, label_id]
+'''))
+
+
+def _duckdb_sql_bypassing_the_refusal(parsed):
+    """The refused key never compiles for DuckDB; render the Spark SQL to observe it."""
+    from skifer.core.dialect import render
+    from skifer.core.sql_compiler import SqlCompilationError
+
+    with pytest.raises(SqlCompilationError, match="'literal:like_backslash'"):
+        compile_select(parsed, dialect="duckdb")
+    return render(compile_select(parsed), "duckdb")
+
+
+def test_decimal_text_against_an_integer_column_diverges(parity_spark, duck, monkeypatch):
+    """literal:decimal_text: Spark (ANSI) raises on '6.5' vs INT; DuckDB rounds it to 7."""
+    parsed = parse_to_ir(parse_schema('''
+ tables:
+   - name: orders
+     alias: ord
+     filter: ["customer_id:greater_than:6.5"]
+ select_final:
+   - [customer_id, customer_id]
+'''))
+    duck_values = {row[0] for row in duck.execute(compile_select(parsed, dialect="duckdb")).fetchall()}
+    assert duck_values == {8, 99}  # 7 > 6.5, yet DuckDB compares with 7 and drops it
+    with monkeypatch.context() as loggers:
+        _isolated_spark_loggers(loggers)
+        with pytest.raises(Exception, match="CAST_INVALID_INPUT|cannot be cast"):
+            parity_spark.sql(compile_select(parsed)).collect()
+
+
+def test_like_escaped_percent_diverges(parity_spark, duck, labels):
+    r"""literal:like_backslash: '100\%' matches '100%' on Spark, nothing on DuckDB."""
+    parsed = _label_filter("label:like:100\\%")
+    spark_ids = {row[0] for row in parity_spark.sql(compile_select(parsed)).collect()}
+    duck_ids = {row[0] for row in duck.execute(_duckdb_sql_bypassing_the_refusal(parsed)).fetchall()}
+    assert spark_ids == {1}
+    assert duck_ids == set()
+
+
+def test_contains_backslash_diverges(parity_spark, duck, labels, monkeypatch):
+    r"""literal:like_backslash: 'a\b' raises on Spark (bad escape), matches one row on DuckDB."""
+    parsed = _label_filter("label:contains:a\\b")
+    duck_ids = {row[0] for row in duck.execute(_duckdb_sql_bypassing_the_refusal(parsed)).fetchall()}
+    assert duck_ids == {3}
+    with monkeypatch.context() as loggers:
+        _isolated_spark_loggers(loggers)
+        with pytest.raises(Exception, match="(?i)escape"):
+            parity_spark.sql(compile_select(parsed)).collect()

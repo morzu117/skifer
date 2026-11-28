@@ -1038,3 +1038,125 @@ select_final:
 
     def test_single_table_is_unaffected(self):
         assert "FROM `ord`" in _compile(_single_table("keep_all_columns: true\n"))
+
+
+# ==============================================================================
+# Plan 47.5 — value-conditioned capabilities (R5)
+# ==============================================================================
+
+_DECIMAL_TEXT = "literal:decimal_text"
+_LIKE_BACKSLASH = "literal:like_backslash"
+
+
+def _used(yaml_text: str) -> set[str]:
+    from skifer.core.sql_compiler import used_capabilities
+
+    return used_capabilities(parse_to_ir(parse_schema(yaml_text)))
+
+
+class TestValueConditionedCapabilities:
+    @pytest.mark.parametrize("operator", [
+        "equals", "not_equals", "greater_than", "less_than",
+        "greater_than_equal", "less_than_equal",
+    ])
+    def test_decimal_text_in_a_scalar_comparison(self, operator):
+        assert _DECIMAL_TEXT in _used(_single_table(f"""    filter: ["qty:{operator}:6.5"]
+select_final: [[qty, qty]]
+"""))
+
+    @pytest.mark.parametrize("operator,value", [
+        ("in", "1,-2.5"), ("not_in", "3.25,4"), ("between", "1,6.5"), ("not_between", "-0.5,2"),
+    ])
+    def test_decimal_text_in_one_value_of_a_list_comparison(self, operator, value):
+        assert _DECIMAL_TEXT in _used(_single_table(f"""    filter: ["qty:{operator}:{value}"]
+select_final: [[qty, qty]]
+"""))
+
+    @pytest.mark.parametrize("value", ["6", "-6", "6.", ".5", "1e3", "6.5x", "FR"])
+    def test_other_text_is_not_decimal_text(self, value):
+        assert _DECIMAL_TEXT not in _used(_single_table(f"""    filter: ["qty:equals:{value}"]
+select_final: [[qty, qty]]
+"""))
+
+    def test_a_numeric_yaml_value_is_not_text(self):
+        assert _DECIMAL_TEXT not in _used(_single_table("""    filter:
+      - {column: qty, operator: greater_than, value: 6.5}
+select_final: [[qty, qty]]
+"""))
+
+    def test_decimal_text_on_a_non_comparison_operator_is_not_emitted(self):
+        assert _DECIMAL_TEXT not in _used(_single_table("""    filter: ["label:contains:6.5"]
+select_final: [[label, label]]
+"""))
+
+    @pytest.mark.parametrize("operator", [
+        "like", "not_like", "contains", "not_contains", "starts_with", "ends_with",
+    ])
+    def test_backslash_in_a_like_family_value(self, operator):
+        assert _LIKE_BACKSLASH in _used(_single_table(f"""    filter: ['label:{operator}:a\\b']
+select_final: [[label, label]]
+"""))
+
+    def test_no_backslash_no_like_key(self):
+        keys = _used(_single_table("""    filter: ["label:like:100%"]
+select_final: [[label, label]]
+"""))
+        assert _LIKE_BACKSLASH not in keys
+
+    def test_backslash_on_a_comparison_is_not_a_like_key(self):
+        assert _LIKE_BACKSLASH not in _used(_single_table("""    filter: ['label:equals:a\\b']
+select_final: [[label, label]]
+"""))
+
+    def test_every_filter_location_is_walked(self):
+        locations = {
+            "filter_groups": """    filter_groups: [["qty:equals:6.5"]]
+select_final: [[qty, qty]]
+""",
+            "where": """where: ["qty:equals:6.5"]
+select_final: [[qty, qty]]
+""",
+            "where_groups": """where_groups: [["qty:equals:6.5"]]
+select_final: [[qty, qty]]
+""",
+            "having": """aggregate:
+  group_by: [country]
+  measures: [[qty, total, sum]]
+  having: ["total:greater_than:6.5"]
+""",
+            "when": """select_final:
+  - [qty, band, ["when:greater_than:6.5", "then:lit:high", "else:lit:low"]]
+""",
+            "when_like": """select_final:
+  - source: label
+    target: flag
+    ops:
+      - when: 'like:a\\b'
+        then: "lit:yes"
+      - else: "lit:no"
+""",
+        }
+        for location, body in locations.items():
+            expected = _LIKE_BACKSLASH if location == "when_like" else _DECIMAL_TEXT
+            assert expected in _used(_single_table(body)), location
+
+    @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+    def test_like_backslash_is_refused_outside_databricks(self, target):
+        parsed = parse_to_ir(parse_schema(_single_table("""    filter: ['label:like:100\\%']
+select_final: [[label, label]]
+""")))
+        with pytest.raises(SqlCompilationError, match="'literal:like_backslash'"):
+            compile_select(parsed, dialect=target)
+        assert "LIKE '100\\\\%'" in compile_select(parsed)
+
+    @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+    def test_decimal_text_is_reported_conditional_and_still_compiles(self, target):
+        from skifer.core.capability_matrix import Conditional, Supported
+        from skifer.core.sql_compiler import capability_report
+
+        parsed = parse_to_ir(parse_schema(_single_table("""    filter: ["qty:greater_than:6.5"]
+select_final: [[qty, qty]]
+""")))
+        assert isinstance(capability_report(parsed, target)[_DECIMAL_TEXT], Conditional)
+        assert capability_report(parsed, "databricks")[_DECIMAL_TEXT] == Supported()
+        assert "SELECT" in compile_select(parsed, dialect=target)

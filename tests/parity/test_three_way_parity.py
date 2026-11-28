@@ -31,6 +31,7 @@ FIRST_LAST = (
     "order-dependent without ORDER BY; parity proven only when every group holds "
     "a single non-null distinct value"
 )
+DECIMAL_TEXT = "compared to an integer column, Spark (ANSI) raises and the target rounds"
 APPROX = (
     "approximate algorithms differ by engine; parity proven exact on the canonical dataset "
     "(at most 2 distinct values per group on the canonical dataset)"
@@ -147,6 +148,12 @@ CASES = [
     ParityCase("approx_distinct_small_cardinality", _yaml(aggregate={
         "group_by": ["country"], "measures": [["customer_id", "customers", "approx_count_distinct"]],
     }), {"agg:approx_count_distinct": APPROX}),
+    # Plan 47.5: the condition holds — decimal text compared to DOUBLE / DECIMAL columns.
+    ParityCase("decimal_text_on_non_integer_columns", _yaml(
+        table={"name": "orders", "alias": "ord", "filter": [
+            "unit_price:greater_than:0.75", "amount:less_than_equal:50.5",
+        ]}, select_final=[["order_id", "order_id"], ["unit_price", "unit_price"]],
+    ), {"literal:decimal_text": DECIMAL_TEXT}),
 ]
 
 for _join_type in ("inner", "left", "right", "full", "cross", "left_semi", "left_anti"):
@@ -171,6 +178,11 @@ REFUSED_CASES = [
     ("filter:sql", _yaml(table={"name": "orders", "alias": "ord", "filter": ["amount:sql:amount > 0"]},
                          select_final=[["order_id", "order_id"]])),
     ("op:expr", _yaml(select_final=[["amount", "doubled", ["expr:amount * 2"]]])),
+    # Plan 47.5
+    ("literal:like_backslash", _yaml(
+        table={"name": "orders", "alias": "ord", "filter": ["sku:like:AB\\-%"]},
+        select_final=[["order_id", "order_id"]],
+    )),
 ]
 
 
@@ -211,4 +223,4 @@ def test_duckdb_matrix_is_backed_by_executed_parity():
     assert refused == {key for key, status in MATRIX["duckdb"].items() if isinstance(status, Refused)}
     assert supported | conditioned | refused == set(MATRIX["duckdb"])
     assert supported.isdisjoint(refused) and conditioned.isdisjoint(refused)
-    assert len(MATRIX["duckdb"]) == 57
+    assert len(MATRIX["duckdb"]) == 59

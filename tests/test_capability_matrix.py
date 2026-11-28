@@ -21,7 +21,7 @@ ALL_KEYS = (
 @pytest.mark.parametrize("target", TARGETS)
 def test_catalog_drift_guard(target):
     assert set(MATRIX) == set(TARGETS)
-    assert set(MATRIX[target]) == ALL_KEYS
+    assert set(MATRIX[target]) == ALL_KEYS | VALUE_KEYS
 
 
 def test_duckdb_supported_keys_are_explicitly_proven():
@@ -125,7 +125,33 @@ def test_matrix_entries_are_read_only(target):
 
 def test_snowflake_has_no_executed_parity_even_with_a_connector():
     assert all(isinstance(status, (Conditional, Refused)) for status in MATRIX["snowflake"].values())
-    special = {"op:split", "op:to_date", "op:cast"}
+    special = {"op:split", "op:to_date", "op:cast", "literal:decimal_text"}
     for key, status in MATRIX["snowflake"].items():
         if isinstance(status, Conditional) and key not in special:
             assert status.reason == "parity not executed against a Snowflake account"
+
+
+# --- Plan 47.5: value-conditioned keys --------------------------------------------------
+
+#: Declared by hand, like the matrix itself: these keys come from a filter *value*,
+#: not from op_catalog, so the drift guard must name them explicitly.
+VALUE_KEYS = {"literal:decimal_text", "literal:like_backslash"}
+
+
+def test_value_keys_are_declared_in_the_literal_space():
+    assert VALUE_KEYS <= _KEYS
+    assert {key for key in _KEYS if key.startswith("literal:")} == VALUE_KEYS
+    assert VALUE_KEYS.isdisjoint(ALL_KEYS)
+    assert VALUE_KEYS.isdisjoint(_DUCKDB_PROVEN)
+
+
+@pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+def test_value_keys_statuses(target):
+    assert capability("databricks", "literal:decimal_text") == Supported()
+    assert capability("databricks", "literal:like_backslash") == Supported()
+    assert capability(target, "literal:decimal_text") == Conditional(
+        "compared to an integer column, Spark (ANSI) raises and the target rounds"
+    )
+    assert capability(target, "literal:like_backslash") == Refused(
+        "'\\' is a LIKE escape on Spark and a literal character on the target"
+    )

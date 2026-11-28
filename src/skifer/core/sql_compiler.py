@@ -580,13 +580,46 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
     return sql
 
 
+#: Plan 47.5 — filters whose text value is compared to the column, and filters rendered
+#: to ``LIKE``. A value of one of these shapes behaves differently across engines.
+_COMPARISON_FILTERS = frozenset({
+    "equals", "not_equals", "greater_than", "less_than", "greater_than_equal",
+    "less_than_equal", "between", "not_between", "in", "not_in",
+})
+_LIST_FILTERS = frozenset({"between", "not_between", "in", "not_in"})
+_LIKE_FILTERS = frozenset({
+    "like", "not_like", "contains", "not_contains", "starts_with", "ends_with",
+})
+_DECIMAL_TEXT_RE = re.compile(r"-?\d+\.\d+")
+
+
+def _value_capabilities(operator: str, value: Any) -> set[str]:
+    """Return the ``literal:`` keys a filter value triggers (Plan 47.5)."""
+    if value is None:
+        return set()
+    if operator in _COMPARISON_FILTERS:
+        if isinstance(value, (list, tuple)):
+            values = list(value)
+        elif operator in _LIST_FILTERS:
+            values = _value_list(value)
+        else:
+            values = [value]
+        if any(isinstance(v, str) and _DECIMAL_TEXT_RE.fullmatch(v) for v in values):
+            return {"literal:decimal_text"}
+    elif operator in _LIKE_FILTERS and "\\" in str(value):
+        return {"literal:like_backslash"}
+    return set()
+
+
 def used_capabilities(parsed: ParsedSchema) -> set[str]:
     """Return canonical operation keys used by a pipeline, including nested ops."""
     keys: set[str] = set()
 
     def filters(items):
         for item in items:
-            keys.add(f"filter:{resolve_filter_operator(item.operator) or item.operator}")
+            canonical = resolve_filter_operator(item.operator) or item.operator
+            keys.add(f"filter:{canonical}")
+            keys.update(_value_capabilities(canonical, item.value))
 
     def operation(op):
         keys.add(f"op:{op.name}")
@@ -594,6 +627,10 @@ def used_capabilities(parsed: ParsedSchema) -> set[str]:
         if op.name == "when":
             inner = raw_arg.split(":", 1)[0] if op.args else "is_not_null"
             keys.add(f"filter:{resolve_filter_operator(inner) or inner}")
+            if ":" in raw_arg:
+                keys.update(_value_capabilities(
+                    resolve_filter_operator(inner) or inner, raw_arg.split(":", 1)[1]
+                ))
         elif op.name in ("then", "else"):
             operation(_parse_op(raw_arg) if op.args else ParsedOp("col", ()))
 
