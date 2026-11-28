@@ -45,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   historical behaviour is kept, with a `logger.warning` naming the alias.
   **Breaking (SQL path only):** a schema with an unjoined table, which used to compile
   (the extra table silently dropped), is now refused.
+- **Plan 47.4 — `SELECT *` over a join with differently named keys (R5).** When the final
+  projection is `*` (`keep_all_columns`, or neither `select_final` nor `aggregate`) and a
+  join other than `cross` / `left_semi` / `left_anti` has `keys_left != keys_right`,
+  `compile_select` now raises `SqlCompilationError` asking for `select_final:`: the SQL
+  path kept the right key column that the DataFrame path drops (6 columns instead of 5).
+  A parity pin records that explicitly selecting the right key still succeeds in SQL
+  (Spark SQL and DuckDB) and fails in DataFrame — the divergence is pinned, not fixed.
+  **Breaking (SQL path only):** such a schema, which used to compile, is now refused.
 - **Plan 47.5 — value-conditioned capabilities, pinned by parity (R5).** Two divergences
   hid behind keys declared `Supported` for DuckDB. Two new keys, in an explicit `literal:`
   space of the capability matrix (they come from a filter value, not from `op_catalog`):

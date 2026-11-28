@@ -160,3 +160,43 @@ def test_contains_backslash_diverges(parity_spark, duck, labels, monkeypatch):
         _isolated_spark_loggers(loggers)
         with pytest.raises(Exception, match="(?i)escape"):
             parity_spark.sql(compile_select(parsed)).collect()
+
+
+def test_selecting_the_right_join_key_diverges(parity_spark, duck, monkeypatch):
+    """Plan 47.4: with differently named keys the SQL path keeps the right key; the
+    DataFrame path drops it. SELECT * over such a join is refused; an explicit pick of
+    the right key still works in SQL (Spark SQL and DuckDB) and fails in DataFrame."""
+    from pyspark.logger import PySparkLogger
+
+    from skifer.core.spark_backend import SparkBackend
+    from tests.test_sql_compiler import _make_engine
+
+    yaml_text = '''
+ tables:
+   - name: orders
+     alias: ord
+   - name: customers
+     alias: cust
+ join:
+   - table_from: [ord, country]
+     table_to: [cust, cust_country]
+     type: inner
+ select_final:
+   - [order_id, order_id]
+   - [cust_country, cust_country]
+'''
+    schema = parse_schema(yaml_text)
+    parsed = parse_to_ir(schema)
+    spark_rows = parity_spark.sql(compile_select(parsed)).collect()
+    duck_rows = duck.execute(compile_select(parsed, dialect="duckdb")).fetchall()
+    assert spark_rows and {row[1] for row in spark_rows} <= {"FR", "DE", "IT", "ES"}
+    assert len(duck_rows) == len(spark_rows)
+    # A DataFrame AnalysisException goes through PySpark's DataFrameQueryContextLogger,
+    # which reformats pytest's handlers like SQLQueryContextLogger does: isolate both.
+    with monkeypatch.context() as loggers:
+        for name in ("SQLQueryContextLogger", "DataFrameQueryContextLogger"):
+            loggers.setitem(logging.Logger.manager.loggerDict, name, PySparkLogger(name))
+        with pytest.raises(Exception, match="cust_country"):
+            _make_engine(SparkBackend(spark=parity_spark, is_local=True)).process_schema(
+                schema
+            ).collect()

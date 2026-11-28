@@ -207,7 +207,11 @@ class TestColumnOps:
 
 
 class TestJoins:
-    def _two_tables(self, join_block):
+    # Plan 47.4: `SELECT *` over differently named keys is refused (see
+    # TestStarOverRenamedJoinKeys), so those joins project explicitly.
+    _EXPLICIT = "select_final: [[order_id, order_id]]"
+
+    def _two_tables(self, join_block, projection="keep_all_columns: true"):
         return f"""
 tables:
   - name: silver.orders
@@ -216,7 +220,7 @@ tables:
     alias: cust
 join:
 {join_block}
-keep_all_columns: true
+{projection}
 """
 
     def test_same_key_names_use_using(self):
@@ -228,7 +232,7 @@ keep_all_columns: true
     def test_different_key_names_use_on(self):
         sql = _compile(self._two_tables("  - table_from: [ord, customer_id]\n"
                                         "    table_to: [cust, id]\n"
-                                        "    type: inner\n"))
+                                        "    type: inner\n", self._EXPLICIT))
         assert "INNER JOIN `cust` ON `ord`.`customer_id` = `cust`.`id`" in sql
 
     @pytest.mark.parametrize("declared,keyword", [
@@ -242,7 +246,7 @@ keep_all_columns: true
     def test_join_types(self, declared, keyword):
         sql = _compile(self._two_tables(f"  - table_from: [ord, customer_id]\n"
                                         f"    table_to: [cust, id]\n"
-                                        f"    type: {declared}\n"))
+                                        f"    type: {declared}\n", self._EXPLICIT))
         assert keyword in sql
 
     def test_cross_join_has_no_on_clause(self):
@@ -1160,3 +1164,42 @@ select_final: [[qty, qty]]
         assert isinstance(capability_report(parsed, target)[_DECIMAL_TEXT], Conditional)
         assert capability_report(parsed, "databricks")[_DECIMAL_TEXT] == Supported()
         assert "SELECT" in compile_select(parsed, dialect=target)
+
+
+# Plan 47.4 — SELECT * over a join whose keys have different names (R5)
+# ==============================================================================
+
+def _two_tables(join: str, projection: str) -> str:
+    return f"""
+tables:
+  - {{name: silver.orders, alias: ord}}
+  - {{name: silver.customers, alias: cust}}
+join:
+  - {join}
+{projection}
+"""
+
+
+_RENAMED_KEYS = "{table_from: [ord, customer_id], table_to: [cust, id], type: %s}"
+_SAME_KEYS = "{table_from: [ord, customer_id], table_to: [cust, customer_id], type: left}"
+
+
+class TestStarOverRenamedJoinKeys:
+    @pytest.mark.parametrize("join_type", ["left", "inner", "right", "full"])
+    @pytest.mark.parametrize("projection", ["keep_all_columns: true", "add_columns:\n  - [amount, a2, [round:2]]"])
+    def test_star_projection_is_refused(self, join_type, projection):
+        with pytest.raises(SqlCompilationError, match="select_final") as raised:
+            _compile(_two_tables(_RENAMED_KEYS % join_type, projection))
+        assert "'cust'" in str(raised.value) and "id" in str(raised.value)
+
+    @pytest.mark.parametrize("join, projection", [
+        (_SAME_KEYS, "keep_all_columns: true"),
+        ("{table_from: ord, table_to: cust, type: cross}", "keep_all_columns: true"),
+        (_RENAMED_KEYS % "left_semi", "keep_all_columns: true"),
+        (_RENAMED_KEYS % "left_anti", "keep_all_columns: true"),
+        (_RENAMED_KEYS % "left", "select_final:\n  - [order_id, order_id]"),
+        (_RENAMED_KEYS % "left",
+         "aggregate:\n  group_by: [segment]\n  measures: [[amount, total, sum]]"),
+    ])
+    def test_other_shapes_still_compile(self, join, projection):
+        assert _compile(_two_tables(join, projection)).startswith("WITH")

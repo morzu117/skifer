@@ -677,6 +677,23 @@ def capability_report(parsed: ParsedSchema, dialect: str) -> dict[str, Status]:
         raise SqlCompilationError(str(exc)) from exc
 
 
+#: Join types whose output never carries the right side's columns, or that have no keys.
+_STAR_SAFE_JOIN_TYPES = frozenset({"cross", "left_semi", "left_anti"})
+
+
+def _reject_star_over_renamed_join_keys(parsed: ParsedSchema) -> None:
+    """Plan 47.4: ``SELECT *`` over ``ON l.a = r.b`` keeps ``b``; the DataFrame path drops it."""
+    for j in parsed.joins:
+        if j.join_type in _STAR_SAFE_JOIN_TYPES or j.keys_left == j.keys_right:
+            continue
+        raise SqlCompilationError(
+            f"Join {j.alias_left!r} {j.keys_left} -> {j.alias_right!r} {j.keys_right} has "
+            "differently named keys: a 'SELECT *' projection (keep_all_columns, or neither "
+            "select_final nor aggregate) would keep the right key column the DataFrame path "
+            "drops. Declare 'select_final:' instead."
+        )
+
+
 def compile_select(
     parsed: ParsedSchema,
     resolve_table: Callable[[str], str] | None = None,
@@ -737,6 +754,7 @@ def compile_select(
         body = f"SELECT {projection}\nFROM {join_tree}{where_clause}"
     else:
         # keep_all_columns (or neither) — pass every column through, plus add_columns.
+        _reject_star_over_renamed_join_keys(parsed)
         projection = ", ".join(["*"] + add_columns)
         body = f"SELECT {projection}\nFROM {join_tree}{where_clause}"
 
