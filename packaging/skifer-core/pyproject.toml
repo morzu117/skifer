@@ -33,7 +33,7 @@ classifiers = [
 
 [project.optional-dependencies]
 # SQL dialect rendering (skifer.core.dialect / sql_compiler) — lazy optional import.
-dialects = ["sqlglot>=25"]
+dialects = ["sqlglot>=25,<31"]
 # JSON Schema validation of the published pipeline contract.
 schema = ["jsonschema>=4.0"]
 

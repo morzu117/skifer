@@ -252,3 +252,37 @@ class TestWherePostJoinFilterOnRealSpark:
             schema, dataframes_in={"orders": orders, "refunds": refunds}
         )
         assert {row["order_id"] for row in result.collect()} == {2, 3}
+
+
+# ---------------------------------------------------------------------------
+# Plan 47.3 — a declared table that no join references is only warned about on
+# the DataFrame path (historical behaviour kept); the SQL path refuses it.
+# ---------------------------------------------------------------------------
+
+class TestUnjoinedTableWarning:
+    def test_unjoined_table_is_named_in_a_warning(self, interpreter, caplog):
+        orders, customers = MagicMock(), MagicMock()
+        with caplog.at_level("WARNING", logger="skifer.core.interpreter"):
+            interpreter.process_schema(
+                {"tables": [{"name": "orders", "alias": "ord"},
+                            {"name": "customers", "alias": "cust"}],
+                 "keep_all_columns": True},
+                dataframes_in={"orders": orders, "customers": customers},
+            )
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("'cust'" in w and "never joined" in w for w in warnings), warnings
+        assert not any("'ord'" in w for w in warnings)
+
+    def test_joined_tables_raise_no_warning(self, interpreter, mock_backend, caplog):
+        orders, customers = MagicMock(), MagicMock()
+        mock_backend.join.return_value = MagicMock()
+        with caplog.at_level("WARNING", logger="skifer.core.interpreter"):
+            interpreter.process_schema(
+                {"tables": [{"name": "orders", "alias": "ord"},
+                            {"name": "customers", "alias": "cust"}],
+                 "join": [{"table_from": ["ord", "customer_id"],
+                           "table_to": ["cust", "customer_id"]}],
+                 "keep_all_columns": True},
+                dataframes_in={"orders": orders, "customers": customers},
+            )
+        assert not [r for r in caplog.records if "never joined" in r.getMessage()]

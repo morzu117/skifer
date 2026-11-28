@@ -1030,3 +1030,18 @@ def test_semantic_engine_rejects_unknown_dialect(tmp_path):
     engine, backend = _semantic_engine(tmp_path)
     with pytest.raises(ValueError, match="oracle"):
         SemanticEngine.from_backend(backend, models_dir=str(engine.models_dir), dialect="oracle")
+
+
+def test_executed_sql_goes_to_the_debug_log_not_to_stdout(tmp_path, capsys, caplog):
+    # Plan 47.6 / D4: on the MCP stdio transport stdout is the protocol channel.
+    import logging
+
+    engine, backend = _semantic_engine(tmp_path)
+    with caplog.at_level(logging.DEBUG, logger="skifer.semantic.semantic"):
+        engine.query_with_evidence(SemanticQuery(
+            model_name="sales.orders", metrics=["revenue"], group_by=["region"],
+        ))
+    executed = backend.sql[-1]
+    assert executed not in capsys.readouterr().out
+    debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+    assert any(executed in message for message in debug), debug

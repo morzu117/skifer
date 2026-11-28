@@ -207,7 +207,11 @@ class TestColumnOps:
 
 
 class TestJoins:
-    def _two_tables(self, join_block):
+    # Plan 47.4: `SELECT *` over differently named keys is refused (see
+    # TestStarOverRenamedJoinKeys), so those joins project explicitly.
+    _EXPLICIT = "select_final: [[order_id, order_id]]"
+
+    def _two_tables(self, join_block, projection="keep_all_columns: true"):
         return f"""
 tables:
   - name: silver.orders
@@ -216,7 +220,7 @@ tables:
     alias: cust
 join:
 {join_block}
-keep_all_columns: true
+{projection}
 """
 
     def test_same_key_names_use_using(self):
@@ -228,7 +232,7 @@ keep_all_columns: true
     def test_different_key_names_use_on(self):
         sql = _compile(self._two_tables("  - table_from: [ord, customer_id]\n"
                                         "    table_to: [cust, id]\n"
-                                        "    type: inner\n"))
+                                        "    type: inner\n", self._EXPLICIT))
         assert "INNER JOIN `cust` ON `ord`.`customer_id` = `cust`.`id`" in sql
 
     @pytest.mark.parametrize("declared,keyword", [
@@ -242,7 +246,7 @@ keep_all_columns: true
     def test_join_types(self, declared, keyword):
         sql = _compile(self._two_tables(f"  - table_from: [ord, customer_id]\n"
                                         f"    table_to: [cust, id]\n"
-                                        f"    type: {declared}\n"))
+                                        f"    type: {declared}\n", self._EXPLICIT))
         assert keyword in sql
 
     def test_cross_join_has_no_on_clause(self):
@@ -820,3 +824,382 @@ aggregate:
         parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
         with pytest.raises(SqlCompilationError, match="oracle"):
             capability_report(parsed, "oracle")
+
+
+# ==============================================================================
+# Plan 47.1 — closed grammar for the cast type (R1)
+# ==============================================================================
+
+_CAST_DIALECTS = ("databricks", "duckdb", "snowflake")
+
+_CAST_PAYLOADS = (
+    "int) + (SELECT max(secret) FROM main.vault",
+    "int) AS a, (SELECT 1",
+    "int; DROP TABLE x",
+    "int -- x",
+    "varchar2",
+    "array<array<array<array<int>>>>",
+)
+
+
+def _cast_schema(cast_type: str):
+    return parse_to_ir(parse_schema(_single_table(
+        f'select_final:\n  - [amount, out, ["cast:{cast_type}"]]\n'
+    )))
+
+
+class TestCastTypeGrammar:
+    @pytest.mark.parametrize("cast_type, rendered", [
+        ("double", "double"), ("string", "string"), ("date", "date"), ("int", "int"),
+        ("long", "long"), ("timestamp", "timestamp"), ("integer", "integer"),
+        ("decimal", "decimal"), ("datetime", "timestamp"),
+    ])
+    def test_types_used_in_the_repository_compile_unchanged(self, cast_type, rendered):
+        sql = compile_select(_cast_schema(cast_type))
+        assert f"CAST(`amount` AS {rendered}) AS `out`" in sql
+        for dialect in _CAST_DIALECTS:
+            compile_select(_cast_schema(cast_type), dialect=dialect)
+
+    @pytest.mark.parametrize("cast_type", [
+        "decimal(10,2)", "array<string>", "map<string,int>", "struct<a:int,b:array<string>>",
+        "DECIMAL(18, 4)", "varchar(20)", "array<array<array<int>>>",
+    ])
+    def test_parameterised_and_composite_types_compile(self, cast_type):
+        from skifer.core.sql_compiler import validate_cast_type
+
+        sql = compile_select(_cast_schema(cast_type))
+        assert f"CAST(`amount` AS {validate_cast_type(cast_type)}) AS `out`" in sql
+        assert validate_cast_type("decimal(10, 2)") == "decimal(10,2)"
+        assert validate_cast_type("map<string, int>") == "map<string,int>"
+
+    @pytest.mark.parametrize("dialect", _CAST_DIALECTS)
+    @pytest.mark.parametrize("cast_type", _CAST_PAYLOADS)
+    def test_payloads_unknown_types_and_depth_five_are_refused(self, cast_type, dialect):
+        with pytest.raises(SqlCompilationError) as raised:
+            compile_select(_cast_schema(cast_type), dialect=dialect, allow_raw_sql=False)
+        message = str(raised.value)
+        assert repr(cast_type) in message
+        assert "decimal" in message and "struct<" in message  # the admitted list is cited
+
+    @pytest.mark.parametrize("cast_type", [
+        "", "int(10)", "decimal(10,2,3)", "decimal(a)", "struct<>", "struct<1a:int>",
+        "struct<a b:int>", "map<string>", "array<string", "array<string>>", "intx",
+        "int\x00", "double)", "decimal(-1,2)", "struct<a:int,>",
+    ])
+    def test_malformed_types_are_refused(self, cast_type):
+        from skifer.core.sql_compiler import validate_cast_type
+
+        with pytest.raises(SqlCompilationError, match="cast"):
+            validate_cast_type(cast_type)
+
+    def test_scalar_names_are_case_insensitive(self):
+        from skifer.core.sql_compiler import validate_cast_type
+
+        assert validate_cast_type("BIGINT") == "BIGINT"
+        assert validate_cast_type("TIMESTAMP") == "timestamp"
+        assert validate_cast_type("Array<Datetime>") == "Array<timestamp>"
+
+
+_PROBE = "p`'\\) OR (1=1 --"
+
+
+class TestNoDispatchEntryInterpolatesRawArguments:
+    """Every dispatch entry either renders its argument escaped/validated or raises."""
+
+    @pytest.mark.parametrize("operator", sorted(_SQL_FILTER_DISPATCH))
+    def test_filter_dispatch(self, operator):
+        from skifer.core.ir import ParsedFilter
+
+        value = [_PROBE, _PROBE] if operator in ("between", "not_between") else _PROBE
+        try:
+            sql = _SQL_FILTER_DISPATCH[operator](
+                "`c`", ParsedFilter(column="c", operator=operator, value=value)
+            )
+        except (SqlCompilationError, ValueError):
+            return
+        assert _PROBE not in sql
+
+    @pytest.mark.parametrize("name", sorted(_SQL_OP_DISPATCH))
+    def test_op_dispatch(self, name):
+        from skifer.core.ir import ParsedOp
+
+        try:
+            sql = _SQL_OP_DISPATCH[name]("`c`", ParsedOp(name, (_PROBE, _PROBE)))
+        except (SqlCompilationError, ValueError):
+            return
+        assert _PROBE not in sql
+
+    def test_cast_with_the_probe_is_refused_not_escaped(self):
+        from skifer.core.ir import ParsedOp
+
+        with pytest.raises(SqlCompilationError):
+            _SQL_OP_DISPATCH["cast"]("`c`", ParsedOp("cast", (_PROBE,)))
+
+
+# ==============================================================================
+# Plan 47.2 — quote_fqn lets nothing through raw (R2)
+# ==============================================================================
+
+_R2_PAYLOAD = "`ORDERS` WHERE 1=0 UNION ALL SELECT * FROM `SALARIES`"
+
+
+class TestQuoteFqn:
+    @pytest.mark.parametrize("name, quoted", [
+        ("orders", "`orders`"),
+        ("silver.orders", "`silver`.`orders`"),
+        ("cat.silver.orders", "`cat`.`silver`.`orders`"),
+        ("`orders`", "`orders`"),
+        ("`silver`.`orders`", "`silver`.`orders`"),
+        ("`cat`.`silver`.`orders`", "`cat`.`silver`.`orders`"),
+        ("`my cat`.`sil-ver`.`or.ders`", "`my cat`.`sil-ver`.`or.ders`"),
+    ])
+    def test_one_to_three_parts_quoted_or_not(self, name, quoted):
+        from skifer.core.sql_compiler import quote_fqn
+
+        assert quote_fqn(name) == quoted
+
+    @pytest.mark.parametrize("catalog", [None, "dev_catalog"])
+    def test_sandbox_output_is_accepted_unchanged(self, catalog):
+        # Same shapes as core/sandbox.py's resolve(): fully back-quoted, 2 or 3 parts.
+        from skifer.core.sql_compiler import quote_fqn
+
+        sandboxed = "`silver_jdoe`.`orders`" if catalog is None else (
+            f"`{catalog}`.`silver_jdoe`.`orders`"
+        )
+        assert quote_fqn(sandboxed) == sandboxed
+
+    @pytest.mark.parametrize("name", [
+        _R2_PAYLOAD,
+        "`orders",
+        "orders`",
+        "`a`b`",
+        "cat.`silver`.orders",
+        "`a`.`b`.`c`.`d`",
+        "``",
+        "`a`.``",
+        "`a`..`b`",
+        "`a\x00b`",
+        "`a`.`b\x00`",
+        "a..b",
+        ".orders",
+        "orders.",
+        "",
+    ])
+    def test_malformed_names_are_refused(self, name):
+        from skifer.core.sql_compiler import quote_fqn
+
+        with pytest.raises(SqlCompilationError, match="table name"):
+            quote_fqn(name)
+
+    @pytest.mark.parametrize("dialect", _CAST_DIALECTS)
+    def test_compile_select_refuses_a_forged_resolved_name(self, dialect):
+        parsed = parse_to_ir(parse_schema(_single_table("keep_all_columns: true\n")))
+        with pytest.raises(SqlCompilationError, match="table name"):
+            compile_select(parsed, resolve_table=lambda name: _R2_PAYLOAD, dialect=dialect)
+
+
+# ==============================================================================
+# Plan 47.3 — a table declared but never joined (R6)
+# ==============================================================================
+
+class TestUnjoinedTable:
+    def test_second_table_without_any_join_is_refused(self):
+        with pytest.raises(SqlCompilationError, match="'cust'") as raised:
+            _compile("""
+tables:
+  - {name: silver.orders, alias: ord}
+  - {name: silver.customers, alias: cust}
+keep_all_columns: true
+""")
+        assert "join" in str(raised.value) and "remove" in str(raised.value)
+
+    def test_third_table_left_out_of_the_joins_is_refused(self):
+        with pytest.raises(SqlCompilationError, match="'ctry'"):
+            _compile("""
+tables:
+  - {name: silver.orders, alias: ord}
+  - {name: silver.customers, alias: cust}
+  - {name: silver.countries, alias: ctry}
+join:
+  - {table_from: [ord, customer_id], table_to: [cust, customer_id]}
+select_final:
+  - [order_id, order_id]
+""")
+
+    def test_every_table_joined_compiles(self):
+        sql = _compile("""
+tables:
+  - {name: silver.orders, alias: ord}
+  - {name: silver.customers, alias: cust}
+  - {name: silver.countries, alias: ctry}
+join:
+  - {table_from: [ord, customer_id], table_to: [cust, customer_id]}
+  - {table_from: [cust, country], table_to: [ctry, country]}
+select_final:
+  - [order_id, order_id]
+""")
+        assert "JOIN `cust`" in sql and "JOIN `ctry`" in sql
+
+    def test_single_table_is_unaffected(self):
+        assert "FROM `ord`" in _compile(_single_table("keep_all_columns: true\n"))
+
+
+# ==============================================================================
+# Plan 47.5 — value-conditioned capabilities (R5)
+# ==============================================================================
+
+_DECIMAL_TEXT = "literal:decimal_text"
+_LIKE_BACKSLASH = "literal:like_backslash"
+
+
+def _used(yaml_text: str) -> set[str]:
+    from skifer.core.sql_compiler import used_capabilities
+
+    return used_capabilities(parse_to_ir(parse_schema(yaml_text)))
+
+
+class TestValueConditionedCapabilities:
+    @pytest.mark.parametrize("operator", [
+        "equals", "not_equals", "greater_than", "less_than",
+        "greater_than_equal", "less_than_equal",
+    ])
+    def test_decimal_text_in_a_scalar_comparison(self, operator):
+        assert _DECIMAL_TEXT in _used(_single_table(f"""    filter: ["qty:{operator}:6.5"]
+select_final: [[qty, qty]]
+"""))
+
+    @pytest.mark.parametrize("operator,value", [
+        ("in", "1,-2.5"), ("not_in", "3.25,4"), ("between", "1,6.5"), ("not_between", "-0.5,2"),
+    ])
+    def test_decimal_text_in_one_value_of_a_list_comparison(self, operator, value):
+        assert _DECIMAL_TEXT in _used(_single_table(f"""    filter: ["qty:{operator}:{value}"]
+select_final: [[qty, qty]]
+"""))
+
+    @pytest.mark.parametrize("value", ["6", "-6", "6.", ".5", "1e3", "6.5x", "FR"])
+    def test_other_text_is_not_decimal_text(self, value):
+        assert _DECIMAL_TEXT not in _used(_single_table(f"""    filter: ["qty:equals:{value}"]
+select_final: [[qty, qty]]
+"""))
+
+    def test_a_numeric_yaml_value_is_not_text(self):
+        assert _DECIMAL_TEXT not in _used(_single_table("""    filter:
+      - {column: qty, operator: greater_than, value: 6.5}
+select_final: [[qty, qty]]
+"""))
+
+    def test_decimal_text_on_a_non_comparison_operator_is_not_emitted(self):
+        assert _DECIMAL_TEXT not in _used(_single_table("""    filter: ["label:contains:6.5"]
+select_final: [[label, label]]
+"""))
+
+    @pytest.mark.parametrize("operator", [
+        "like", "not_like", "contains", "not_contains", "starts_with", "ends_with",
+    ])
+    def test_backslash_in_a_like_family_value(self, operator):
+        assert _LIKE_BACKSLASH in _used(_single_table(f"""    filter: ['label:{operator}:a\\b']
+select_final: [[label, label]]
+"""))
+
+    def test_no_backslash_no_like_key(self):
+        keys = _used(_single_table("""    filter: ["label:like:100%"]
+select_final: [[label, label]]
+"""))
+        assert _LIKE_BACKSLASH not in keys
+
+    def test_backslash_on_a_comparison_is_not_a_like_key(self):
+        assert _LIKE_BACKSLASH not in _used(_single_table("""    filter: ['label:equals:a\\b']
+select_final: [[label, label]]
+"""))
+
+    def test_every_filter_location_is_walked(self):
+        locations = {
+            "filter_groups": """    filter_groups: [["qty:equals:6.5"]]
+select_final: [[qty, qty]]
+""",
+            "where": """where: ["qty:equals:6.5"]
+select_final: [[qty, qty]]
+""",
+            "where_groups": """where_groups: [["qty:equals:6.5"]]
+select_final: [[qty, qty]]
+""",
+            "having": """aggregate:
+  group_by: [country]
+  measures: [[qty, total, sum]]
+  having: ["total:greater_than:6.5"]
+""",
+            "when": """select_final:
+  - [qty, band, ["when:greater_than:6.5", "then:lit:high", "else:lit:low"]]
+""",
+            "when_like": """select_final:
+  - source: label
+    target: flag
+    ops:
+      - when: 'like:a\\b'
+        then: "lit:yes"
+      - else: "lit:no"
+""",
+        }
+        for location, body in locations.items():
+            expected = _LIKE_BACKSLASH if location == "when_like" else _DECIMAL_TEXT
+            assert expected in _used(_single_table(body)), location
+
+    @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+    def test_like_backslash_is_refused_outside_databricks(self, target):
+        parsed = parse_to_ir(parse_schema(_single_table("""    filter: ['label:like:100\\%']
+select_final: [[label, label]]
+""")))
+        with pytest.raises(SqlCompilationError, match="'literal:like_backslash'"):
+            compile_select(parsed, dialect=target)
+        assert "LIKE '100\\\\%'" in compile_select(parsed)
+
+    @pytest.mark.parametrize("target", ["duckdb", "snowflake"])
+    def test_decimal_text_is_reported_conditional_and_still_compiles(self, target):
+        from skifer.core.capability_matrix import Conditional, Supported
+        from skifer.core.sql_compiler import capability_report
+
+        parsed = parse_to_ir(parse_schema(_single_table("""    filter: ["qty:greater_than:6.5"]
+select_final: [[qty, qty]]
+""")))
+        assert isinstance(capability_report(parsed, target)[_DECIMAL_TEXT], Conditional)
+        assert capability_report(parsed, "databricks")[_DECIMAL_TEXT] == Supported()
+        assert "SELECT" in compile_select(parsed, dialect=target)
+
+
+# Plan 47.4 — SELECT * over a join whose keys have different names (R5)
+# ==============================================================================
+
+def _two_tables(join: str, projection: str) -> str:
+    return f"""
+tables:
+  - {{name: silver.orders, alias: ord}}
+  - {{name: silver.customers, alias: cust}}
+join:
+  - {join}
+{projection}
+"""
+
+
+_RENAMED_KEYS = "{table_from: [ord, customer_id], table_to: [cust, id], type: %s}"
+_SAME_KEYS = "{table_from: [ord, customer_id], table_to: [cust, customer_id], type: left}"
+
+
+class TestStarOverRenamedJoinKeys:
+    @pytest.mark.parametrize("join_type", ["left", "inner", "right", "full"])
+    @pytest.mark.parametrize("projection", ["keep_all_columns: true", "add_columns:\n  - [amount, a2, [round:2]]"])
+    def test_star_projection_is_refused(self, join_type, projection):
+        with pytest.raises(SqlCompilationError, match="select_final") as raised:
+            _compile(_two_tables(_RENAMED_KEYS % join_type, projection))
+        assert "'cust'" in str(raised.value) and "id" in str(raised.value)
+
+    @pytest.mark.parametrize("join, projection", [
+        (_SAME_KEYS, "keep_all_columns: true"),
+        ("{table_from: ord, table_to: cust, type: cross}", "keep_all_columns: true"),
+        (_RENAMED_KEYS % "left_semi", "keep_all_columns: true"),
+        (_RENAMED_KEYS % "left_anti", "keep_all_columns: true"),
+        (_RENAMED_KEYS % "left", "select_final:\n  - [order_id, order_id]"),
+        (_RENAMED_KEYS % "left",
+         "aggregate:\n  group_by: [segment]\n  measures: [[amount, total, sum]]"),
+    ])
+    def test_other_shapes_still_compile(self, join, projection):
+        assert _compile(_two_tables(join, projection)).startswith("WITH")

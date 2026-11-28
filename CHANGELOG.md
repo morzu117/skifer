@@ -8,6 +8,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Plan 47.1 — `cast:` type is a closed grammar in the SQL compiler (R1).** The type of a
+  `cast:` operation was interpolated raw into the compiled SQL, so
+  `cast:int) + (SELECT max(secret) FROM main.vault` compiled with `allow_raw_sql=False` on
+  the three targets (materialized views, connectors, metric candidates). The new
+  `validate_cast_type()` (recursive descent, at most 4 nested levels) accepts exactly a
+  closed list of scalar names (`string, varchar, char, int, integer, bigint, long,
+  smallint, short, tinyint, byte, double, float, real, decimal, numeric, dec, boolean,
+  bool, date, timestamp, timestamp_ntz, datetime, binary`, case-insensitive, with an
+  integer `(p)`/`(p,s)` only on `decimal/numeric/dec/varchar/char`) and
+  `array<T>` / `map<K,V>` / `struct<name:T,...>`; the SQL is rebuilt from the parsed
+  tokens. `datetime → timestamp` is kept. A test walks both SQL dispatch tables with a
+  probe argument and asserts none interpolates it raw. The DataFrame path is unchanged.
+  **Breaking:** a `cast:` type outside the grammar, which used to compile, now raises
+  `SqlCompilationError` naming the received type and the admitted list. Side effect: a
+  type with a comma (`decimal(10,2)`, `map<string,int>`), previously truncated at the
+  comma by the op-argument split, now compiles whole.
+- **Plan 47.2 — `quote_fqn` lets nothing through raw (R2).** A table name containing a
+  backtick was returned unchanged, so a forged name such as
+  `` `ORDERS` WHERE 1=0 UNION ALL SELECT * FROM `SALARIES` `` (from `resolve_table`, or a
+  connector whose part check allows quotes) reached the compiled SQL verbatim. Such a name
+  is now accepted only when it is entirely well formed — one to three `` `part` ``s
+  separated by dots, no backtick or NUL inside a part, which is what the sandbox resolver
+  emits; a name without backticks is quoted as before, but an empty part (`a..b`,
+  `orders.`) is refused. The existing callers are unchanged. The Plan 46 note that called
+  this injection "refuted" is corrected. **Breaking:** a partially or badly back-quoted
+  table name, which used to compile, now raises `SqlCompilationError`.
+
+### Fixed
+- **Plan 47.3 — a table declared but never joined is no longer ignored in silence (R6).**
+  With more than one table in `tables:`, every alias other than the join base must appear
+  as `table_from` or `table_to` of a join. On the SQL path (`compile_select`: materialized
+  views, connectors, metric candidates) the schema is refused with a `SqlCompilationError`
+  naming the alias and suggesting to join it or remove it. On the DataFrame path the
+  historical behaviour is kept, with a `logger.warning` naming the alias.
+  **Breaking (SQL path only):** a schema with an unjoined table, which used to compile
+  (the extra table silently dropped), is now refused.
+- **Plan 47.4 — `SELECT *` over a join with differently named keys (R5).** When the final
+  projection is `*` (`keep_all_columns`, or neither `select_final` nor `aggregate`) and a
+  join other than `cross` / `left_semi` / `left_anti` has `keys_left != keys_right`,
+  `compile_select` now raises `SqlCompilationError` asking for `select_final:`: the SQL
+  path kept the right key column that the DataFrame path drops (6 columns instead of 5).
+  A parity pin records that explicitly selecting the right key still succeeds in SQL
+  (Spark SQL and DuckDB) and fails in DataFrame — the divergence is pinned, not fixed.
+  **Breaking (SQL path only):** such a schema, which used to compile, is now refused.
+- **Plan 47.5 — value-conditioned capabilities, pinned by parity (R5).** Two divergences
+  hid behind keys declared `Supported` for DuckDB. Two new keys, in an explicit `literal:`
+  space of the capability matrix (they come from a filter value, not from `op_catalog`):
+  `literal:decimal_text` — a comparison filter (`equals` … `not_in`) with a text value
+  shaped `-?\d+\.\d+` — is `Conditional` on DuckDB and Snowflake ("compared to an integer
+  column, Spark (ANSI) raises and the target rounds"); `literal:like_backslash` — a
+  `like` / `contains` / `starts_with` / `ends_with` family filter whose value contains `\`
+  — is `Refused` there ("`\` is a LIKE escape on Spark and a literal character on the
+  target"). Both are `Supported` on Databricks. `used_capabilities` emits them from every
+  filter location (tables, groups, `where`, `having`, `when`). Three parity pins (real
+  Spark + DuckDB) reproduce the measured divergences; `_DUCKDB_PROVEN` is unchanged.
+  **Breaking (DuckDB / Snowflake only):** a LIKE-family filter whose value contains a
+  backslash, which used to compile, is now refused by `compile_select(dialect=...)`.
+- **Plan 47.6 — nothing but the protocol is written to stdout on the MCP stdio transport
+  (R7).** On stdio, stdout is the JSON-RPC channel: a stray `print()` corrupted the stream.
+  `skifer mcp serve --transport stdio` now runs the server under
+  `contextlib.redirect_stdout(sys.stderr)`, entered after `stdio_server()` has captured the
+  real stdout, and restored on exit. The SQL that `SemanticEngine` printed before each
+  query is now logged at `DEBUG` on the `skifer.semantic.semantic` logger instead (D4);
+  the other prints are unchanged.
+- **Plan 47.7 — each wheel's public surface says what to install (S1).** With
+  `skifer-core` alone, 17 of the 22 names in `skifer.__all__` (and 2 of the 3 in
+  `skifer.core.__all__`) raised a bare `ModuleNotFoundError`. The lazy `__getattr__` of
+  both roots now re-raises it (same type, same `name`) with a message naming the
+  distribution that ships the missing `skifer.*` module and its install command, e.g.
+  ``` `SparkBackend` ships in the `skifer-engine` distribution: `pip install 'skifer[spark]'` ```.
+  A missing third-party dependency propagates unchanged. The module → distribution table
+  (`skifer._DISTRIBUTIONS`) is checked against `packaging/*/pyproject.toml` by
+  `tests/test_packaging.py`. `RuleRegistry.list_loaders()` without `skifer-engine` now returns
+  the registered loaders instead of raising, and `get_loader()` for an absent name cites
+  `skifer-engine`. `scripts/check_wheels.py` gains the probe "core alone: exports name
+  their distribution".
+
+### Added
+- **Plan 47.0 — the wheels are built, installed and imported alone.** New
+  `scripts/check_wheels.py` builds the four wheels (`pip wheel --no-deps`), checks from
+  their `RECORD`s that the file lists are disjoint and equal to what the `force-include`
+  tables predict, then installs them into throw-away venvs: `skifer-core[dialects]` alone
+  imports, parses and runs `compile_select` on the three dialects; `skifer` + `skifer-core`
+  without the engine imports every module (or fails only on a declared optional
+  third-party dependency) and loads none of `pyspark`, `delta`, `mlflow`, `databricks`.
+  Exit code 0/1 with a module / wheel / cause report; run by the new CI job `wheels`
+  (Python 3.12, no Java). `tests/test_packaging.py` checks without building that every
+  `src/skifer/**/*.py` ships in exactly one wheel, naming the orphans otherwise.
+- **Plan 47.9 — platform imports are confined to the engine and serving modules.** New
+  import-linter `forbidden` contract (the 4th): outside `skifer.serving`,
+  `skifer.spark_factory` and `skifer.core.{spark_backend, writer, loaders, interpreter,
+  rule_executor}`, no module imports `pyspark`, `delta`, `mlflow` or `databricks` directly.
+  The 8 existing lazy imports are an explicit `ignore_imports` inventory in
+  `pyproject.toml`, one per line with where and why — the list plans 47.19 / 47.20 shrink.
+  `tests/test_import_boundaries.py` imports every module of the `skifer` wheel in a fresh
+  interpreter and checks none of the four packages is loaded; an import of one of them
+  that fails only because it is not installed counts as a violation, not as an optional
+  dependency.
+
+### Changed
+- **Plan 47.8 — wheel metadata tells the truth (S2, D8).** `sqlglot` is now declared
+  `sqlglot>=25,<31` everywhere (`dialects` and `analyzer` extras of the root manifest,
+  `skifer-core` and `skifer`): versions 30.33 – 30.35 were seen side by side, and raising
+  the bound means replaying the frozen SQL and the parity suite. The `skifer` wheel is
+  described as the governed layer (semantic layer, agents, observability, MCP server, local
+  API) instead of "for Spark and Databricks", and drops the `pyspark` / `delta-lake`
+  keywords, which describe `skifer-engine`. New extra `skifer[engine]`, an alias of
+  `skifer[spark]` (which stays), installing `skifer-engine`. `tests/test_packaging.py`
+  checks that the root and `skifer` manifests declare the same extras, with `spark`,
+  `serving` and `engine` as the only intended differences. `uv.lock` regenerated.
+  Each `packaging/<wheel>/README.md` (the wheel's PyPI page) is now its own short file
+  instead of a link to the root README: the wheel's role, the install command per
+  platform, and links to the documentation.
+  **Breaking:** an environment pinned to `sqlglot>=31` no longer resolves with the
+  `dialects` / `analyzer` extras.
+
 ## [4.2.0] - 2026-11-26
 
 ### Fixed

@@ -458,7 +458,7 @@ connecteur 125 verts et 32 sautés ; rien n'est poussé). Écarts et décisions,
   l'appelant (elle ajoutait des guillemets, donc changeait l'objet visé) ; les trois chemins
   d'écriture refusent une transaction ouverte par l'appelant au lieu de la commiter par DDL. Aussi :
   plus de `statement_id` fabriqué (`None` sans `sfqid`), faux curseur qui exige la fermeture de
-  chaque curseur interne. Réfuté : l'injection par nom de table (le cœur cite, épinglé par un test).
+  chaque curseur interne. Non réfuté (corrigé au Plan 47.2) : `quote_fqn` laissait passer brut un nom contenant un backtick.
 - **Limites connues** : l'append compare les noms de colonnes, pas les types ; après un `COMMIT` en
   erreur réseau l'issue est inconnue et une relance peut dupliquer ; sqlglot 30.35 côté connecteur,
   30.33 côté cœur.

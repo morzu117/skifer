@@ -45,6 +45,9 @@ _KEYS = frozenset({
     "agg:first", "agg:last",
     "join:inner", "join:left", "join:right", "join:full", "join:cross",
     "join:left_semi", "join:left_anti",
+    # Plan 47.5 — value-conditioned keys: emitted from a filter *value*, not from
+    # op_catalog, so they live in their own `literal:` space.
+    "literal:decimal_text", "literal:like_backslash",
 })
 
 # Only these explicitly named keys have unconditional executed parity evidence.
@@ -83,6 +86,14 @@ for _target in ("duckdb", "snowflake"):
     )
     _matrix[_target]["op:cast"] = Conditional(
         "type names are rendered by sqlglot; cast failure semantics are unverified until parity (Plan 46.6)"
+    )
+    # Plan 47.5 — divergences measured on executed Spark + DuckDB (R5), pinned by
+    # tests/parity/test_divergences.py.
+    _matrix[_target]["literal:decimal_text"] = Conditional(
+        "compared to an integer column, Spark (ANSI) raises and the target rounds"
+    )
+    _matrix[_target]["literal:like_backslash"] = Refused(
+        "'\\' is a LIKE escape on Spark and a literal character on the target"
     )
 for _key in ("agg:first", "agg:last"):
     _matrix["snowflake"][_key] = Refused(

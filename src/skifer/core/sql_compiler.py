@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import Any, Callable
 
 from skifer.core.capability_matrix import Refused, Status, capability
@@ -62,10 +63,22 @@ def quote_ident(name: str) -> str:
     return "`" + str(name).replace("`", "``") + "`"
 
 
+#: An already-quoted name is accepted only whole (Plan 47.2): one to three back-quoted
+#: parts separated by dots, no backtick or NUL inside a part — what core/sandbox.py emits.
+_QUOTED_FQN_RE = re.compile(r"`[^`\x00]+`(?:\.`[^`\x00]+`){0,2}")
+
+
 def quote_fqn(fqn: str) -> str:
     """Quote a possibly dotted table name, leaving already-quoted names alone."""
     if "`" in fqn:
+        if _QUOTED_FQN_RE.fullmatch(fqn) is None:
+            raise SqlCompilationError(
+                f"Malformed table name {fqn!r}: a back-quoted name must be one to three "
+                "`part`s separated by dots, with no backtick or NUL inside a part."
+            )
         return fqn
+    if "" in fqn.split("."):
+        raise SqlCompilationError(f"Malformed table name {fqn!r}: empty name part.")
     return ".".join(quote_ident(part) for part in fqn.split("."))
 
 
@@ -126,6 +139,148 @@ def _between_sql(c: str, f: Any, negate: bool) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Cast types — closed grammar (Plan 47.1)
+# ---------------------------------------------------------------------------
+
+#: Scalar type names a ``cast:`` may name, matched case-insensitively.
+CAST_SCALAR_TYPES: tuple[str, ...] = (
+    "string", "varchar", "char", "int", "integer", "bigint", "long", "smallint", "short",
+    "tinyint", "byte", "double", "float", "real", "decimal", "numeric", "dec", "boolean",
+    "bool", "date", "timestamp", "timestamp_ntz", "datetime", "binary",
+)
+#: The only scalars that take a ``(p)`` or ``(p,s)`` precision.
+_CAST_PRECISION_TYPES = frozenset({"decimal", "numeric", "dec", "varchar", "char"})
+#: Type levels a cast may nest (``array<array<array<int>>>`` is 4).
+_CAST_MAX_DEPTH = 4
+_CAST_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CAST_PUNCTUATION = frozenset("<>(),:")
+_CAST_ALLOWED = (
+    f"scalar {', '.join(CAST_SCALAR_TYPES)} (case-insensitive; precision (p) or (p,s) only "
+    "on decimal, numeric, dec, varchar, char), or array<T>, map<K,V>, struct<name:T,...> "
+    f"nested at most {_CAST_MAX_DEPTH} levels"
+)
+
+
+class _CastTypeParser:
+    """Recursive descent over the cast grammar; renders from tokens, never from the input."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.tokens = self._tokenize(text)
+        self.pos = 0
+
+    def error(self, detail: str) -> SqlCompilationError:
+        return SqlCompilationError(
+            f"cast: type {self.text!r} is not an allowed cast type ({detail}). "
+            f"Allowed: {_CAST_ALLOWED}."
+        )
+
+    def _tokenize(self, text: str) -> list[str]:
+        tokens: list[str] = []
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch in (" ", "\t"):
+                i += 1
+            elif ch in _CAST_PUNCTUATION:
+                tokens.append(ch)
+                i += 1
+            elif ch.isascii() and (ch.isalnum() or ch == "_"):
+                j = i + 1
+                while j < len(text) and text[j].isascii() and (text[j].isalnum() or text[j] == "_"):
+                    j += 1
+                tokens.append(text[i:j])
+                i = j
+            else:
+                raise self.error(f"unexpected character {ch!r}")
+        return tokens
+
+    def peek(self) -> str | None:
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def take(self, expected: str | None = None) -> str:
+        token = self.peek()
+        if token is None:
+            raise self.error("unexpected end" + (f", expected {expected!r}" if expected else ""))
+        if expected is not None and token != expected:
+            raise self.error(f"expected {expected!r}, got {token!r}")
+        self.pos += 1
+        return token
+
+    def integer(self) -> int:
+        token = self.take()
+        if not token.isdigit():
+            raise self.error(f"precision must be an integer, got {token!r}")
+        return int(token)
+
+    def parse(self) -> str:
+        rendered = self.type_(1)
+        if self.peek() is not None:
+            raise self.error(f"unexpected {self.peek()!r} after the type")
+        return rendered
+
+    def type_(self, depth: int) -> str:
+        if depth > _CAST_MAX_DEPTH:
+            raise self.error(f"nested deeper than {_CAST_MAX_DEPTH} levels")
+        name = self.take()
+        lower = name.lower()
+        if not _CAST_FIELD_NAME_RE.match(name):
+            raise self.error(f"{name!r} is not a type name")
+        if lower == "array":
+            self.take("<")
+            inner = self.type_(depth + 1)
+            self.take(">")
+            return f"{name}<{inner}>"
+        if lower == "map":
+            self.take("<")
+            key = self.type_(depth + 1)
+            self.take(",")
+            value = self.type_(depth + 1)
+            self.take(">")
+            return f"{name}<{key},{value}>"
+        if lower == "struct":
+            self.take("<")
+            fields = []
+            while True:
+                field_name = self.take()
+                if not _CAST_FIELD_NAME_RE.match(field_name):
+                    raise self.error(f"struct field name {field_name!r} is not an identifier")
+                self.take(":")
+                fields.append(f"{field_name}:{self.type_(depth + 1)}")
+                if self.peek() != ",":
+                    break
+                self.take(",")
+            self.take(">")
+            return f"{name}<{','.join(fields)}>"
+        if lower not in CAST_SCALAR_TYPES:
+            raise self.error(f"unknown type name {name!r}")
+        # Twin of the historical mapping: Spark has no ``datetime`` type.
+        rendered = "timestamp" if lower in ("datetime", "timestamp") else name
+        if self.peek() == "(":
+            if lower not in _CAST_PRECISION_TYPES:
+                raise self.error(f"{name!r} takes no precision")
+            self.take("(")
+            precision = [self.integer()]
+            if self.peek() == ",":
+                self.take(",")
+                precision.append(self.integer())
+            self.take(")")
+            rendered += "(" + ",".join(str(p) for p in precision) + ")"
+        return rendered
+
+
+def validate_cast_type(text: Any) -> str:
+    """Return the SQL spelling of a ``cast:`` type, or raise ``SqlCompilationError``.
+
+    Accepts exactly a closed list of scalar names (with an integer precision on the
+    decimal / character family) and ``array<T>`` / ``map<K,V>`` / ``struct<name:T,...>``
+    nested at most four levels. The output is rebuilt from the parsed tokens, so nothing
+    from the input reaches the SQL unless the grammar accepted it.
+    """
+    return _CastTypeParser(str(text)).parse()
+
+
+# ---------------------------------------------------------------------------
 # Dispatch tables — mirrors of the Spark ones
 # ---------------------------------------------------------------------------
 
@@ -153,7 +308,7 @@ _SQL_FILTER_DISPATCH: dict = {
 
 # Op dispatch: (c: str, op: ParsedOp) -> str (value SQL)
 _SQL_OP_DISPATCH: dict = {
-    "cast":      lambda c, op: f"CAST({c} AS {'timestamp' if op.args[0].lower() in ('datetime', 'timestamp') else op.args[0]})",
+    "cast":      lambda c, op: f"CAST({c} AS {validate_cast_type(','.join(map(str, op.args)))})",
     "upper":     lambda c, op: f"UPPER({c})",
     "lower":     lambda c, op: f"LOWER({c})",
     "trim":      lambda c, op: f"TRIM({c})",
@@ -391,6 +546,16 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
     if base_alias not in aliases:
         base_alias = aliases[0]
 
+    # Plan 47.3: a declared table no join references would be silently ignored.
+    joined = {j.alias_left for j in parsed.joins} | {j.alias_right for j in parsed.joins}
+    unjoined = [a for a in aliases if a != base_alias and a not in joined]
+    if len(aliases) > 1 and unjoined:
+        raise SqlCompilationError(
+            f"Table(s) {', '.join(repr(a) for a in unjoined)} declared in 'tables:' but never "
+            "joined — the compiled SQL would silently ignore them. Join each one in 'join:' "
+            "(table_from / table_to) or remove it from 'tables:'."
+        )
+
     sql = quote_ident(base_alias)
     for j in parsed.joins:
         keyword = _SQL_JOIN_TYPES.get(j.join_type)
@@ -415,13 +580,46 @@ def _compile_join_tree(parsed: ParsedSchema) -> str:
     return sql
 
 
+#: Plan 47.5 — filters whose text value is compared to the column, and filters rendered
+#: to ``LIKE``. A value of one of these shapes behaves differently across engines.
+_COMPARISON_FILTERS = frozenset({
+    "equals", "not_equals", "greater_than", "less_than", "greater_than_equal",
+    "less_than_equal", "between", "not_between", "in", "not_in",
+})
+_LIST_FILTERS = frozenset({"between", "not_between", "in", "not_in"})
+_LIKE_FILTERS = frozenset({
+    "like", "not_like", "contains", "not_contains", "starts_with", "ends_with",
+})
+_DECIMAL_TEXT_RE = re.compile(r"-?\d+\.\d+")
+
+
+def _value_capabilities(operator: str, value: Any) -> set[str]:
+    """Return the ``literal:`` keys a filter value triggers (Plan 47.5)."""
+    if value is None:
+        return set()
+    if operator in _COMPARISON_FILTERS:
+        if isinstance(value, (list, tuple)):
+            values = list(value)
+        elif operator in _LIST_FILTERS:
+            values = _value_list(value)
+        else:
+            values = [value]
+        if any(isinstance(v, str) and _DECIMAL_TEXT_RE.fullmatch(v) for v in values):
+            return {"literal:decimal_text"}
+    elif operator in _LIKE_FILTERS and "\\" in str(value):
+        return {"literal:like_backslash"}
+    return set()
+
+
 def used_capabilities(parsed: ParsedSchema) -> set[str]:
     """Return canonical operation keys used by a pipeline, including nested ops."""
     keys: set[str] = set()
 
     def filters(items):
         for item in items:
-            keys.add(f"filter:{resolve_filter_operator(item.operator) or item.operator}")
+            canonical = resolve_filter_operator(item.operator) or item.operator
+            keys.add(f"filter:{canonical}")
+            keys.update(_value_capabilities(canonical, item.value))
 
     def operation(op):
         keys.add(f"op:{op.name}")
@@ -429,6 +627,10 @@ def used_capabilities(parsed: ParsedSchema) -> set[str]:
         if op.name == "when":
             inner = raw_arg.split(":", 1)[0] if op.args else "is_not_null"
             keys.add(f"filter:{resolve_filter_operator(inner) or inner}")
+            if ":" in raw_arg:
+                keys.update(_value_capabilities(
+                    resolve_filter_operator(inner) or inner, raw_arg.split(":", 1)[1]
+                ))
         elif op.name in ("then", "else"):
             operation(_parse_op(raw_arg) if op.args else ParsedOp("col", ()))
 
@@ -473,6 +675,23 @@ def capability_report(parsed: ParsedSchema, dialect: str) -> dict[str, Status]:
         return {key: capability(dialect, key) for key in sorted(used_capabilities(parsed))}
     except KeyError as exc:
         raise SqlCompilationError(str(exc)) from exc
+
+
+#: Join types whose output never carries the right side's columns, or that have no keys.
+_STAR_SAFE_JOIN_TYPES = frozenset({"cross", "left_semi", "left_anti"})
+
+
+def _reject_star_over_renamed_join_keys(parsed: ParsedSchema) -> None:
+    """Plan 47.4: ``SELECT *`` over ``ON l.a = r.b`` keeps ``b``; the DataFrame path drops it."""
+    for j in parsed.joins:
+        if j.join_type in _STAR_SAFE_JOIN_TYPES or j.keys_left == j.keys_right:
+            continue
+        raise SqlCompilationError(
+            f"Join {j.alias_left!r} {j.keys_left} -> {j.alias_right!r} {j.keys_right} has "
+            "differently named keys: a 'SELECT *' projection (keep_all_columns, or neither "
+            "select_final nor aggregate) would keep the right key column the DataFrame path "
+            "drops. Declare 'select_final:' instead."
+        )
 
 
 def compile_select(
@@ -535,6 +754,7 @@ def compile_select(
         body = f"SELECT {projection}\nFROM {join_tree}{where_clause}"
     else:
         # keep_all_columns (or neither) — pass every column through, plus add_columns.
+        _reject_star_over_renamed_join_keys(parsed)
         projection = ", ".join(["*"] + add_columns)
         body = f"SELECT {projection}\nFROM {join_tree}{where_clause}"
 

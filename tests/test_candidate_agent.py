@@ -894,3 +894,33 @@ def test_end_to_end_candidate_on_example_data(spark, tmp_path):
     finally:
         store.close()
         spark.sql("DROP DATABASE IF EXISTS plan44_candidates CASCADE")
+
+
+# --- Plan 47.1: the cast type is a closed grammar, never interpolated -----------------
+
+from skifer.core.sql_compiler import SqlCompilationError  # noqa: E402
+
+CAST_INJECTION = "int) + (SELECT max(secret) FROM main.vault"
+
+
+def _cast_injection_payload():
+    return {"metric_name": "leak", "schema_dict": {
+        "tables": [{"name": ORDERS, "alias": "o"}],
+        "aggregate": {"group_by": ["country"], "measures": [["amount", "revenue", "sum"]]},
+        "add_columns": [["amount", "leak", [f"cast:{CAST_INJECTION}"]]],
+    }}
+
+
+def test_cast_type_injection_is_refused_at_compile():
+    agent = make_agent()
+    proposal = agent.validate(_cast_injection_payload())
+    with pytest.raises(SqlCompilationError, match="not an allowed cast type") as raised:
+        agent.compile(proposal)
+    assert repr(CAST_INJECTION) in str(raised.value)
+
+
+def test_cast_type_injection_never_reaches_the_backend(store):
+    backend = SpyBackend()
+    with pytest.raises(SqlCompilationError, match="not an allowed cast type"):
+        run_agent(store, _cast_injection_payload(), backend=backend)
+    assert backend.executed == []

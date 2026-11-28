@@ -265,3 +265,91 @@ def test_registry_gets_builtin_loader_without_engine():
         assert RuleRegistry.list_loaders() == []
         """
     )
+
+
+# --- Plan 47.7: the registry without skifer-engine ---------------------------------------
+
+def test_registry_lists_registered_loaders_without_the_engine_distribution(monkeypatch):
+    from skifer.core.registry import RuleRegistry
+
+    def mine():
+        return None
+
+    monkeypatch.setattr(RuleRegistry, "_loaders", {"mine": mine})
+    monkeypatch.setitem(sys.modules, "skifer.core.loaders", None)
+    assert RuleRegistry.list_loaders() == ["mine"]
+    assert RuleRegistry.get_loader("mine") is mine
+    with pytest.raises(ValueError, match="`skifer-engine` distribution"):
+        RuleRegistry.get_loader("load_and_union_tables")
+
+
+def test_registry_lets_a_missing_third_party_dependency_propagate(monkeypatch):
+    import types
+
+    from skifer.core import registry
+
+    error = ModuleNotFoundError("No module named 'pyspark'", name="pyspark")
+
+    def import_module(_name):
+        raise error
+
+    monkeypatch.setattr(registry, "importlib", types.SimpleNamespace(import_module=import_module))
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        registry.RuleRegistry.list_loaders()
+    assert excinfo.value is error
+
+
+# --- Plan 47.9: platform imports stay in the engine and serving modules -----------------
+
+PLATFORM_PACKAGES = ("pyspark", "delta", "mlflow", "databricks")
+
+
+def _skifer_wheel_modules_and_optional_names():
+    spec = importlib.util.spec_from_file_location(
+        "_skifer_check_wheels_47_9",
+        Path(__file__).resolve().parents[1] / "scripts" / "check_wheels.py",
+    )
+    check_wheels = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(check_wheels)
+    owners, _ = check_wheels.ownership()
+    modules = sorted(
+        check_wheels._module_name(path) for path, wheels in owners.items() if wheels == ["skifer"]
+    )
+    return modules, sorted(check_wheels.optional_import_names("skifer-core", "skifer"))
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="check_wheels.py needs tomllib")
+def test_importing_every_skifer_wheel_module_loads_no_platform_package():
+    import json
+
+    modules, optional = _skifer_wheel_modules_and_optional_names()
+    assert "skifer.semantic.semantic" in modules and "skifer.serving" not in modules
+    output = _run_python(
+        f"""
+        import importlib, json, sys
+        modules, optional = json.loads({json.dumps(json.dumps([modules, optional]))})
+        platform = {PLATFORM_PACKAGES!r}
+        skipped, attempted = [], []
+        for module in modules:
+            try:
+                importlib.import_module(module)
+            except ModuleNotFoundError as exc:
+                missing = (exc.name or "").split(".")[0]
+                if missing in platform:  # tried at load time, merely not installed here
+                    attempted.append(f"{{module}} -> {{missing}}")
+                elif missing not in optional:
+                    raise
+                else:
+                    skipped.append(module)
+        imported = [m for m in modules if m in sys.modules]
+        loaded = sorted(m for m in sys.modules if m.split(".")[0] in platform)
+        print(json.dumps({{"loaded": loaded + attempted, "skipped": skipped,
+                          "imported": len(imported)}}))
+        """
+    )
+    result = json.loads(output.strip().splitlines()[-1])
+    assert result["loaded"] == [], (
+        f"importing the skifer wheel loaded platform packages: {result['loaded']}"
+    )
+    assert len(result["skipped"]) < len(modules) // 10, result["skipped"]
+    assert result["imported"] == len(modules) - len(result["skipped"])

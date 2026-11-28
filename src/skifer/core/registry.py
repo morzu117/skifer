@@ -145,8 +145,14 @@ class RuleRegistry:
         Raises:
             ValueError: If the loader is not found in the registry.
         """
-        importlib.import_module("skifer.core.loaders")
+        engine_installed = cls._import_builtin_loaders()
         if name not in cls._loaders:
+            if not engine_installed:
+                raise ValueError(
+                    f"Data Loader '{name}' not found. The built-in loaders ship in the "
+                    "`skifer-engine` distribution, which is not installed: "
+                    "`pip install 'skifer[spark]'`."
+                )
             raise ValueError(f"Data Loader '{name}' not found.")
         return cls._loaders[name]
     
@@ -168,8 +174,23 @@ class RuleRegistry:
         Returns:
             list[str]: A list of names of all currently registered data loaders.
         """
-        importlib.import_module("skifer.core.loaders")
+        cls._import_builtin_loaders()
         return list(cls._loaders.keys())
+
+    @staticmethod
+    def _import_builtin_loaders() -> bool:
+        """Register the built-in loaders; ``False`` when ``skifer-engine`` is absent.
+
+        Plan 47.7: the built-ins ship in ``skifer-engine``. Without it, only the loaders
+        registered by the caller exist. A missing third-party dependency propagates.
+        """
+        try:
+            importlib.import_module("skifer.core.loaders")
+        except ModuleNotFoundError as exc:
+            if exc.name != "skifer.core.loaders":
+                raise
+            return False
+        return True
 
     @classmethod
     def clear(cls, rules: bool = True, loaders: bool = True) -> None:
