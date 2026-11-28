@@ -630,7 +630,7 @@ mixtes — demande un découpage de fichier, pas un déplacement de packaging) ;
 
 | Point | Lot | Dépôt | Statut |
 |---|---|---|---|
-| 47.0 – 47.9 | A | `skifer` | À faire |
+| 47.0 – 47.9 | A | `skifer` | Implémenté — PR #60 ouverte, non mergée ; reprise : [`47_wheel_boundaries_resume.md`](47_wheel_boundaries_resume.md) |
 | 47.10 – 47.13 | B | `skifer` | À faire |
 | 47.14 | B | `skifer-duckdb` | À faire (prérequis : branche 46.4 mergée) |
 | 47.15 | B | `skifer-snowflake` | À faire (prérequis : branche 46.6 mergée) |
