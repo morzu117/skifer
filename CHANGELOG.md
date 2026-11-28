@@ -119,6 +119,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `skifer[spark]` (which stays), installing `skifer-engine`. `tests/test_packaging.py`
   checks that the root and `skifer` manifests declare the same extras, with `spark`,
   `serving` and `engine` as the only intended differences. `uv.lock` regenerated.
+  Each `packaging/<wheel>/README.md` (the wheel's PyPI page) is now its own short file
+  instead of a link to the root README: the wheel's role, the install command per
+  platform, and links to the documentation.
   **Breaking:** an environment pinned to `sqlglot>=31` no longer resolves with the
   `dialects` / `analyzer` extras.
 

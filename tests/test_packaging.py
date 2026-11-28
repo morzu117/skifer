@@ -397,3 +397,26 @@ def test_skifer_wheel_describes_the_governed_layer_not_the_spark_runtime():
     project = _load("packaging/skifer/pyproject.toml")["project"]
     assert "for Spark and Databricks" not in project["description"]
     assert not {"pyspark", "delta-lake"} & set(project["keywords"])
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib requires Python 3.11+")
+@pytest.mark.parametrize("wheel", ["skifer-core", "skifer", "skifer-engine", "skifer-databricks"])
+def test_each_wheel_readme_opens_with_its_role_and_installs_by_platform(wheel):
+    import re
+
+    readme = ROOT / "packaging" / wheel / "README.md"
+    assert readme.is_file() and not readme.is_symlink(), "one README per wheel, not a link"
+    lines = [line for line in readme.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert lines[0] == f"# {wheel}"
+    assert lines[1].startswith(f"`{wheel}` is "), "the README opens with the wheel's role"
+    text = "\n".join(lines)
+    assert "## Install by platform" in text
+    commands = re.findall(r"`pip install '?([a-z-]+)(?:\[([a-z-]+)\])?'?`", text)
+    assert ("skifer", "spark") in commands and ("skifer", "serving") in commands
+    for distribution, extra in commands:
+        if not extra:
+            continue
+        manifest = "packaging/skifer/pyproject.toml" if distribution == "skifer" else (
+            f"packaging/{distribution}/pyproject.toml"
+        )
+        assert extra in _extras(manifest), f"{distribution}[{extra}] is not a declared extra"
